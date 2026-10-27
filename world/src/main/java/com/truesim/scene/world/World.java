@@ -1,6 +1,7 @@
 package com.truesim.scene.world;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.common.jobs.JobSystem;
 import com.truesim.common.jobs.Lane;
 import com.truesim.common.jobs.Task;
 import com.truesim.common.jobs.TaskScheduler;
@@ -72,6 +73,13 @@ public final class World implements AutoCloseable {
     private boolean closed;
     private final List<InterestSource> sources = new ArrayList<>();
     private final Features features = new Features();
+    private JobSystem jobs;
+    private InterestSource[] movedSources = new InterestSource[8];
+    private final JobSystem.RangeTask selectMoved = (from, to, worker) -> {
+        for (int i = from; i < to; i++) {
+            movedSources[i].selection.select(this.hysteresis);
+        }
+    };
     private double hysteresis = 0.15;
     private int attachBudget = Integer.MAX_VALUE;
     private int attachedThisFrame;
@@ -243,47 +251,44 @@ public final class World implements AutoCloseable {
             applyFeatures();
         }
         attachWaiting();
-        for (int i = 0; i < sources.size(); i++) {
-            InterestSource source = sources.get(i);
-            if (source.moved) {
-                source.moved = false;
-                refresh(source);
-            }
-        }
+        refreshMoved();
         for (int i = 0; i < sources.size(); i++) {
             releaseReplaced(sources.get(i));
         }
     }
 
-    /** Recomputes a source's cells for each layer of its profile and applies the difference. */
-    private void refresh(InterestSource source) {
-        selecting = source;
-        double grace = 1 + hysteresis;
+    /**
+     * Selects the cells of every source that moved, in parallel on the job system if there is one (each source writes
+     * only its own sets), then applies the differences source by source, in the order the sources were added.
+     */
+    private void refreshMoved() {
+        int count = 0;
+        for (int i = 0; i < sources.size(); i++) {
+            InterestSource source = sources.get(i);
+            if (source.moved) {
+                source.moved = false;
+                if (count == movedSources.length) {
+                    movedSources = Arrays.copyOf(movedSources, count * 2);
+                }
+                movedSources[count++] = source;
+            }
+        }
+        if (jobs != null && count > 1) {
+            jobs.parallelFor(count, 1, selectMoved);
+        } else {
+            selectMoved.run(0, count, 0);
+        }
+        for (int i = 0; i < count; i++) {
+            apply(movedSources[i]);
+            movedSources[i] = null;
+        }
+    }
+
+    /** Applies a source's new selection: requests the cells it newly wants, lets go of the ones it no longer wants. */
+    private void apply(InterestSource source) {
         for (int i = 0; i < source.wanted.length; i++) {
             InterestProfile.Entry entry = source.profile().entries().get(i);
             LongIntMap[] next = source.next[i];
-            for (LongIntMap level : next) {
-                level.clear();
-            }
-            selectingLevels = entry.layer().levels();
-            selectingDetail = entry.detail();
-            selectingInto = next;
-            selectingPrevious = source.wanted[i];
-            if (entry.detail().isFull()) {
-                selectingLevel = 0;
-                selectingReach = entry.range().radius();
-                forEachCellInReach(0, selectingReach * grace, addFull);
-            } else if (entry.detail().isScreenError()) {
-                int coarsest = entry.layer().levels().count() - 1;
-                selectingLevel = coarsest;
-                selectingReach = entry.range().radius();
-                forEachCellInReach(coarsest, selectingReach * grace, addBanded);
-            } else {
-                int coarsest = entry.detail().bandCount() - 1;
-                selectingLevel = coarsest;
-                selectingReach = entry.detail().band(coarsest);
-                forEachCellInReach(coarsest, selectingReach * grace, addBanded);
-            }
             LongIntMap[] wanted = source.wanted[i];
             LongIntMap[] retained = source.retained[i];
             boolean holdUntilReplaced = !entry.detail().isFull();
@@ -294,9 +299,6 @@ public final class World implements AutoCloseable {
             source.wanted[i] = next;
             source.next[i] = wanted;
         }
-        selecting = null;
-        selectingInto = null;
-        selectingPrevious = null;
     }
 
     /** Requests the cells newly wanted; one still held from before is wanted again without a second request. */
@@ -456,126 +458,6 @@ public final class World implements AutoCloseable {
             throw new IllegalArgumentException("Hysteresis is a fraction from 0 to 1: " + fraction);
         }
         this.hysteresis = fraction;
-    }
-
-    // The selection running in refresh(): fields, so the visitors below are made once.
-    private InterestSource selecting;
-    private Levels selectingLevels;
-    private Detail selectingDetail;
-    private LongIntMap[] selectingInto;
-    private LongIntMap[] selectingPrevious;
-    private int selectingLevel;
-    private double selectingReach;
-    private final CellGrid.CellVisitor addFull = (x, y, z) -> {
-        double distance = distanceSquared(selectingLevel, x, y, z);
-        long key = CellGrid.key(x, y, z);
-        if (distance <= square(selectingReach)
-            || distance <= square(selectingReach * (1 + hysteresis)) && selectingPrevious[0].get(key) >= 0) {
-            selectingInto[0].put(key, 1);
-        }
-    };
-    private final CellGrid.CellVisitor addBanded = (x, y, z) -> {
-        double distance = distanceSquared(selectingLevel, x, y, z);
-        if (distance <= square(selectingReach)
-            || distance <= square(selectingReach * (1 + hysteresis)) && held(selectingLevel, x, y, z)) {
-            refine(selectingLevel, x, y, z);
-        }
-    };
-
-    /** Visits the cells of {@code level} whose box may lie within {@code reach} of the selecting source. */
-    private void forEachCellInReach(int level, double reach, CellGrid.CellVisitor visitor) {
-        InterestSource s = selecting;
-        boolean volumetric = selectingLevels.isVolumetric();
-        selectingLevels.grid(level).forEachCell(s.x - reach, volumetric ? s.y - reach : 0, s.z - reach, s.x + reach,
-            volumetric ? s.y + reach : 0, s.z + reach, visitor);
-    }
-
-    /**
-     * Takes a cell, or, if the source is closer to it than the next finer band, its finer cells instead, each refined
-     * the same way: the result covers the cell's area once, finest where nearest. A cell already split stays split up
-     * to the hysteresis beyond the band.
-     */
-    private void refine(int level, int x, int y, int z) {
-        long key = CellGrid.key(x, y, z);
-        if (level > 0) {
-            // Split nearer than the band; within the hysteresis beyond it only if it was split before (the history is
-            // looked up only there, as it is the costly part).
-            double distance = distanceSquared(level, x, y, z);
-            double band = band(level - 1);
-            if (distance < square(band) || distance < square(band * (1 + hysteresis))
-                && selectingPrevious[level].get(key) < 0 && heldBelow(level, x, y, z)) {
-                boolean volumetric = selectingLevels.isVolumetric();
-                int r = selectingLevels.ratio(level);
-                int y0 = volumetric ? r * y : 0;
-                int y1 = volumetric ? r * y + r - 1 : 0;
-                for (int cy = y0; cy <= y1; cy++) {
-                    for (int cz = r * z; cz < r * z + r; cz++) {
-                        for (int cx = r * x; cx < r * x + r; cx++) {
-                            refine(level - 1, cx, cy, cz);
-                        }
-                    }
-                }
-                return;
-            }
-        }
-        selectingInto[level].put(key, 1);
-    }
-
-    /**
-     * The distance within which cells of level {@code finer} replace the next coarser ones: the profile's band, or for
-     * screen-space error the distance at which a coarser cell would look as big as the allowed error.
-     */
-    private double band(int finer) {
-        if (selectingDetail.isScreenError()) {
-            return selectingLevels.grid(finer + 1).size() * selectingDetail.errorPerMeter() * selecting.projection
-                / selectingDetail.pixels();
-        }
-        return selectingDetail.band(finer);
-    }
-
-    /** Whether the source held this cell, or finer cells within it, before. */
-    private boolean held(int level, int x, int y, int z) {
-        return selectingPrevious[level].get(CellGrid.key(x, y, z)) >= 0 || heldBelow(level, x, y, z);
-    }
-
-    /** Whether the source held finer cells within this cell before. */
-    private boolean heldBelow(int level, int x, int y, int z) {
-        if (level == 0) {
-            return false;
-        }
-        boolean volumetric = selectingLevels.isVolumetric();
-        int r = selectingLevels.ratio(level);
-        int y0 = volumetric ? r * y : 0;
-        int y1 = volumetric ? r * y + r - 1 : 0;
-        for (int cy = y0; cy <= y1; cy++) {
-            for (int cz = r * z; cz < r * z + r; cz++) {
-                for (int cx = r * x; cx < r * x + r; cx++) {
-                    if (held(level - 1, cx, cy, cz)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    /** The squared distance from the selecting source to a cell's box; flat levels ignore height. */
-    private double distanceSquared(int level, int x, int y, int z) {
-        CellGrid grid = selectingLevels.grid(level);
-        double size = grid.size();
-        InterestSource s = selecting;
-        double dx = axisDistance(s.x, grid.cellMin(x), size);
-        double dy = selectingLevels.isVolumetric() ? axisDistance(s.y, grid.cellMin(y), size) : 0;
-        double dz = axisDistance(s.z, grid.cellMin(z), size);
-        return dx * dx + dy * dy + dz * dz;
-    }
-
-    private static double square(double value) {
-        return value * value;
-    }
-
-    private static double axisDistance(double position, double min, double size) {
-        return position < min ? min - position : Math.max(0, position - (min + size));
     }
 
     /** A source closed (always before the world: closing the world closes its sources): its cells are released. */
@@ -867,6 +749,16 @@ public final class World implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("The world is closed");
         }
+    }
+
+    /**
+     * Selects the cells of moved interest sources on {@code jobs}, e.g. for a server with many players; {@code null}
+     * (the default) selects on the calling thread. The result is the same either way: each source selects from its own
+     * data, and the world applies the selections in the order the sources were added. Call {@link #update()} from the
+     * thread that submits to {@code jobs}.
+     */
+    public void setJobs(JobSystem jobSystem) {
+        this.jobs = jobSystem;
     }
 
     /** Detaches every loaded cell and drops every load. The scene and the scheduler stay open. */

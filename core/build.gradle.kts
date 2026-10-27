@@ -8,6 +8,7 @@ description = "Scene core for true-sim: node handles, the transform hierarchy, b
 dependencies {
     api("com.truesim.common:common-math:0.4.0")
     api("com.truesim.common:common-state:0.2.0")
+    api("com.truesim.common:common-jobs:0.3.0")
 }
 
 coverage {

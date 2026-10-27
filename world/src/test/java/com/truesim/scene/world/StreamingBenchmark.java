@@ -2,6 +2,7 @@ package com.truesim.scene.world;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.truesim.common.jobs.JobSystem;
 import com.truesim.common.jobs.TaskScheduler;
 import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.core.Mobility;
@@ -94,15 +95,20 @@ class StreamingBenchmark {
     @Test
     void streamAGridInAndOut() throws InterruptedException {
         // Warm up the JIT on a smaller run first, then measure a fresh world.
-        run(16, false, false);
-        run(16, false, true);
-        run(GRID, true, false);
-        run(GRID, true, true);
+        try (JobSystem jobs = JobSystem.ofAvailableProcessors()) {
+            run(16, false, false, null);
+            run(16, false, true, jobs);
+            run(GRID, true, false, null);
+            run(GRID, true, false, jobs);
+            run(GRID, true, true, null);
+            run(GRID, true, true, jobs);
+        }
     }
 
-    private void run(int grid, boolean print, boolean batched) throws InterruptedException {
+    private void run(int grid, boolean print, boolean batched, JobSystem jobs) throws InterruptedException {
         SceneGraph scene = new SceneGraph(new ChangeClock(), (grid * grid + 64) * PROPS, 1 << 20); // room for step 3
         SpatialIndex index = new SpatialIndex(scene);
+        index.setJobs(jobs);
         try (TaskScheduler tasks = new TaskScheduler(); World world = new World(scene, tasks)) {
             Loader loader = new Loader(batched);
             world.register(LAYER, loader);
@@ -185,7 +191,8 @@ class StreamingBenchmark {
             if (print) {
                 System.out.printf(Locale.ROOT, "  %s: %d cells streaming into the loaded world (median of %d): attach "
                     + "and scene update %.1f ms, index update %.1f ms; leaving: %.1f ms and %.1f ms%n",
-                    batched ? "batched" : "nodes", extra, rounds,
+                    (batched ? "batched" : "nodes") + (jobs == null ? "" : ", index on " + jobs.threads() + " threads"),
+                    extra, rounds,
                     median(attachIn) / 1e6, median(indexIn) / 1e6, median(detachOut) / 1e6, median(indexOut) / 1e6);
             }
 
@@ -205,7 +212,8 @@ class StreamingBenchmark {
 
             if (print) {
                 System.out.printf(Locale.ROOT, "Streaming benchmark (%s): %,d cells of %d props, %,d nodes%n",
-                    batched ? "batches prepared in the background" : "nodes created on attach", cells, PROPS,
+                    (batched ? "batches prepared in the background" : "nodes created on attach")
+                        + (jobs == null ? "" : ", index on " + jobs.threads() + " threads"), cells, PROPS,
                     cells * PROPS);
                 System.out.printf(Locale.ROOT, "  request all: %.1f ms (%.2f us per cell)%n", (requested - start) / 1e6,
                     (requested - start) / 1e3 / cells);

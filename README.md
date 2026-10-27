@@ -81,6 +81,27 @@ Requesting a new cell (`RequestBenchmark`, after warm-up) costs 0.2 µs while it
 a teleport into 4,096 new cells. Earlier figures of 25-40 µs were JIT warm-up and the benchmark's loaders competing
 for the CPU. A lock-free lane queue could keep requests near 0.2 µs (true-sim/common-jobs#5).
 
+### Parallel work on a job system
+
+Two steps can run on a common-jobs `JobSystem`, with the same results as on one thread:
+
+```java
+JobSystem jobs = JobSystem.ofAvailableProcessors();
+index.setJobs(jobs);   // changed static groups rebuild their trees in parallel
+world.setJobs(jobs);   // moved interest sources select their cells in parallel
+```
+
+Each parallel part writes only its own data: a group its tree and box, a source its wanted sets. Group trees then take
+their top-level slots in order, and the world applies each source's requests and releases in the order the sources were
+added, so results do not depend on the number of threads. Call `update()` from the thread that submits to the job
+system.
+
+| Measured (32 threads)                                     | One thread | Job system |
+|-----------------------------------------------------------|------------|------------|
+| `SelectionBenchmark`: 512 players moving, `World.update()` | 53 ms      | 21 ms      |
+| index update, all 4,096 cells in one frame (nodes)        | 96 ms      | 17 ms      |
+| index update, 64 cells into the loaded world (nodes)      | 0.8 ms     | 0.3 ms     |
+
 ### Staged content: prepare in the background, apply cheaply
 
 A loader can build a cell's nodes as a `SceneBatch` on its lane: hierarchy, transforms, bounds, mobility and layers,
