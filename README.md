@@ -137,6 +137,9 @@ world.register(PROPS, propLoader);
 tasks.drainCompleted();             // once per frame: finished loads attach here
 ```
 
+- **Levels per layer:** each layer has its own cell sizes; within a layer each level is a whole multiple of the one
+  below, doubling by default (`Levels.grid(64, 6)`) or in steps of your choice (`Levels.sizes(64, 256, 4096, 16384)`,
+  e.g. ending in a very low-poly horizon).
 - **Several kinds of detail:** LOD chains and mips inside assets, HLOD proxies for groups of cells (house → block →
   district → horizon), and per-layer resolutions such as a terrain pyramid out to the horizon.
 - **Policies per layer:** always resident (full loading), distance bands, or screen-space error.

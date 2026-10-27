@@ -347,12 +347,13 @@ public final class World implements AutoCloseable {
      * that are not wanted themselves, since the wanted cells cover the area once.
      */
     private boolean replaced(Layer<?> layer, LongIntMap[] wanted, int level, long cell) {
+        Levels levels = layer.levels();
         int x = CellGrid.keyX(cell);
         int y = CellGrid.keyY(cell);
         int z = CellGrid.keyZ(cell);
         for (int coarser = level + 1; coarser < wanted.length; coarser++) {
-            int shift = coarser - level;
-            if (loading(layer, wanted, coarser, x >> shift, y >> shift, z >> shift)) {
+            long factor = levels.scale(coarser) / levels.scale(level);
+            if (loading(layer, wanted, coarser, floorDiv(x, factor), floorDiv(y, factor), floorDiv(z, factor))) {
                 return false;
             }
         }
@@ -365,11 +366,12 @@ public final class World implements AutoCloseable {
             return true;
         }
         boolean volumetric = layer.levels().isVolumetric();
-        int y0 = volumetric ? 2 * y : 0;
-        int y1 = volumetric ? 2 * y + 1 : 0;
+        int r = layer.levels().ratio(level);
+        int y0 = volumetric ? r * y : 0;
+        int y1 = volumetric ? r * y + r - 1 : 0;
         for (int cy = y0; cy <= y1; cy++) {
-            for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
-                for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
+            for (int cz = r * z; cz < r * z + r; cz++) {
+                for (int cx = r * x; cx < r * x + r; cx++) {
                     if (wanted[level - 1].get(CellGrid.key(cx, cy, cz)) >= 0) {
                         if (loading(layer, wanted, level - 1, cx, cy, cz)) {
                             return false;
@@ -381,6 +383,12 @@ public final class World implements AutoCloseable {
             }
         }
         return true;
+    }
+
+    /** {@code value / divisor}, rounded down (towards negative infinity). */
+    private static int floorDiv(int value, long divisor) {
+        long quotient = value / divisor;
+        return (int) (value < 0 && quotient * divisor != value ? quotient - 1 : quotient);
     }
 
     /** Whether a cell is wanted and still loading. */
@@ -486,11 +494,12 @@ public final class World implements AutoCloseable {
             if (distance < square(band) || distance < square(band * (1 + hysteresis))
                 && selectingPrevious[level].get(key) < 0 && heldBelow(level, x, y, z)) {
                 boolean volumetric = selectingLevels.isVolumetric();
-                int y0 = volumetric ? 2 * y : 0;
-                int y1 = volumetric ? 2 * y + 1 : 0;
+                int r = selectingLevels.ratio(level);
+                int y0 = volumetric ? r * y : 0;
+                int y1 = volumetric ? r * y + r - 1 : 0;
                 for (int cy = y0; cy <= y1; cy++) {
-                    for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
-                        for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
+                    for (int cz = r * z; cz < r * z + r; cz++) {
+                        for (int cx = r * x; cx < r * x + r; cx++) {
                             refine(level - 1, cx, cy, cz);
                         }
                     }
@@ -524,11 +533,12 @@ public final class World implements AutoCloseable {
             return false;
         }
         boolean volumetric = selectingLevels.isVolumetric();
-        int y0 = volumetric ? 2 * y : 0;
-        int y1 = volumetric ? 2 * y + 1 : 0;
+        int r = selectingLevels.ratio(level);
+        int y0 = volumetric ? r * y : 0;
+        int y1 = volumetric ? r * y + r - 1 : 0;
         for (int cy = y0; cy <= y1; cy++) {
-            for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
-                for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
+            for (int cz = r * z; cz < r * z + r; cz++) {
+                for (int cx = r * x; cx < r * x + r; cx++) {
                     if (held(level - 1, cx, cy, cz)) {
                         return true;
                     }
