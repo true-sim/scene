@@ -65,7 +65,7 @@ so it measures the world, scene and index rather than a disk.
 
 | Step                                       | Nodes created on attach     | Batches prepared in the background |
 |--------------------------------------------|-----------------------------|------------------------------------|
-| request a new cell (starts its load)       | 3-26 µs (#26)               | 3-26 µs                            |
+| request a new cell (starts its load)       | 0.2-1.4 µs, see below       | 0.2-1.4 µs                         |
 | attach a loaded cell (64 nodes)            | 18 µs                       | 12 µs                              |
 | request and release an already loaded cell | 16 ns                       | 16 ns                              |
 | 64 cells streaming into the loaded world   | 0.4 ms attach, 0.8 ms index | 0.3 ms attach, 0.1 ms index        |
@@ -75,6 +75,11 @@ so it measures the world, scene and index rather than a disk.
 Static nodes are indexed per cell: each streamed cell builds a small tree of its own, under a top-level tree of
 cells, so a cell coming or going costs about its own size. Before that, any static change rebuilt one tree over
 everything (154 ms at this size). A per-frame attach budget (#7) spreads bursts over frames.
+
+Requesting a new cell (`RequestBenchmark`, after warm-up) costs 0.2 µs while its load waits in a full lane, and
+1.2-1.4 µs while other loads finish meanwhile, as they contend for the lane's lock: about 5 ms on the main thread for
+a teleport into 4,096 new cells. Earlier figures of 25-40 µs were JIT warm-up and the benchmark's loaders competing
+for the CPU. A lock-free lane queue could keep requests near 0.2 µs (true-sim/common-jobs#5).
 
 ### Staged content: prepare in the background, apply cheaply
 
