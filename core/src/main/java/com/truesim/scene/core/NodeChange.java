@@ -14,6 +14,12 @@ public final class NodeChange {
     public static final int TRANSFORM = 1 << 2;
     /** The node got a new parent. */
     public static final int PARENT = 1 << 3;
+    /** The node's world bounds changed: it moved, or its local bounds changed. */
+    public static final int BOUNDS = 1 << 4;
+    /** The node's layers changed. */
+    public static final int LAYERS = 1 << 5;
+    /** The node's {@link Mobility} changed. */
+    public static final int MOBILITY = 1 << 6;
 
     private NodeChange() {
     }
