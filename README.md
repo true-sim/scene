@@ -83,24 +83,31 @@ for the CPU. A lock-free lane queue could keep requests near 0.2 µs (true-sim/c
 
 ### Parallel work on a job system
 
-Two steps can run on a common-jobs `JobSystem`, with the same results as on one thread:
+Four steps can run on a common-jobs `JobSystem`, with the same results as on one thread:
 
 ```java
 JobSystem jobs = JobSystem.ofAvailableProcessors();
+scene.setJobs(jobs);   // moved subtrees compute their world transforms and bounds in parallel
 index.setJobs(jobs);   // changed static groups rebuild their trees in parallel
 world.setJobs(jobs);   // moved interest sources select their cells in parallel
+
+index.queryFrustums(views, 5, VISIBLE.mask(), results); // a camera and four shadow cascades at once
 ```
 
-Each parallel part writes only its own data: a group its tree and box, a source its wanted sets. Group trees then take
-their top-level slots in order, and the world applies each source's requests and releases in the order the sources were
-added, so results do not depend on the number of threads. Call `update()` from the thread that submits to the job
-system.
+Each parallel part writes only its own data: a subtree its nodes, a group its tree and box, a source its wanted sets, a
+view its results. Merging happens in a fixed order: the scene records changes in the same order as on one thread, group
+trees take their top-level slots in order, and the world applies each source's requests and releases in the order the
+sources were added, so results do not depend on the number of threads. Call `update()` and `queryFrustums` from the
+thread that submits to the job system. The serial parts limit the gain where they dominate, e.g. recording changes.
 
 | Measured (32 threads)                                     | One thread | Job system |
 |-----------------------------------------------------------|------------|------------|
 | `SelectionBenchmark`: 512 players moving, `World.update()` | 53 ms      | 21 ms      |
 | index update, all 4,096 cells in one frame (nodes)        | 96 ms      | 17 ms      |
 | index update, 64 cells into the loaded world (nodes)      | 0.8 ms     | 0.3 ms     |
+| `SceneBenchmark`: 5 views at once, 102,000 nodes found     | 3.1 ms     | 1.3 ms     |
+| `SceneBenchmark`: first scene update, 1,010,000 nodes      | 58 ms      | 35 ms      |
+| `SceneBenchmark`: scene update, 10,000 moving nodes        | 0.54 ms    | 0.30 ms    |
 
 ### Staged content: prepare in the background, apply cheaply
 

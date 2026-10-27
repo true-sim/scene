@@ -93,65 +93,19 @@ public final class SpatialIndex {
         }
     };
 
-    // The running query.
-    private Visitor visitor;
-    private int mask;
-    private boolean stopped;
-    private int found;
-    private int currentGroup;
-    private double qa;
-    private double qb;
-    private double qc;
-    private double qd;
-    private double qe;
-    private double qf;
-    private Frustum qFrustum;
-    private long rayNode;
-    private final RayHit groupHit = new RayHit();
-    private final RayHit rayHit = new RayHit();
+    // Queries: one context for the public queries, one per job-system worker for several views at once.
+    private final Query query = new Query();
+    private Query[] workers = new Query[0];
+    private Frustum[] viewFrustums;
+    private int viewMask;
+    private ViewResults viewResults;
+    private final JobSystem.RangeTask queryViews = (from, to, worker) -> {
+        for (int view = from; view < to; view++) {
+            workers[worker].collect(view);
+        }
+    };
     private SceneGraph.Prepared[] adoptions = new SceneGraph.Prepared[0];
     private boolean[] adopting = new boolean[0];
-    private final Bvh.Visitor visitGroup = primitive ->
-        report(groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive]);
-    private final Bvh.Visitor visitDynamic = primitive -> report(dynamicNodes[primitive], dynamicLayers[primitive]);
-    private final Bvh.Visitor topAabb = primitive -> {
-        int group = currentGroup = topGroups[primitive];
-        if (group < 0) {
-            return true; // a free slot
-        }
-        groupTree[group].queryAabb(qa, qb, qc, qd, qe, qf, visitGroup);
-        return !stopped;
-    };
-    private final Bvh.Visitor topSphere = primitive -> {
-        int group = currentGroup = topGroups[primitive];
-        if (group < 0) {
-            return true;
-        }
-        groupTree[group].querySphere(qa, qb, qc, qd, visitGroup);
-        return !stopped;
-    };
-    private final Bvh.Visitor topFrustum = primitive -> {
-        int group = currentGroup = topGroups[primitive];
-        if (group < 0) {
-            return true;
-        }
-        groupTree[group].queryFrustum(qFrustum, visitGroup);
-        return !stopped;
-    };
-    private final Bvh.RayTest rayGroup = (primitive, ox, oy, oz, dx, dy, dz, max) -> rayTest(
-        groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive], groupTree[currentGroup]
-            .primitiveBounds(), primitive, ox, oy, oz, dx, dy, dz, max);
-    private final Bvh.RayTest rayTop = (primitive, ox, oy, oz, dx, dy, dz, max) -> {
-        int group = currentGroup = topGroups[primitive];
-        if (group >= 0 && groupTree[group].raycast(ox, oy, oz, dx, dy, dz, max, rayGroup, groupHit)) {
-            rayNode = groupNodes[group][groupHit.primitive()];
-            return groupHit.distance();
-        }
-        return Double.POSITIVE_INFINITY;
-    };
-    private final Bvh.RayTest rayDynamic = (primitive, ox, oy, oz, dx, dy, dz, max) ->
-        rayTest(dynamicNodes[primitive], dynamicLayers[primitive], dynamicBounds, primitive, ox, oy, oz, dx, dy, dz,
-            max);
 
     /** An index of {@code scene}'s nodes; empty until the first {@link #update()}. */
     @AllowAllocation("set up once")
@@ -227,8 +181,9 @@ public final class SpatialIndex {
     /**
      * Rebuilds the trees of changed static groups on {@code jobs}, e.g. when a burst of cells attaches; {@code null}
      * (the default) rebuilds on the calling thread. Trees are the same either way: each group is built from its own
-     * nodes, and groups take their top-level slots in the same order. The index stays single-threaded otherwise: call
-     * {@link #update()} from the thread that submits to {@code jobs}.
+     * nodes, and groups take their top-level slots in the same order. {@link #queryFrustums} also queries its views in
+     * parallel. The index stays single-threaded otherwise: call {@link #update()} and {@link #queryFrustums} from the
+     * thread that submits to {@code jobs}.
      */
     public void setJobs(JobSystem jobs) {
         this.jobs = jobs;
@@ -639,50 +594,57 @@ public final class SpatialIndex {
     /** Visits every node on {@code layerMask} whose box overlaps the box; returns how many were visited. */
     public int queryAabb(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, int layerMask,
         Visitor visitor) {
-        start(layerMask, visitor);
-        if (top != null) {
-            qa = minX;
-            qb = minY;
-            qc = minZ;
-            qd = maxX;
-            qe = maxY;
-            qf = maxZ;
-            top.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, topAabb);
-        }
-        if (dynamicBvh != null && !stopped) {
-            dynamicBvh.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, visitDynamic);
-        }
-        return finish();
+        return query.aabb(minX, minY, minZ, maxX, maxY, maxZ, layerMask, visitor);
     }
 
     /** Visits every node on {@code layerMask} whose box overlaps the sphere; returns how many were visited. */
     public int querySphere(double cx, double cy, double cz, double radius, int layerMask, Visitor visitor) {
-        start(layerMask, visitor);
-        if (top != null) {
-            qa = cx;
-            qb = cy;
-            qc = cz;
-            qd = radius;
-            top.querySphere(cx, cy, cz, radius, topSphere);
-        }
-        if (dynamicBvh != null && !stopped) {
-            dynamicBvh.querySphere(cx, cy, cz, radius, visitDynamic);
-        }
-        return finish();
+        return query.sphere(cx, cy, cz, radius, layerMask, visitor);
     }
 
     /** Visits every node on {@code layerMask} whose box is inside or crosses the frustum, e.g. to draw. */
     public int queryFrustum(Frustum frustum, int layerMask, Visitor visitor) {
-        start(layerMask, visitor);
-        if (top != null) {
-            qFrustum = frustum;
-            top.queryFrustum(frustum, topFrustum);
-            qFrustum = null;
+        return query.frustum(frustum, layerMask, visitor);
+    }
+
+    /**
+     * Finds the nodes on {@code layerMask} in each of the first {@code views} frustums, e.g. a camera and its shadow
+     * cascades, into {@code results}: view {@code v}'s nodes in the order {@link #queryFrustum} would visit them. The
+     * views are queried in parallel on the job system if there is one ({@link #setJobs}), with the same results.
+     */
+    public void queryFrustums(Frustum[] frustums, int views, int layerMask, ViewResults results) {
+        if (views < 0 || views > frustums.length) {
+            throw new IllegalArgumentException("No " + views + " views in " + frustums.length + " frustums");
         }
-        if (dynamicBvh != null && !stopped) {
-            dynamicBvh.queryFrustum(frustum, visitDynamic);
+        results.reset(views);
+        viewFrustums = frustums;
+        viewMask = layerMask;
+        viewResults = results;
+        try {
+            if (jobs != null && views > 1) {
+                workerQueries(jobs.threads());
+                jobs.parallelFor(views, 1, queryViews);
+            } else {
+                for (int view = 0; view < views; view++) {
+                    query.collect(view);
+                }
+            }
+        } finally {
+            viewFrustums = null;
+            viewResults = null;
         }
-        return finish();
+    }
+
+    /** One query context per worker of the job system, made when first needed. */
+    @AllowAllocation("making the workers' query contexts, once")
+    private void workerQueries(int threads) {
+        if (workers.length < threads) {
+            Query[] grown = Arrays.copyOf(workers, threads);
+            for (int i = workers.length; i < threads; i++) {
+                grown[i] = new Query();
+            }
+            workers = grown;
+        }
     }
 
     /**
@@ -691,58 +653,257 @@ public final class SpatialIndex {
      */
     public boolean raycast(double ox, double oy, double oz, double dx, double dy, double dz, double maxDistance,
         int layerMask, Hit hit) {
-        mask = layerMask;
-        hit.node = NodeHandle.NONE;
-        hit.distance = Double.POSITIVE_INFINITY;
-        double best = maxDistance;
-        if (top != null && top.raycast(ox, oy, oz, dx, dy, dz, best, rayTop, rayHit)) {
-            // The top level reports the group of the nearest hit; that group's test left its node in rayNode only if
-            // it was the last group tested, so ask the nearest group again.
-            rayTop.intersect(rayHit.primitive(), ox, oy, oz, dx, dy, dz, rayHit.distance());
-            best = rayHit.distance();
-            hit.node = rayNode;
-            hit.distance = best;
+        return query.raycast(ox, oy, oz, dx, dy, dz, maxDistance, layerMask, hit);
+    }
+
+    /** The nodes found per view by {@link #queryFrustums}. Reuse one; it grows as needed. */
+    public static final class ViewResults {
+
+        private long[][] nodes = new long[0][];
+        private int[] counts = new int[0];
+        private int views;
+
+        /** How many views the last query had. */
+        public int views() {
+            return views;
         }
-        if (dynamicBvh != null && dynamicBvh.raycast(ox, oy, oz, dx, dy, dz, best, rayDynamic, rayHit)) {
-            hit.node = dynamicNodes[rayHit.primitive()];
-            hit.distance = rayHit.distance();
+
+        /** How many nodes view {@code view} found. */
+        public int count(int view) {
+            check(view);
+            return counts[view];
         }
-        return hit.node != NodeHandle.NONE;
+
+        /** Node {@code index} of view {@code view}, in the order found. */
+        public long node(int view, int index) {
+            check(view);
+            if (index < 0 || index >= counts[view]) {
+                throw new IndexOutOfBoundsException(index);
+            }
+            return nodes[view][index];
+        }
+
+        private void check(int view) {
+            if (view < 0 || view >= views) {
+                throw new IndexOutOfBoundsException(view);
+            }
+        }
+
+        @AllowAllocation("growing")
+        private void reset(int viewCount) {
+            if (nodes.length < viewCount) {
+                int was = nodes.length;
+                nodes = Arrays.copyOf(nodes, viewCount);
+                counts = Arrays.copyOf(counts, viewCount);
+                for (int i = was; i < viewCount; i++) {
+                    nodes[i] = new long[64];
+                }
+            }
+            Arrays.fill(counts, 0, viewCount, 0);
+            views = viewCount;
+        }
+
+        /** Takes a view's nodes, collected apart, so threads do not write next to each other while collecting. */
+        @AllowAllocation("growing")
+        private void set(int view, long[] found, int count) {
+            if (nodes[view].length < count) {
+                nodes[view] = new long[Math.max(count, nodes[view].length * 2)];
+            }
+            System.arraycopy(found, 0, nodes[view], 0, count);
+            counts[view] = count;
+        }
     }
 
-    private void start(int layerMask, Visitor queryVisitor) {
-        this.mask = layerMask;
-        this.visitor = queryVisitor;
-        this.stopped = false;
-        this.found = 0;
-    }
+    /**
+     * The state of a running query and its visitors, made once: one for the queries above, one per job-system worker
+     * for {@link #queryFrustums}. The trees are only read, so contexts run side by side.
+     */
+    private final class Query {
 
-    private int finish() {
-        int count = found;
-        found = 0;
-        visitor = null;
-        return count;
-    }
+        private Visitor visitor;
+        private int mask;
+        private boolean stopped;
+        private int found;
+        private int currentGroup;
+        private double qa;
+        private double qb;
+        private double qc;
+        private double qd;
+        private double qe;
+        private double qf;
+        private Frustum qFrustum;
+        private long rayNode;
+        private long[] collected = new long[64];
+        private int collectedCount;
+        private final RayHit groupHit = new RayHit();
+        private final RayHit rayHit = new RayHit();
+        private final Visitor collect = node -> {
+            if (collectedCount == collected.length) {
+                grow();
+            }
+            collected[collectedCount++] = node;
+            return true;
+        };
+        private final Bvh.Visitor visitGroup = primitive ->
+            report(groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive]);
+        private final Bvh.Visitor visitDynamic = primitive -> report(dynamicNodes[primitive], dynamicLayers[primitive]);
+        private final Bvh.Visitor topAabb = primitive -> {
+            int group = currentGroup = topGroups[primitive];
+            if (group < 0) {
+                return true; // a free slot
+            }
+            groupTree[group].queryAabb(qa, qb, qc, qd, qe, qf, visitGroup);
+            return !stopped;
+        };
+        private final Bvh.Visitor topSphere = primitive -> {
+            int group = currentGroup = topGroups[primitive];
+            if (group < 0) {
+                return true;
+            }
+            groupTree[group].querySphere(qa, qb, qc, qd, visitGroup);
+            return !stopped;
+        };
+        private final Bvh.Visitor topFrustum = primitive -> {
+            int group = currentGroup = topGroups[primitive];
+            if (group < 0) {
+                return true;
+            }
+            groupTree[group].queryFrustum(qFrustum, visitGroup);
+            return !stopped;
+        };
+        private final Bvh.RayTest rayGroup = (primitive, ox, oy, oz, dx, dy, dz, max) -> rayTest(
+            groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive], groupTree[currentGroup]
+                .primitiveBounds(), primitive, ox, oy, oz, dx, dy, dz, max);
+        private final Bvh.RayTest rayTop = (primitive, ox, oy, oz, dx, dy, dz, max) -> {
+            int group = currentGroup = topGroups[primitive];
+            if (group >= 0 && groupTree[group].raycast(ox, oy, oz, dx, dy, dz, max, rayGroup, groupHit)) {
+                rayNode = groupNodes[group][groupHit.primitive()];
+                return groupHit.distance();
+            }
+            return Double.POSITIVE_INFINITY;
+        };
+        private final Bvh.RayTest rayDynamic = (primitive, ox, oy, oz, dx, dy, dz, max) ->
+            rayTest(dynamicNodes[primitive], dynamicLayers[primitive], dynamicBounds, primitive, ox, oy, oz, dx, dy,
+                dz, max);
 
-    private boolean report(long node, int layers) {
-        if (node == NodeHandle.NONE || (layers & mask) == 0) { // free dynamic slots hold no node
+        @AllowAllocation("set up once")
+        Query() {
+        }
+
+        int aabb(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, int layerMask,
+            Visitor queryVisitor) {
+            start(layerMask, queryVisitor);
+            if (top != null) {
+                qa = minX;
+                qb = minY;
+                qc = minZ;
+                qd = maxX;
+                qe = maxY;
+                qf = maxZ;
+                top.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, topAabb);
+            }
+            if (dynamicBvh != null && !stopped) {
+                dynamicBvh.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, visitDynamic);
+            }
+            return finish();
+        }
+
+        int sphere(double cx, double cy, double cz, double radius, int layerMask, Visitor queryVisitor) {
+            start(layerMask, queryVisitor);
+            if (top != null) {
+                qa = cx;
+                qb = cy;
+                qc = cz;
+                qd = radius;
+                top.querySphere(cx, cy, cz, radius, topSphere);
+            }
+            if (dynamicBvh != null && !stopped) {
+                dynamicBvh.querySphere(cx, cy, cz, radius, visitDynamic);
+            }
+            return finish();
+        }
+
+        int frustum(Frustum frustum, int layerMask, Visitor queryVisitor) {
+            start(layerMask, queryVisitor);
+            if (top != null) {
+                qFrustum = frustum;
+                top.queryFrustum(frustum, topFrustum);
+                qFrustum = null;
+            }
+            if (dynamicBvh != null && !stopped) {
+                dynamicBvh.queryFrustum(frustum, visitDynamic);
+            }
+            return finish();
+        }
+
+        /** Queries view {@code viewIndex} of the running {@link #queryFrustums} into its results. */
+        void collect(int viewIndex) {
+            collectedCount = 0;
+            frustum(viewFrustums[viewIndex], viewMask, collect);
+            viewResults.set(viewIndex, collected, collectedCount);
+        }
+
+        @AllowAllocation("growing")
+        private void grow() {
+            collected = Arrays.copyOf(collected, collected.length * 2);
+        }
+
+        boolean raycast(double ox, double oy, double oz, double dx, double dy, double dz, double maxDistance,
+            int layerMask, Hit hit) {
+            mask = layerMask;
+            hit.node = NodeHandle.NONE;
+            hit.distance = Double.POSITIVE_INFINITY;
+            double best = maxDistance;
+            if (top != null && top.raycast(ox, oy, oz, dx, dy, dz, best, rayTop, rayHit)) {
+                // The top level reports the group of the nearest hit; that group's test left its node in rayNode only
+                // if it was the last group tested, so ask the nearest group again.
+                rayTop.intersect(rayHit.primitive(), ox, oy, oz, dx, dy, dz, rayHit.distance());
+                best = rayHit.distance();
+                hit.node = rayNode;
+                hit.distance = best;
+            }
+            if (dynamicBvh != null && dynamicBvh.raycast(ox, oy, oz, dx, dy, dz, best, rayDynamic, rayHit)) {
+                hit.node = dynamicNodes[rayHit.primitive()];
+                hit.distance = rayHit.distance();
+            }
+            return hit.node != NodeHandle.NONE;
+        }
+
+        private void start(int layerMask, Visitor queryVisitor) {
+            this.mask = layerMask;
+            this.visitor = queryVisitor;
+            this.stopped = false;
+            this.found = 0;
+        }
+
+        private int finish() {
+            int count = found;
+            found = 0;
+            visitor = null;
+            return count;
+        }
+
+        private boolean report(long node, int layers) {
+            if (node == NodeHandle.NONE || (layers & mask) == 0) { // free dynamic slots hold no node
+                return true;
+            }
+            found++;
+            if (!visitor.visit(node)) {
+                stopped = true;
+                return false;
+            }
             return true;
         }
-        found++;
-        if (!visitor.visit(node)) {
-            stopped = true;
-            return false;
-        }
-        return true;
-    }
 
-    private double rayTest(long node, int layers, AabbArray bounds, int primitive, double ox, double oy, double oz,
-        double dx, double dy, double dz, double max) {
-        if (node == NodeHandle.NONE || (layers & mask) == 0) {
-            return Double.POSITIVE_INFINITY;
+        private double rayTest(long node, int layers, AabbArray bounds, int primitive, double ox, double oy,
+            double oz, double dx, double dy, double dz, double max) {
+            if (node == NodeHandle.NONE || (layers & mask) == 0) {
+                return Double.POSITIVE_INFINITY;
+            }
+            double t = Intersections.rayAabb(ox, oy, oz, dx, dy, dz, bounds.get(primitive, 0),
+                bounds.get(primitive, 1), bounds.get(primitive, 2), bounds.get(primitive, 3), bounds.get(primitive, 4),
+                bounds.get(primitive, 5));
+            return t <= max ? t : Double.POSITIVE_INFINITY;
         }
-        double t = Intersections.rayAabb(ox, oy, oz, dx, dy, dz, bounds.get(primitive, 0), bounds.get(primitive, 1),
-            bounds.get(primitive, 2), bounds.get(primitive, 3), bounds.get(primitive, 4), bounds.get(primitive, 5));
-        return t <= max ? t : Double.POSITIVE_INFINITY;
     }
 }
