@@ -69,10 +69,13 @@ so it measures the world, scene and index rather than a disk.
 | attach a loaded cell (64 nodes)               | 18.5 µs                   |
 | request and release an already loaded cell   | 0.2 µs                    |
 | release a cell (detach 64 nodes)              | 5 µs                      |
-| frame attaching 2,048 cells at once           | 303 ms, 154 ms of it the static index |
+| 64 cells streaming into the loaded world       | 0.5 ms attach, 2.2 ms index |
+| 64 cells leaving it                           | 1.1 ms                    |
 
-The last line is what the next steps fix: per-cell static indexes (#25), so a streamed cell indexes only its own
-nodes, and a per-frame attach budget (#7), so a burst of finished loads spreads over frames.
+Static nodes are indexed per cell: each streamed cell builds a small tree of its own, under a top-level tree of
+cells, so a cell coming or going costs about its own size. Before that, any static change rebuilt one tree over
+everything (154 ms at this size). Attaching all 4,096 cells in a single frame still takes about 160 ms; a per-frame
+attach budget (#7) spreads such bursts over frames.
 
 ### Positions
 

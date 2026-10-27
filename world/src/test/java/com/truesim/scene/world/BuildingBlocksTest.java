@@ -51,7 +51,7 @@ class BuildingBlocksTest {
     @Test
     void contentRemovesWhatItAdded() {
         SceneGraph scene = new SceneGraph(new ChangeClock());
-        CellContent content = new CellContent(scene);
+        CellContent content = new CellContent(scene, 3);
         long root = content.create();
         content.create(root);
         long outside = scene.create();
@@ -62,6 +62,9 @@ class BuildingBlocksTest {
         assertThat(content.nodeCount()).isEqualTo(23);
         assertThat(content.node(0)).isEqualTo(root);
         assertThat(content.node(2)).isEqualTo(adopted);
+        assertThat(content.group()).isEqualTo(3);
+        assertThat(scene.group(adopted)).isEqualTo(3);
+        assertThat(scene.group(outside)).isZero();
         assertThatThrownBy(() -> content.node(23)).isInstanceOf(IndexOutOfBoundsException.class);
         assertThatThrownBy(() -> content.node(-1)).isInstanceOf(IndexOutOfBoundsException.class);
         scene.remove(content.node(content.nodeCount() - 1)); // removed by the game already: skipped

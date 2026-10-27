@@ -261,7 +261,7 @@ public final class World implements AutoCloseable {
             content = Arrays.copyOf(content, capacity);
             free = Arrays.copyOf(free, capacity);
         }
-        content[entryCount] = new CellContent(scene);
+        content[entryCount] = new CellContent(scene, entryCount + 1); // group 0 is everything not streamed
         return entryCount++;
     }
 

@@ -11,12 +11,14 @@ import java.util.Arrays;
 public final class CellContent {
 
     private final SceneGraph scene;
+    private final int group;
     private Cell cell;
     private long[] nodes = new long[8];
     private int count;
 
-    CellContent(SceneGraph scene) {
+    CellContent(SceneGraph scene, int group) {
         this.scene = scene;
+        this.group = group;
     }
 
     void reset(Cell newCell) {
@@ -27,6 +29,11 @@ public final class CellContent {
     /** The scene to fill. Nodes made directly in it are not removed with the cell unless {@link #adopt}ed. */
     public SceneGraph scene() {
         return scene;
+    }
+
+    /** The scene group of this cell's nodes (see {@link SceneGraph#setGroup}). */
+    public int group() {
+        return group;
     }
 
     /** The cell this content belongs to. */
@@ -44,13 +51,17 @@ public final class CellContent {
         return adopt(scene.create(parent));
     }
 
-    /** Makes {@code node} part of this cell, so it is removed with it; returns it. */
+    /**
+     * Makes {@code node} part of this cell, so it is removed with it, and puts it in the cell's group, so the spatial
+     * index keeps the cell's static nodes in a tree of their own; returns it.
+     */
     @AllowAllocation("growing")
     public long adopt(long node) {
         if (count == nodes.length) {
             nodes = Arrays.copyOf(nodes, count * 2);
         }
         nodes[count++] = node;
+        scene.setGroup(node, group);
         return node;
     }
 

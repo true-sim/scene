@@ -20,6 +20,8 @@ public final class NodeChange {
     public static final int LAYERS = 1 << 5;
     /** The node's {@link Mobility} changed. */
     public static final int MOBILITY = 1 << 6;
+    /** The node's group changed; see {@link SceneGraph#setGroup}. */
+    public static final int GROUP = 1 << 7;
 
     private NodeChange() {
     }
