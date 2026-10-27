@@ -17,9 +17,11 @@ import java.util.Arrays;
  *
  * <p>Static and dynamic nodes ({@link Mobility}) are indexed apart, so the cost per frame follows what moves:
  * <ul>
- *   <li>Static nodes are in a hierarchy that is rebuilt only when static nodes are added, removed or moved, e.g.
- *       when the world streams cells in or out.</li>
- *   <li>Dynamic nodes are in a hierarchy with spare room: each frame it refits the boxes of the nodes that moved;
+ *   <li>Static nodes are indexed per {@linkplain SceneGraph#setGroup group}: each group has a tree of its own, and a
+ *       top-level tree holds the groups' boxes. Changing a group's static nodes rebuilds only its tree, then refits
+ *       the top level (or rebuilds it when groups appear or disappear). Streaming puts each cell in a group, so a cell
+ *       coming or going costs about its own size.</li>
+ *   <li>Dynamic nodes are in a tree with spare room: each frame it refits the boxes of the nodes that moved;
  *       spawning and despawning reuse slots. It is rebuilt only when its quality has degraded too far
  *       ({@link #setRebuildThreshold}) or it has to grow.</li>
  * </ul>
@@ -32,8 +34,8 @@ import java.util.Arrays;
  * if (index.raycast(origin, direction, 100, PICKABLE.mask(), hit)) select(hit.node());
  * }</pre>
  *
- * <p>Updating and querying allocate nothing, except when a hierarchy is built or rebuilt. Queries are not reentrant:
- * do not query from inside a query's visitor. One thread at a time.
+ * <p>Updating and querying allocate nothing, except when a tree is built or rebuilt. Queries are not reentrant: do not
+ * query from inside a query's visitor. One thread at a time.
  */
 public final class SpatialIndex {
 
@@ -47,16 +49,26 @@ public final class SpatialIndex {
     private final NodeChange.Visitor onChange = this::changed;
     private final SceneGraph.NodeVisitor onNode = this::place;
 
-    // Membership, by scene slot.
+    // Membership, by scene slot: where, at which position, and for static nodes in which group.
     private byte[] where = new byte[0];
     private int[] position = new int[0];
+    private int[] groupOf = new int[0];
 
-    // Static nodes: dense, rebuilt on change.
-    private long[] staticNodes = new long[16];
-    private int[] staticLayers = new int[16];
+    // Static nodes, by group: dense arrays, a tree each, and a box each.
+    private long[][] groupNodes = new long[0][];
+    private int[][] groupLayers = new int[0][];
+    private int[] groupCount = new int[0];
+    private Bvh[] groupTree = new Bvh[0];
+    private double[] groupBox = new double[0];
+    private boolean[] groupDirty = new boolean[0];
+    private int[] dirtyGroups = new int[0];
+    private int dirtyGroupCount;
     private int staticCount;
-    private boolean staticChanged;
-    private Bvh staticBvh;
+
+    // The top level: one primitive per group with static nodes.
+    private Bvh top;
+    private int[] topGroups = new int[0];
+    private boolean topMembershipChanged;
 
     // Dynamic nodes: slots with a free list, refit on change.
     private long[] dynamicNodes = new long[0];
@@ -74,13 +86,49 @@ public final class SpatialIndex {
     private int mask;
     private boolean stopped;
     private int found;
-    private final Bvh.Visitor visitStatic = primitive -> report(staticNodes[primitive], staticLayers[primitive]);
-    private final Bvh.Visitor visitDynamic = primitive -> report(dynamicNodes[primitive], dynamicLayers[primitive]);
-    private final Bvh.RayTest rayStatic = (primitive, ox, oy, oz, dx, dy, dz, max) ->
-        rayTest(staticNodes[primitive], staticLayers[primitive], staticBvh.primitiveBounds(), primitive, ox, oy, oz, dx, dy, dz, max);
-    private final Bvh.RayTest rayDynamic = (primitive, ox, oy, oz, dx, dy, dz, max) ->
-        rayTest(dynamicNodes[primitive], dynamicLayers[primitive], dynamicBounds, primitive, ox, oy, oz, dx, dy, dz, max);
+    private int currentGroup;
+    private double qa;
+    private double qb;
+    private double qc;
+    private double qd;
+    private double qe;
+    private double qf;
+    private Frustum qFrustum;
+    private long rayNode;
+    private final RayHit groupHit = new RayHit();
     private final RayHit rayHit = new RayHit();
+    private final Bvh.Visitor visitGroup = primitive ->
+        report(groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive]);
+    private final Bvh.Visitor visitDynamic = primitive -> report(dynamicNodes[primitive], dynamicLayers[primitive]);
+    private final Bvh.Visitor topAabb = primitive -> {
+        int group = currentGroup = topGroups[primitive];
+        groupTree[group].queryAabb(qa, qb, qc, qd, qe, qf, visitGroup);
+        return !stopped;
+    };
+    private final Bvh.Visitor topSphere = primitive -> {
+        int group = currentGroup = topGroups[primitive];
+        groupTree[group].querySphere(qa, qb, qc, qd, visitGroup);
+        return !stopped;
+    };
+    private final Bvh.Visitor topFrustum = primitive -> {
+        int group = currentGroup = topGroups[primitive];
+        groupTree[group].queryFrustum(qFrustum, visitGroup);
+        return !stopped;
+    };
+    private final Bvh.RayTest rayGroup = (primitive, ox, oy, oz, dx, dy, dz, max) -> rayTest(
+        groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive], groupTree[currentGroup]
+            .primitiveBounds(), primitive, ox, oy, oz, dx, dy, dz, max);
+    private final Bvh.RayTest rayTop = (primitive, ox, oy, oz, dx, dy, dz, max) -> {
+        int group = currentGroup = topGroups[primitive];
+        if (groupTree[group].raycast(ox, oy, oz, dx, dy, dz, max, rayGroup, groupHit)) {
+            rayNode = groupNodes[group][groupHit.primitive()];
+            return groupHit.distance();
+        }
+        return Double.POSITIVE_INFINITY;
+    };
+    private final Bvh.RayTest rayDynamic = (primitive, ox, oy, oz, dx, dy, dz, max) ->
+        rayTest(dynamicNodes[primitive], dynamicLayers[primitive], dynamicBounds, primitive, ox, oy, oz, dx, dy, dz,
+            max);
 
     /** An index of {@code scene}'s nodes; empty until the first {@link #update()}. */
     @AllowAllocation("set up once")
@@ -117,8 +165,9 @@ public final class SpatialIndex {
 
     /**
      * Brings the index up to the scene's last {@link SceneGraph#update()}: adds, moves and removes nodes from the
-     * change log, then refits or rebuilds the hierarchies that changed. If the scene's log no longer reaches back to
-     * the previous update, the index rebuilds from all nodes.
+     * change log, then rebuilds the trees of the static groups that changed, refits or rebuilds the top level, and
+     * refits the dynamic tree. If the scene's log no longer reaches back to the previous update, the index rebuilds
+     * from all nodes.
      */
     public void update() {
         long since = cursor.mark();
@@ -126,10 +175,14 @@ public final class SpatialIndex {
             clear();
             scene.forEach(onNode);
         }
-        if (staticChanged) {
-            rebuildStatic();
+        if (dirtyGroupCount > 0) {
+            for (int i = 0; i < dirtyGroupCount; i++) {
+                rebuildGroup(dirtyGroups[i]);
+            }
+            dirtyGroupCount = 0;
+            updateTop();
         }
-        if (dynamicMoved) { // adding a dynamic node built its hierarchy
+        if (dynamicMoved) { // adding a dynamic node built its tree
             dynamicBvh.refit();
             if (dynamicBvh.degradation() > rebuildThreshold) {
                 dynamicBvh.rebuild();
@@ -139,7 +192,7 @@ public final class SpatialIndex {
     }
 
     /**
-     * How much worse than freshly built the dynamic hierarchy may get (estimated query cost, 2 = twice) before it is
+     * How much worse than freshly built the dynamic tree may get (estimated query cost, 2 = twice) before it is
      * rebuilt instead of refit. Lower is faster queries, higher is fewer rebuilds.
      */
     public void setRebuildThreshold(double threshold) {
@@ -157,6 +210,11 @@ public final class SpatialIndex {
     /** How many dynamic nodes are indexed. */
     public int dynamicCount() {
         return dynamicCount;
+    }
+
+    /** How many groups have static nodes. */
+    public int groupCount() {
+        return top == null ? 0 : top.primitiveCount();
     }
 
     private void changed(long node, int changes) {
@@ -183,21 +241,23 @@ public final class SpatialIndex {
     private void growMembership(int length) {
         where = Arrays.copyOf(where, Math.max(length, where.length * 2));
         position = Arrays.copyOf(position, where.length);
+        groupOf = Arrays.copyOf(groupOf, where.length);
     }
 
-    /** Puts a live node where its bounds and mobility say, or updates its box there. */
+    /** Puts a live node where its bounds, mobility and group say, or updates its box there. */
     private void place(long node) {
         int slot = NodeHandle.index(slotSafe(node));
         byte wanted = !scene.hasBounds(node) ? NOWHERE : scene.mobility(node) == Mobility.STATIC ? STATIC : DYNAMIC;
-        if (where[slot] != NOWHERE && where[slot] != wanted) {
+        int group = scene.group(node);
+        if (where[slot] != NOWHERE && (where[slot] != wanted || wanted == STATIC && groupOf[slot] != group)) {
             remove(slot);
         }
         if (wanted == STATIC) {
             if (where[slot] == NOWHERE) {
-                addStatic(slot, node);
+                addStatic(slot, node, group);
             }
-            staticLayers[position[slot]] = scene.layers(node);
-            staticChanged = true;
+            groupLayers[group][position[slot]] = scene.layers(node);
+            markGroup(group);
         } else if (wanted == DYNAMIC) {
             if (where[slot] == NOWHERE) {
                 addDynamic(slot, node);
@@ -211,13 +271,14 @@ public final class SpatialIndex {
     private void remove(int slot) {
         int at = position[slot];
         if (where[slot] == STATIC) {
-            int last = --staticCount;
-            long moved = staticNodes[last];
-            staticNodes[at] = moved;
-            staticLayers[at] = staticLayers[last];
+            int group = groupOf[slot];
+            int last = --groupCount[group];
+            long moved = groupNodes[group][last];
+            groupNodes[group][at] = moved;
+            groupLayers[group][at] = groupLayers[group][last];
             position[NodeHandle.index(moved)] = at;
-            staticNodes[last] = NodeHandle.NONE;
-            staticChanged = true;
+            staticCount--;
+            markGroup(group);
         } else {
             dynamicNodes[at] = NodeHandle.NONE; // its box stays until the slot is reused; queries skip it
             freeDynamic[freeCount++] = at;
@@ -226,16 +287,122 @@ public final class SpatialIndex {
         where[slot] = NOWHERE;
     }
 
+    // ---------------------------------------------------------------- static groups
+
     @AllowAllocation("growing")
-    private void addStatic(int slot, long node) {
-        if (staticCount == staticNodes.length) {
-            staticNodes = Arrays.copyOf(staticNodes, staticCount * 2);
-            staticLayers = Arrays.copyOf(staticLayers, staticCount * 2);
+    private void addStatic(int slot, long node, int group) {
+        if (group >= groupCount.length) {
+            int length = Math.max(group + 1, groupCount.length * 2);
+            groupNodes = Arrays.copyOf(groupNodes, length);
+            groupLayers = Arrays.copyOf(groupLayers, length);
+            groupCount = Arrays.copyOf(groupCount, length);
+            groupTree = Arrays.copyOf(groupTree, length);
+            groupBox = Arrays.copyOf(groupBox, length * 6);
+            groupDirty = Arrays.copyOf(groupDirty, length);
+            dirtyGroups = Arrays.copyOf(dirtyGroups, length);
         }
-        position[slot] = staticCount;
-        staticNodes[staticCount++] = node;
+        if (groupNodes[group] == null) {
+            groupNodes[group] = new long[8];
+            groupLayers[group] = new int[8];
+        } else if (groupCount[group] == groupNodes[group].length) {
+            groupNodes[group] = Arrays.copyOf(groupNodes[group], groupCount[group] * 2);
+            groupLayers[group] = Arrays.copyOf(groupLayers[group], groupCount[group] * 2);
+        }
+        position[slot] = groupCount[group];
+        groupNodes[group][groupCount[group]++] = node;
+        groupOf[slot] = group;
         where[slot] = STATIC;
+        staticCount++;
     }
+
+    private void markGroup(int group) {
+        if (!groupDirty[group]) {
+            groupDirty[group] = true;
+            dirtyGroups[dirtyGroupCount++] = group;
+        }
+    }
+
+    /** Rebuilds a group's tree and box from its nodes' current bounds; notes whether it joined or left the top. */
+    @AllowAllocation("rebuilding a group's tree, when its static nodes changed")
+    private void rebuildGroup(int group) {
+        groupDirty[group] = false;
+        int count = groupCount[group];
+        boolean wasOnTop = groupTree[group] != null;
+        if (count == 0) {
+            groupTree[group] = null;
+            topMembershipChanged |= wasOnTop;
+            return;
+        }
+        AabbArray bounds = AabbArray.onHeap(count);
+        AabbArray world = scene.worldBounds();
+        double minX = Double.POSITIVE_INFINITY;
+        double minY = Double.POSITIVE_INFINITY;
+        double minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY;
+        double maxY = Double.NEGATIVE_INFINITY;
+        double maxZ = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < count; i++) {
+            int slot = NodeHandle.index(groupNodes[group][i]);
+            copyBox(world, slot, bounds, i);
+            minX = Math.min(minX, world.get(slot, 0));
+            minY = Math.min(minY, world.get(slot, 1));
+            minZ = Math.min(minZ, world.get(slot, 2));
+            maxX = Math.max(maxX, world.get(slot, 3));
+            maxY = Math.max(maxY, world.get(slot, 4));
+            maxZ = Math.max(maxZ, world.get(slot, 5));
+        }
+        int box = group * 6;
+        groupBox[box] = minX;
+        groupBox[box + 1] = minY;
+        groupBox[box + 2] = minZ;
+        groupBox[box + 3] = maxX;
+        groupBox[box + 4] = maxY;
+        groupBox[box + 5] = maxZ;
+        groupTree[group] = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
+        topMembershipChanged |= !wasOnTop;
+    }
+
+    /** Rebuilds the top level when groups joined or left it; otherwise refits it to the groups' new boxes. */
+    @AllowAllocation("rebuilding the top level, when groups appeared or disappeared")
+    private void updateTop() {
+        if (topMembershipChanged) {
+            topMembershipChanged = false;
+            int groups = 0;
+            for (int group = 0; group < groupTree.length; group++) {
+                if (groupTree[group] != null) {
+                    groups++;
+                }
+            }
+            if (groups == 0) {
+                top = null;
+                return;
+            }
+            topGroups = new int[groups];
+            AabbArray boxes = AabbArray.onHeap(groups);
+            int next = 0;
+            for (int group = 0; group < groupTree.length; group++) {
+                if (groupTree[group] != null) {
+                    topGroups[next] = group;
+                    setBox(boxes, next++, group);
+                }
+            }
+            top = Bvh.build(Arena.ofAuto(), boxes, LEAF_SIZE);
+            return;
+        }
+        AabbArray boxes = top.primitiveBounds();
+        for (int i = 0; i < topGroups.length; i++) {
+            setBox(boxes, i, topGroups[i]);
+        }
+        top.refit();
+    }
+
+    private void setBox(AabbArray boxes, int index, int group) {
+        int box = group * 6;
+        boxes.set(index, groupBox[box], groupBox[box + 1], groupBox[box + 2], groupBox[box + 3], groupBox[box + 4],
+            groupBox[box + 5]);
+    }
+
+    // ---------------------------------------------------------------- dynamic nodes
 
     private void addDynamic(int slot, long node) {
         if (freeCount == 0) {
@@ -270,26 +437,15 @@ public final class SpatialIndex {
         dynamicBvh = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
     }
 
-    @AllowAllocation("rebuilding the static hierarchy, when static nodes changed")
-    private void rebuildStatic() {
-        staticChanged = false;
-        if (staticCount == 0) {
-            staticBvh = null;
-            return;
-        }
-        AabbArray bounds = AabbArray.onHeap(staticCount);
-        AabbArray world = scene.worldBounds();
-        for (int i = 0; i < staticCount; i++) {
-            copyBox(world, NodeHandle.index(staticNodes[i]), bounds, i);
-        }
-        staticBvh = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
-    }
-
     private void clear() {
         Arrays.fill(where, NOWHERE);
-        Arrays.fill(staticNodes, NodeHandle.NONE);
+        for (int group = 0; group < groupCount.length; group++) {
+            if (groupCount[group] > 0) {
+                groupCount[group] = 0;
+                markGroup(group);
+            }
+        }
         staticCount = 0;
-        staticChanged = true;
         for (int i = 0; i < dynamicNodes.length; i++) {
             if (dynamicNodes[i] != NodeHandle.NONE) {
                 dynamicNodes[i] = NodeHandle.NONE;
@@ -310,8 +466,14 @@ public final class SpatialIndex {
     public int queryAabb(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, int layerMask,
         Visitor visitor) {
         start(layerMask, visitor);
-        if (staticBvh != null) {
-            staticBvh.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, visitStatic);
+        if (top != null) {
+            qa = minX;
+            qb = minY;
+            qc = minZ;
+            qd = maxX;
+            qe = maxY;
+            qf = maxZ;
+            top.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, topAabb);
         }
         if (dynamicBvh != null && !stopped) {
             dynamicBvh.queryAabb(minX, minY, minZ, maxX, maxY, maxZ, visitDynamic);
@@ -322,8 +484,12 @@ public final class SpatialIndex {
     /** Visits every node on {@code layerMask} whose box overlaps the sphere; returns how many were visited. */
     public int querySphere(double cx, double cy, double cz, double radius, int layerMask, Visitor visitor) {
         start(layerMask, visitor);
-        if (staticBvh != null) {
-            staticBvh.querySphere(cx, cy, cz, radius, visitStatic);
+        if (top != null) {
+            qa = cx;
+            qb = cy;
+            qc = cz;
+            qd = radius;
+            top.querySphere(cx, cy, cz, radius, topSphere);
         }
         if (dynamicBvh != null && !stopped) {
             dynamicBvh.querySphere(cx, cy, cz, radius, visitDynamic);
@@ -334,8 +500,10 @@ public final class SpatialIndex {
     /** Visits every node on {@code layerMask} whose box is inside or crosses the frustum, e.g. to draw. */
     public int queryFrustum(Frustum frustum, int layerMask, Visitor visitor) {
         start(layerMask, visitor);
-        if (staticBvh != null) {
-            staticBvh.queryFrustum(frustum, visitStatic);
+        if (top != null) {
+            qFrustum = frustum;
+            top.queryFrustum(frustum, topFrustum);
+            qFrustum = null;
         }
         if (dynamicBvh != null && !stopped) {
             dynamicBvh.queryFrustum(frustum, visitDynamic);
@@ -353,9 +521,12 @@ public final class SpatialIndex {
         hit.node = NodeHandle.NONE;
         hit.distance = Double.POSITIVE_INFINITY;
         double best = maxDistance;
-        if (staticBvh != null && staticBvh.raycast(ox, oy, oz, dx, dy, dz, best, rayStatic, rayHit)) {
+        if (top != null && top.raycast(ox, oy, oz, dx, dy, dz, best, rayTop, rayHit)) {
+            // The top level reports the group of the nearest hit; that group's test left its node in rayNode only if
+            // it was the last group tested, so ask the nearest group again.
+            rayTop.intersect(rayHit.primitive(), ox, oy, oz, dx, dy, dz, rayHit.distance());
             best = rayHit.distance();
-            hit.node = staticNodes[rayHit.primitive()];
+            hit.node = rayNode;
             hit.distance = best;
         }
         if (dynamicBvh != null && dynamicBvh.raycast(ox, oy, oz, dx, dy, dz, best, rayDynamic, rayHit)) {
@@ -380,7 +551,7 @@ public final class SpatialIndex {
     }
 
     private boolean report(long node, int layers) {
-        if (node == NodeHandle.NONE || (layers & mask) == 0) {
+        if (node == NodeHandle.NONE || (layers & mask) == 0) { // free dynamic slots hold no node
             return true;
         }
         found++;
@@ -391,8 +562,8 @@ public final class SpatialIndex {
         return true;
     }
 
-    private double rayTest(long node, int layers, AabbArray bounds, int primitive, double ox, double oy, double oz, double dx,
-        double dy, double dz, double max) {
+    private double rayTest(long node, int layers, AabbArray bounds, int primitive, double ox, double oy, double oz,
+        double dx, double dy, double dz, double max) {
         if (node == NodeHandle.NONE || (layers & mask) == 0) {
             return Double.POSITIVE_INFINITY;
         }

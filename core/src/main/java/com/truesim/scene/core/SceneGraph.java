@@ -62,6 +62,7 @@ public final class SceneGraph {
     private AabbArray worldBounds;
     private boolean[] dynamic;
     private int[] layers;
+    private int[] groups;
     private long[] version;
     private int[] freeSlots;
     private int freeCount;
@@ -128,6 +129,7 @@ public final class SceneGraph {
         stack = Arrays.copyOf(stack == null ? new int[0] : stack, capacity);
         dynamic = Arrays.copyOf(dynamic == null ? new boolean[0] : dynamic, capacity);
         layers = Arrays.copyOf(layers == null ? new int[0] : layers, capacity);
+        groups = Arrays.copyOf(groups == null ? new int[0] : groups, capacity);
         boundsDirty = Arrays.copyOf(boundsDirty == null ? new boolean[0] : boundsDirty, capacity);
         boundsDirtySlots = Arrays.copyOf(boundsDirtySlots == null ? new int[0] : boundsDirtySlots, capacity);
         local = grow(local, capacity);
@@ -190,6 +192,7 @@ public final class SceneGraph {
         worldBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
         dynamic[slot] = true;
         layers[slot] = SceneLayer.DEFAULT.mask();
+        groups[slot] = 0;
         if (parentSlot != NONE) {
             link(slot, parentSlot);
         }
@@ -489,6 +492,27 @@ public final class SceneGraph {
         if (dynamic[slot] != moving) {
             dynamic[slot] = moving;
             markPending(slot, NodeChange.MOBILITY);
+        }
+    }
+
+    /** The node's group: 0 unless set. */
+    public int group(long node) {
+        return groups[slot(node)];
+    }
+
+    /**
+     * Puts the node in group {@code group} (0 or more): a partition for the spatial index, which keeps a static tree
+     * per group, so changing one group's static nodes rebuilds only that group's tree. Streaming puts each cell's nodes
+     * in a group of their own; everything else stays in group 0.
+     */
+    public void setGroup(long node, int group) {
+        int slot = slot(node);
+        if (group < 0) {
+            throw new IllegalArgumentException("Groups are 0 or more: " + group);
+        }
+        if (groups[slot] != group) {
+            groups[slot] = group;
+            markPending(slot, NodeChange.GROUP);
         }
     }
 

@@ -7,7 +7,9 @@ import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.core.Mobility;
 import com.truesim.scene.core.SceneGraph;
 import com.truesim.scene.core.SpatialIndex;
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -30,6 +32,8 @@ class StreamingBenchmark {
 
     /** Generates props in the background; attaches them as static boxes. */
     private static final class Loader implements CellLoader<PropCell> {
+        final AtomicInteger finished = new AtomicInteger();
+
         @Override
         public PropCell load(Cell cell) {
             double[] positions = new double[PROPS * 3];
@@ -38,6 +42,7 @@ class StreamingBenchmark {
                 positions[i * 3 + 1] = 0;
                 positions[i * 3 + 2] = cell.minZ() + (i / 8) * 4 + 2;
             }
+            finished.incrementAndGet();
             return new PropCell(positions);
         }
 
@@ -56,6 +61,12 @@ class StreamingBenchmark {
 
     private long sink;
 
+    private static long median(long[] values) {
+        long[] sorted = values.clone();
+        Arrays.sort(sorted);
+        return sorted[sorted.length / 2];
+    }
+
     @Test
     void streamAGridInAndOut() throws InterruptedException {
         // Warm up the JIT on a smaller run first, then measure a fresh world.
@@ -64,10 +75,11 @@ class StreamingBenchmark {
     }
 
     private void run(int grid, boolean print) throws InterruptedException {
-        SceneGraph scene = new SceneGraph(new ChangeClock(), grid * grid * PROPS, 1 << 20);
+        SceneGraph scene = new SceneGraph(new ChangeClock(), (grid * grid + 64) * PROPS, 1 << 20); // room for step 3
         SpatialIndex index = new SpatialIndex(scene);
         try (TaskScheduler tasks = new TaskScheduler(); World world = new World(scene, tasks)) {
-            world.register(LAYER, new Loader());
+            Loader loader = new Loader();
+            world.register(LAYER, loader);
             int cells = grid * grid;
 
             // 1. Request every cell, then run frames until all are attached.
@@ -111,7 +123,46 @@ class StreamingBenchmark {
             }
             long steady = System.nanoTime() - t0;
 
-            // 3. Release everything: cells detach, nodes leave the scene and the index.
+            // 3. Streaming in a full world: 64 more cells arrive, then 64 leave, each in one frame; 20 rounds, medians.
+            int extra = 64;
+            int rounds = 20;
+            long[] attachIn = new long[rounds];
+            long[] indexIn = new long[rounds];
+            long[] detachOut = new long[rounds];
+            long[] indexOut = new long[rounds];
+            for (int round = 0; round < rounds; round++) {
+                int before = loader.finished.get();
+                for (int i = 0; i < extra; i++) {
+                    world.request(LAYER, 0, grid + i, 0, round + 1);
+                }
+                while (loader.finished.get() < before + extra) {
+                    Thread.sleep(1); // let the loads finish, so one drain attaches them all
+                }
+                long s0 = System.nanoTime();
+                tasks.drainCompleted();
+                scene.update();
+                long s1 = System.nanoTime();
+                index.update();
+                long s2 = System.nanoTime();
+                for (int i = 0; i < extra; i++) {
+                    world.release(LAYER, 0, grid + i, 0, round + 1);
+                }
+                scene.update();
+                long s3 = System.nanoTime();
+                index.update();
+                long s4 = System.nanoTime();
+                attachIn[round] = s1 - s0;
+                indexIn[round] = s2 - s1;
+                detachOut[round] = s3 - s2;
+                indexOut[round] = s4 - s3;
+            }
+            if (print) {
+                System.out.printf(Locale.ROOT, "  %d cells streaming into the loaded world (median of %d): attach and "
+                    + "scene update %.1f ms, index update %.1f ms; leaving: %.1f ms and %.1f ms%n", extra, rounds,
+                    median(attachIn) / 1e6, median(indexIn) / 1e6, median(detachOut) / 1e6, median(indexOut) / 1e6);
+            }
+
+            // 4. Release everything: cells detach, nodes leave the scene and the index.
             long t3 = System.nanoTime();
             for (int x = 0; x < grid; x++) {
                 for (int z = 0; z < grid; z++) {
