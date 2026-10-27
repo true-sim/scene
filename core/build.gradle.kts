@@ -6,7 +6,7 @@ plugins {
 description = "Scene core for true-sim: node handles, the transform hierarchy, bounds, layers and change tracking."
 
 dependencies {
-    api("com.truesim.common:common-math:0.3.0")
+    api("com.truesim.common:common-math:0.4.0")
     api("com.truesim.common:common-state:0.2.0")
 }
 
