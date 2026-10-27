@@ -19,6 +19,8 @@ public final class InterestSource implements AutoCloseable {
     private final Priority priority;
     final LongIntMap[][] wanted;
     final LongIntMap[][] next;
+    /** Cells no longer wanted but held until what replaces them has loaded. */
+    final LongIntMap[][] retained;
     double x;
     double y;
     double z;
@@ -32,13 +34,16 @@ public final class InterestSource implements AutoCloseable {
         int layers = profile.entries().size();
         this.wanted = new LongIntMap[layers][];
         this.next = new LongIntMap[layers][];
+        this.retained = new LongIntMap[layers][];
         for (int i = 0; i < layers; i++) {
             int levels = profile.entries().get(i).layer().levels().count();
             wanted[i] = new LongIntMap[levels];
             next[i] = new LongIntMap[levels];
+            retained[i] = new LongIntMap[levels];
             for (int level = 0; level < levels; level++) {
                 wanted[i][level] = new LongIntMap();
                 next[i][level] = new LongIntMap();
+                retained[i][level] = new LongIntMap();
             }
         }
     }

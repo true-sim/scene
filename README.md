@@ -119,7 +119,11 @@ tasks.drainCompleted();             // once per frame: finished loads attach her
 - **Several kinds of detail:** LOD chains and mips inside assets, HLOD proxies for groups of cells (house → block →
   district → horizon), and per-layer resolutions such as a terrain pyramid out to the horizon.
 - **Policies per layer:** always resident (full loading), distance bands, or screen-space error.
-- **No holes:** a coarse level stays until its finer children are all loaded.
+- **No holes:** a source holds the cells it no longer wants until the cells replacing them in their area have
+  loaded, coarse to fine and back.
+- **Hysteresis:** a cell switches to finer detail at the band distance, but back to coarser only 15 % further out
+  (`World.setHysteresis`), so a camera hovering at a boundary does not thrash loads.
+- **Ready:** `world.isReady(source)` says when everything a source wants has loaded, e.g. to end a loading screen.
 - **Budgets** for memory and I/O per layer; source priority and visible error decide the order.
 - **Merging:** each cell and layer gets the finest detail any source asks for, loaded once however many sources need
   it.

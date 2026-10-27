@@ -97,7 +97,7 @@ class InterestTest {
         InterestSource a = world.addInterest(profile, Priority.HIGH);
         InterestSource b = world.addInterest(profile, Priority.LOW);
         a.moveTo(5, 0, 5);
-        b.moveTo(6, 0, 5);
+        b.moveTo(5.5, 0, 5);
         world.update();
         assertThat(world.loadingCount() + world.loadedCount()).isEqualTo(1); // one cell, loaded once
         a.close();

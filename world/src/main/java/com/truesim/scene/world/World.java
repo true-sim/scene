@@ -64,6 +64,7 @@ public final class World implements AutoCloseable {
     private int failed;
     private boolean closed;
     private final List<InterestSource> sources = new ArrayList<>();
+    private double hysteresis = 0.15;
 
     /** A world filling {@code scene} with cells loaded on {@code tasks}' lanes. */
     @AllowAllocation("set up once")
@@ -215,11 +216,15 @@ public final class World implements AutoCloseable {
                 refresh(source);
             }
         }
+        for (int i = 0; i < sources.size(); i++) {
+            releaseReplaced(sources.get(i));
+        }
     }
 
     /** Recomputes a source's cells for each layer of its profile and applies the difference. */
     private void refresh(InterestSource source) {
         selecting = source;
+        double grace = 1 + hysteresis;
         for (int i = 0; i < source.wanted.length; i++) {
             InterestProfile.Entry entry = source.profile().entries().get(i);
             LongIntMap[] next = source.next[i];
@@ -229,44 +234,150 @@ public final class World implements AutoCloseable {
             selectingLevels = entry.layer().levels();
             selectingDetail = entry.detail();
             selectingInto = next;
+            selectingPrevious = source.wanted[i];
             if (entry.detail().isFull()) {
                 selectingLevel = 0;
                 selectingReach = entry.range().radius();
-                forEachCellInReach(0, selectingReach, addFull);
+                forEachCellInReach(0, selectingReach * grace, addFull);
             } else {
                 int coarsest = entry.detail().bandCount() - 1;
                 selectingLevel = coarsest;
                 selectingReach = entry.detail().band(coarsest);
-                forEachCellInReach(coarsest, selectingReach, addBanded);
+                forEachCellInReach(coarsest, selectingReach * grace, addBanded);
             }
             LongIntMap[] wanted = source.wanted[i];
+            LongIntMap[] retained = source.retained[i];
+            boolean holdUntilReplaced = !entry.detail().isFull();
             for (int level = 0; level < next.length; level++) {
-                requestNew(entry.layer(), level, next[level], wanted[level]);
-                releaseGone(entry.layer(), level, wanted[level], next[level]);
+                requestNew(entry.layer(), level, next[level], wanted[level], retained[level]);
+                dropGone(entry.layer(), level, wanted[level], next[level], retained[level], holdUntilReplaced);
             }
             source.wanted[i] = next;
             source.next[i] = wanted;
         }
         selecting = null;
         selectingInto = null;
+        selectingPrevious = null;
     }
 
-    private void requestNew(Layer<?> layer, int level, LongIntMap now, LongIntMap before) {
+    /** Requests the cells newly wanted; one still held from before is wanted again without a second request. */
+    private void requestNew(Layer<?> layer, int level, LongIntMap now, LongIntMap before, LongIntMap retained) {
         for (int slot = 0; slot < now.capacity(); slot++) {
             long cell = now.keyAt(slot);
             if (cell >= 0 && before.get(cell) < 0) {
-                request(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+                if (retained.get(cell) >= 0) {
+                    retained.remove(cell);
+                } else {
+                    request(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+                }
             }
         }
     }
 
-    private void releaseGone(Layer<?> layer, int level, LongIntMap before, LongIntMap now) {
+    /**
+     * Lets go of the cells no longer wanted: at once for full detail, while band cells are held until the cells
+     * replacing them in their area have loaded, so a level swap never leaves a hole.
+     */
+    private void dropGone(Layer<?> layer, int level, LongIntMap before, LongIntMap now, LongIntMap retained,
+        boolean holdUntilReplaced) {
         for (int slot = 0; slot < before.capacity(); slot++) {
             long cell = before.keyAt(slot);
             if (cell >= 0 && now.get(cell) < 0) {
-                release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+                if (holdUntilReplaced) {
+                    retained.put(cell, 1);
+                } else {
+                    release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+                }
             }
         }
+    }
+
+    /** Releases the held cells of every source whose replacements have all loaded (or failed). */
+    private void releaseReplaced(InterestSource source) {
+        for (int i = 0; i < source.retained.length; i++) {
+            Layer<?> layer = source.profile().entries().get(i).layer();
+            LongIntMap[] retained = source.retained[i];
+            for (int level = 0; level < retained.length; level++) {
+                LongIntMap held = retained[level];
+                int slot = 0;
+                while (slot < held.capacity()) {
+                    long cell = held.keyAt(slot);
+                    if (cell >= 0 && replaced(layer, source.wanted[i], level, cell)) {
+                        release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+                        held.remove(cell); // a later entry may shift into this slot: look at it again
+                    } else {
+                        slot++;
+                    }
+                }
+            }
+        }
+    }
+
+    /** Whether every wanted cell overlapping a held one has loaded or failed (true when none overlaps). */
+    private boolean replaced(Layer<?> layer, LongIntMap[] wanted, int level, long cell) {
+        int x = CellGrid.keyX(cell);
+        int y = CellGrid.keyY(cell);
+        int z = CellGrid.keyZ(cell);
+        for (int other = 0; other < wanted.length; other++) {
+            LongIntMap cells = wanted[other];
+            for (int slot = 0; slot < cells.capacity(); slot++) {
+                long key = cells.keyAt(slot);
+                if (key >= 0 && overlaps(level, x, y, z, other, key)) {
+                    CellState state = state(layer, other, CellGrid.keyX(key), CellGrid.keyY(key), CellGrid.keyZ(key));
+                    if (state == CellState.LOADING) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /** Whether cell (x, y, z) of level {@code level} and cell {@code key} of level {@code other} share any area. */
+    private static boolean overlaps(int level, int x, int y, int z, int other, long key) {
+        int ox = CellGrid.keyX(key);
+        int oy = CellGrid.keyY(key);
+        int oz = CellGrid.keyZ(key);
+        if (level <= other) {
+            int shift = other - level;
+            return x >> shift == ox && y >> shift == oy && z >> shift == oz;
+        }
+        int shift = level - other;
+        return ox >> shift == x && oy >> shift == y && oz >> shift == z;
+    }
+
+    /** Whether everything {@code source} wants has loaded (or failed), e.g. to end a loading screen. */
+    public boolean isReady(InterestSource source) {
+        if (source.moved) {
+            return false;
+        }
+        for (int i = 0; i < source.wanted.length; i++) {
+            Layer<?> layer = source.profile().entries().get(i).layer();
+            LongIntMap[] wanted = source.wanted[i];
+            for (int level = 0; level < wanted.length; level++) {
+                LongIntMap cells = wanted[level];
+                for (int slot = 0; slot < cells.capacity(); slot++) {
+                    long key = cells.keyAt(slot);
+                    if (key >= 0 && state(layer, level, CellGrid.keyX(key), CellGrid.keyY(key), CellGrid.keyZ(key))
+                        == CellState.LOADING) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * How far beyond a band or range a cell already held is kept (0.15: 15 %), so a source moving back and forth near
+     * a boundary does not load and unload the same cells over and over. A cell switches to finer detail at the band
+     * distance, but back to coarser only this much further out.
+     */
+    public void setHysteresis(double fraction) {
+        if (!(fraction >= 0) || fraction > 1) {
+            throw new IllegalArgumentException("Hysteresis is a fraction from 0 to 1: " + fraction);
+        }
+        this.hysteresis = fraction;
     }
 
     // The selection running in refresh(): fields, so the visitors below are made once.
@@ -274,15 +385,21 @@ public final class World implements AutoCloseable {
     private Levels selectingLevels;
     private Detail selectingDetail;
     private LongIntMap[] selectingInto;
+    private LongIntMap[] selectingPrevious;
     private int selectingLevel;
     private double selectingReach;
     private final CellGrid.CellVisitor addFull = (x, y, z) -> {
-        if (distanceSquared(selectingLevel, x, y, z) <= selectingReach * selectingReach) {
-            selectingInto[selectingLevel].put(CellGrid.key(x, y, z), 1);
+        double distance = distanceSquared(selectingLevel, x, y, z);
+        long key = CellGrid.key(x, y, z);
+        if (distance <= square(selectingReach)
+            || distance <= square(selectingReach * (1 + hysteresis)) && selectingPrevious[0].get(key) >= 0) {
+            selectingInto[0].put(key, 1);
         }
     };
     private final CellGrid.CellVisitor addBanded = (x, y, z) -> {
-        if (distanceSquared(selectingLevel, x, y, z) <= selectingReach * selectingReach) {
+        double distance = distanceSquared(selectingLevel, x, y, z);
+        if (distance <= square(selectingReach)
+            || distance <= square(selectingReach * (1 + hysteresis)) && held(selectingLevel, x, y, z)) {
             refine(selectingLevel, x, y, z);
         }
     };
@@ -297,12 +414,40 @@ public final class World implements AutoCloseable {
 
     /**
      * Takes a cell, or, if the source is closer to it than the next finer band, its finer cells instead, each refined
-     * the same way: the result covers the cell's area once, finest where nearest.
+     * the same way: the result covers the cell's area once, finest where nearest. A cell already split stays split up
+     * to the hysteresis beyond the band.
      */
     private void refine(int level, int x, int y, int z) {
-        if (level == 0 || distanceSquared(level, x, y, z) >= square(selectingDetail.band(level - 1))) {
-            selectingInto[level].put(CellGrid.key(x, y, z), 1);
-            return;
+        long key = CellGrid.key(x, y, z);
+        if (level > 0) {
+            boolean wasSplit = selectingPrevious[level].get(key) < 0 && heldBelow(level, x, y, z);
+            double band = selectingDetail.band(level - 1) * (wasSplit ? 1 + hysteresis : 1);
+            if (distanceSquared(level, x, y, z) < square(band)) {
+                boolean volumetric = selectingLevels.isVolumetric();
+                int y0 = volumetric ? 2 * y : 0;
+                int y1 = volumetric ? 2 * y + 1 : 0;
+                for (int cy = y0; cy <= y1; cy++) {
+                    for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
+                        for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
+                            refine(level - 1, cx, cy, cz);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        selectingInto[level].put(key, 1);
+    }
+
+    /** Whether the source held this cell, or finer cells within it, before. */
+    private boolean held(int level, int x, int y, int z) {
+        return selectingPrevious[level].get(CellGrid.key(x, y, z)) >= 0 || heldBelow(level, x, y, z);
+    }
+
+    /** Whether the source held finer cells within this cell before. */
+    private boolean heldBelow(int level, int x, int y, int z) {
+        if (level == 0) {
+            return false;
         }
         boolean volumetric = selectingLevels.isVolumetric();
         int y0 = volumetric ? 2 * y : 0;
@@ -310,10 +455,13 @@ public final class World implements AutoCloseable {
         for (int cy = y0; cy <= y1; cy++) {
             for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
                 for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
-                    refine(level - 1, cx, cy, cz);
+                    if (held(level - 1, cx, cy, cz)) {
+                        return true;
+                    }
                 }
             }
         }
+        return false;
     }
 
     /** The squared distance from the selecting source to a cell's box; flat levels ignore height. */
@@ -339,19 +487,22 @@ public final class World implements AutoCloseable {
     void closed(InterestSource source) {
         for (int i = 0; i < source.wanted.length; i++) {
             Layer<?> layer = source.profile().entries().get(i).layer();
-            LongIntMap[] wanted = source.wanted[i];
-            for (int level = 0; level < wanted.length; level++) {
-                LongIntMap cells = wanted[level];
-                for (int slot = 0; slot < cells.capacity(); slot++) {
-                    long cell = cells.keyAt(slot);
-                    if (cell >= 0) {
-                        release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
-                    }
-                }
-                cells.clear();
+            for (int level = 0; level < source.wanted[i].length; level++) {
+                releaseAll(layer, level, source.wanted[i][level]);
+                releaseAll(layer, level, source.retained[i][level]);
             }
         }
         sources.remove(source);
+    }
+
+    private void releaseAll(Layer<?> layer, int level, LongIntMap cells) {
+        for (int slot = 0; slot < cells.capacity(); slot++) {
+            long cell = cells.keyAt(slot);
+            if (cell >= 0) {
+                release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+            }
+        }
+        cells.clear();
     }
 
     // ---------------------------------------------------------------- loading
