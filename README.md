@@ -34,6 +34,9 @@ Importers (glTF and others), a serialization format and networking come later, i
 
 - **Hot paths allocate nothing.** Scene data lives in structure-of-arrays storage, nodes are `long` handles
   ([`NodeHandle`](core/src/main/java/com/truesim/scene/core/NodeHandle.java)), and per-frame updates touch primitives.
+- **Per-frame cost follows what moves.** `update()` touches only moved, created or reparented nodes and their
+  descendants; bounds are not pushed up the hierarchy. Nodes marked `Mobility.STATIC` (terrain, buildings) are
+  indexed once per cell, only `DYNAMIC` ones are refit each frame.
 - **Consumers see changes, not the whole scene.** Changes come out as change logs (common-state), so the engine
   uploads what changed and replication sends what changed.
 - **Usable at the edges.** Typed keys instead of strings, builders for setup, and value types (common-math's `Vec3`,

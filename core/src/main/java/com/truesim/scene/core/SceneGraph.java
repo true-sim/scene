@@ -5,13 +5,15 @@ import com.truesim.common.math.Quat;
 import com.truesim.common.math.Transform;
 import com.truesim.common.math.TransformArray;
 import com.truesim.common.math.Vec3;
+import com.truesim.common.math.geometry.Aabb;
+import com.truesim.common.math.geometry.AabbArray;
 import com.truesim.common.state.ChangeClock;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Arrays;
 
 /**
- * The scene's nodes and their transform hierarchy. Nodes are {@link NodeHandle}s; each has a local transform relative
+ * The scene's nodes: their transform hierarchy, bounds, {@link Mobility} and {@link SceneLayer layers}. Nodes are {@link NodeHandle}s; each has a local transform relative
  * to its parent (or to the world, without one) and a world transform that {@link #update()} computes, parents before
  * children. Positions are {@code double}, so the world needs no origin shifting.
  *
@@ -42,6 +44,8 @@ public final class SceneGraph {
     public static final int DEFAULT_LOG_CAPACITY = 1 << 16;
 
     private static final int NONE = -1;
+    /** Bounds from +infinity to -infinity: none. */
+    private static final double EMPTY = Double.POSITIVE_INFINITY;
 
     private final ChangeClock clock;
 
@@ -54,6 +58,10 @@ public final class SceneGraph {
     private int[] previousSibling;
     private TransformArray local;
     private TransformArray world;
+    private AabbArray localBounds;
+    private AabbArray worldBounds;
+    private boolean[] dynamic;
+    private int[] layers;
     private long[] version;
     private int[] freeSlots;
     private int freeCount;
@@ -69,6 +77,9 @@ public final class SceneGraph {
     private int[] pendingSlots;
     private int pendingCount;
     private int[] stack;
+    private boolean[] boundsDirty;
+    private int[] boundsDirtySlots;
+    private int boundsDirtyCount;
 
     // The change log: a ring of (stamp, handle, changes).
     private final long[] logStamps;
@@ -115,13 +126,28 @@ public final class SceneGraph {
         listed = Arrays.copyOf(listed == null ? new boolean[0] : listed, capacity);
         pendingSlots = Arrays.copyOf(pendingSlots == null ? new int[0] : pendingSlots, capacity);
         stack = Arrays.copyOf(stack == null ? new int[0] : stack, capacity);
+        dynamic = Arrays.copyOf(dynamic == null ? new boolean[0] : dynamic, capacity);
+        layers = Arrays.copyOf(layers == null ? new int[0] : layers, capacity);
+        boundsDirty = Arrays.copyOf(boundsDirty == null ? new boolean[0] : boundsDirty, capacity);
+        boundsDirtySlots = Arrays.copyOf(boundsDirtySlots == null ? new int[0] : boundsDirtySlots, capacity);
         local = grow(local, capacity);
         world = grow(world, capacity);
+        localBounds = grow(localBounds, capacity);
+        worldBounds = grow(worldBounds, capacity);
     }
 
     @AllowAllocation("growing")
     private static TransformArray grow(TransformArray old, int capacity) {
         TransformArray grown = TransformArray.onHeap(capacity);
+        if (old != null) {
+            MemorySegment.copy(old.segment(), 0, grown.segment(), 0, old.segment().byteSize());
+        }
+        return grown;
+    }
+
+    @AllowAllocation("growing")
+    private static AabbArray grow(AabbArray old, int capacity) {
+        AabbArray grown = AabbArray.onHeap(capacity);
         if (old != null) {
             MemorySegment.copy(old.segment(), 0, grown.segment(), 0, old.segment().byteSize());
         }
@@ -155,6 +181,10 @@ public final class SceneGraph {
         previousSibling[slot] = NONE;
         identity(local, slot);
         identity(world, slot);
+        localBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
+        worldBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
+        dynamic[slot] = true;
+        layers[slot] = SceneLayer.DEFAULT.mask();
         if (parentSlot != NONE) {
             link(slot, parentSlot);
         }
@@ -384,6 +414,152 @@ public final class SceneGraph {
         segment.set(ValueLayout.JAVA_DOUBLE, offset + (long) component * Double.BYTES, value);
     }
 
+    // ---------------------------------------------------------------- bounds, mobility and layers
+
+    /**
+     * Sets the node's bounds in its own space, e.g. its mesh's box; its world bounds follow its transform from the
+     * next {@link #update()}. Nodes start without bounds (groups, pivots), which queries skip.
+     */
+    public void setLocalBounds(long node, double minX, double minY, double minZ, double maxX, double maxY,
+        double maxZ) {
+        int slot = slot(node);
+        if (minX > maxX || minY > maxY || minZ > maxZ) {
+            throw new IllegalArgumentException("Bounds with a minimum above the maximum");
+        }
+        localBounds.set(slot, minX, minY, minZ, maxX, maxY, maxZ);
+        markBoundsDirty(slot);
+    }
+
+    /** Sets the node's bounds in its own space. */
+    public void setLocalBounds(long node, Aabb bounds) {
+        Vec3 min = bounds.min();
+        Vec3 max = bounds.max();
+        setLocalBounds(node, min.x(), min.y(), min.z(), max.x(), max.y(), max.z());
+    }
+
+    /** Removes the node's bounds: queries skip it from the next {@link #update()}. */
+    public void clearBounds(long node) {
+        int slot = slot(node);
+        localBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
+        markBoundsDirty(slot);
+    }
+
+    /** Whether the node has bounds. */
+    public boolean hasBounds(long node) {
+        return hasBounds(slot(node), localBounds);
+    }
+
+    private static boolean hasBounds(int slot, AabbArray bounds) {
+        return bounds.get(slot, 0) <= bounds.get(slot, 3);
+    }
+
+    /** The node's bounds in its own space, or {@link Aabb#EMPTY}. */
+    @AllowAllocation("a value for convenience; read worldBounds() on hot paths")
+    public Aabb localBounds(long node) {
+        return localBounds.get(slot(node));
+    }
+
+    /** The node's world-space box as of the last {@link #update()}, or {@link Aabb#EMPTY}. */
+    @AllowAllocation("a value for convenience; read worldBounds() on hot paths")
+    public Aabb worldBounds(long node) {
+        return worldBounds.get(slot(node));
+    }
+
+    /**
+     * World-space boxes by {@link NodeHandle#index(long)}, as of the last {@link #update()}; empty (minimum above
+     * maximum) for nodes without bounds. Read them, do not write them; fetch the array after {@link #update()}.
+     */
+    public AabbArray worldBounds() {
+        return worldBounds;
+    }
+
+    public Mobility mobility(long node) {
+        return dynamic[slot(node)] ? Mobility.DYNAMIC : Mobility.STATIC;
+    }
+
+    /** Whether the node is expected to move; see {@link Mobility}. */
+    public void setMobility(long node, Mobility mobility) {
+        int slot = slot(node);
+        boolean moving = mobility == Mobility.DYNAMIC;
+        if (dynamic[slot] != moving) {
+            dynamic[slot] = moving;
+            markPending(slot, NodeChange.MOBILITY);
+        }
+    }
+
+    /** The node's layer mask; see {@link SceneLayer}. */
+    public int layers(long node) {
+        return layers[slot(node)];
+    }
+
+    /** Puts the node on the layers in {@code mask} ({@link SceneLayer#mask()} bits). */
+    public void setLayers(long node, int mask) {
+        int slot = slot(node);
+        if (layers[slot] != mask) {
+            layers[slot] = mask;
+            markPending(slot, NodeChange.LAYERS);
+        }
+    }
+
+    private void markBoundsDirty(int slot) {
+        if (!boundsDirty[slot]) {
+            boundsDirty[slot] = true;
+            boundsDirtySlots[boundsDirtyCount++] = slot;
+        }
+    }
+
+    /**
+     * The world box of the node's local box under its world transform: the transformed center, with half extents
+     * from the absolute rotation-scale matrix, so it encloses the rotated box exactly.
+     */
+    private void computeWorldBounds(int slot) {
+        if (!hasBounds(slot, localBounds)) {
+            worldBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
+            return;
+        }
+        double cx = (localBounds.get(slot, 0) + localBounds.get(slot, 3)) * 0.5;
+        double cy = (localBounds.get(slot, 1) + localBounds.get(slot, 4)) * 0.5;
+        double cz = (localBounds.get(slot, 2) + localBounds.get(slot, 5)) * 0.5;
+        double ex = (localBounds.get(slot, 3) - localBounds.get(slot, 0)) * 0.5;
+        double ey = (localBounds.get(slot, 4) - localBounds.get(slot, 1)) * 0.5;
+        double ez = (localBounds.get(slot, 5) - localBounds.get(slot, 2)) * 0.5;
+        MemorySegment w = world.segment();
+        long o = slot * world.stride();
+        double qx = get(w, o, 3);
+        double qy = get(w, o, 4);
+        double qz = get(w, o, 5);
+        double qw = get(w, o, 6);
+        double sx = get(w, o, 7);
+        double sy = get(w, o, 8);
+        double sz = get(w, o, 9);
+        double m00 = 1 - 2 * (qy * qy + qz * qz);
+        double m01 = 2 * (qx * qy - qz * qw);
+        double m02 = 2 * (qx * qz + qy * qw);
+        double m10 = 2 * (qx * qy + qz * qw);
+        double m11 = 1 - 2 * (qx * qx + qz * qz);
+        double m12 = 2 * (qy * qz - qx * qw);
+        double m20 = 2 * (qx * qz - qy * qw);
+        double m21 = 2 * (qy * qz + qx * qw);
+        double m22 = 1 - 2 * (qx * qx + qy * qy);
+        double vx = sx * cx;
+        double vy = sy * cy;
+        double vz = sz * cz;
+        double wx = get(w, o, 0) + m00 * vx + m01 * vy + m02 * vz;
+        double wy = get(w, o, 1) + m10 * vx + m11 * vy + m12 * vz;
+        double wz = get(w, o, 2) + m20 * vx + m21 * vy + m22 * vz;
+        double ax = Math.abs(sx) * ex;
+        double ay = Math.abs(sy) * ey;
+        double az = Math.abs(sz) * ez;
+        double hx = Math.abs(m00) * ax + Math.abs(m01) * ay + Math.abs(m02) * az;
+        double hy = Math.abs(m10) * ax + Math.abs(m11) * ay + Math.abs(m12) * az;
+        double hz = Math.abs(m20) * ax + Math.abs(m21) * ay + Math.abs(m22) * az;
+        worldBounds.set(slot, wx - hx, wy - hy, wz - hz, wx + hx, wy + hy, wz + hz);
+    }
+
+    private static double get(MemorySegment segment, long offset, int component) {
+        return segment.get(ValueLayout.JAVA_DOUBLE, offset + (long) component * Double.BYTES);
+    }
+
     // ---------------------------------------------------------------- update and changes
 
     /**
@@ -401,6 +577,15 @@ public final class SceneGraph {
             dirty[dirtySlots[i]] = false;
         }
         dirtyCount = 0;
+        for (int i = 0; i < boundsDirtyCount; i++) {
+            int slot = boundsDirtySlots[i];
+            boundsDirty[slot] = false;
+            if (alive[slot]) {
+                computeWorldBounds(slot);
+                markPending(slot, NodeChange.BOUNDS);
+            }
+        }
+        boundsDirtyCount = 0;
         if (pendingCount > 0) {
             long stamp = clock.stamp();
             for (int i = 0; i < pendingCount; i++) {
@@ -439,7 +624,12 @@ public final class SceneGraph {
             } else {
                 world.setProduct(slot, world, parentSlot, local, slot);
             }
-            markPending(slot, NodeChange.TRANSFORM);
+            if (hasBounds(slot, localBounds)) {
+                computeWorldBounds(slot);
+                markPending(slot, NodeChange.TRANSFORM | NodeChange.BOUNDS);
+            } else {
+                markPending(slot, NodeChange.TRANSFORM);
+            }
             for (int child = firstChild[slot]; child != NONE; child = nextSibling[child]) {
                 stack[top++] = child;
             }
