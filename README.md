@@ -114,7 +114,8 @@ world.update();                     // residency: starts and cancels loads withi
 
 ```kotlin
 dependencies {
-    implementation("com.truesim.scene:scene-core:0.1.0")
+    implementation("com.truesim.scene:scene-core:0.2.0")
+    implementation("com.truesim.scene:scene-world:0.2.0") // streaming
 }
 ```
 
