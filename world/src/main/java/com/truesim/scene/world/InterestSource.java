@@ -30,6 +30,8 @@ public final class InterestSource implements AutoCloseable {
     /** Pixels per unit of size at distance 1: viewport height / (2 tan(fovY / 2)). */
     double projection = projection(Math.PI / 3, 1080);
     boolean closed;
+    /** Works out the cells it wants; see {@link Selection}. */
+    final Selection selection = new Selection(this);
 
     InterestSource(World world, InterestProfile profile, Priority priority) {
         this.world = world;

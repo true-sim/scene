@@ -1,6 +1,7 @@
 package com.truesim.scene.core;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.common.jobs.JobSystem;
 import com.truesim.common.math.geometry.AabbArray;
 import com.truesim.common.math.geometry.Frustum;
 import com.truesim.common.math.geometry.Intersections;
@@ -83,6 +84,14 @@ public final class SpatialIndex {
     private Bvh dynamicBvh;
     private boolean dynamicMoved;
     private double rebuildThreshold = 2;
+
+    // Rebuilding groups in parallel, when a job system is set.
+    private JobSystem jobs;
+    private final JobSystem.RangeTask buildGroups = (from, to, worker) -> {
+        for (int i = from; i < to; i++) {
+            buildGroup(dirtyGroups[i]);
+        }
+    };
 
     // The running query.
     private Visitor visitor;
@@ -192,10 +201,7 @@ public final class SpatialIndex {
         }
         boolean adopted = finishAdoptions(noted);
         if (dirtyGroupCount > 0 || adopted) {
-            for (int i = 0; i < dirtyGroupCount; i++) {
-                rebuildGroup(dirtyGroups[i]);
-            }
-            dirtyGroupCount = 0;
+            rebuildGroups();
             updateTop();
         }
         if (dynamicMoved) { // adding a dynamic node built its tree
@@ -216,6 +222,16 @@ public final class SpatialIndex {
             throw new IllegalArgumentException("The threshold must be at least 1: " + threshold);
         }
         this.rebuildThreshold = threshold;
+    }
+
+    /**
+     * Rebuilds the trees of changed static groups on {@code jobs}, e.g. when a burst of cells attaches; {@code null}
+     * (the default) rebuilds on the calling thread. Trees are the same either way: each group is built from its own
+     * nodes, and groups take their top-level slots in the same order. The index stays single-threaded otherwise: call
+     * {@link #update()} from the thread that submits to {@code jobs}.
+     */
+    public void setJobs(JobSystem jobs) {
+        this.jobs = jobs;
     }
 
     /** How many static nodes are indexed. */
@@ -435,24 +451,27 @@ public final class SpatialIndex {
         }
     }
 
-    /** Rebuilds a group's tree and box from its nodes' current bounds, and its slot in the top level. */
+    /**
+     * Rebuilds the dirty groups: their trees and boxes first, in parallel on the job system if there is one (each
+     * writes only its own group's), then their slots in the top level, in order.
+     */
+    private void rebuildGroups() {
+        if (jobs != null && dirtyGroupCount > 1) {
+            jobs.parallelFor(dirtyGroupCount, 1, buildGroups);
+        } else {
+            buildGroups.run(0, dirtyGroupCount, 0);
+        }
+        for (int i = 0; i < dirtyGroupCount; i++) {
+            placeGroup(dirtyGroups[i]);
+        }
+        dirtyGroupCount = 0;
+    }
+
+    /** Builds a group's tree and box from its nodes' current bounds; a group left without nodes keeps its old box. */
     @AllowAllocation("rebuilding a group's tree, when its static nodes changed")
-    private void rebuildGroup(int group) {
-        groupDirty[group] = false;
+    private void buildGroup(int group) {
         int count = groupCount[group];
         if (count == 0) {
-            groupTree[group] = null;
-            // It leaves the top level. It had a slot: a group gains nodes only in an update that then rebuilds it. Its
-            // slot is free now; its box shrinks to its center, so the tree does not keep spanning areas left behind.
-            int box = group * 6;
-            double cx = (groupBox[box] + groupBox[box + 3]) * 0.5;
-            double cy = (groupBox[box + 1] + groupBox[box + 4]) * 0.5;
-            double cz = (groupBox[box + 2] + groupBox[box + 5]) * 0.5;
-            top.primitiveBounds().set(topSlot[group], cx, cy, cz, cx, cy, cz);
-            topGroups[topSlot[group]] = -1;
-            freeTop[freeTopCount++] = topSlot[group];
-            topSlot[group] = -1;
-            topCount--;
             return;
         }
         AabbArray bounds = AabbArray.onHeap(count);
@@ -481,7 +500,27 @@ public final class SpatialIndex {
         groupBox[box + 4] = maxY;
         groupBox[box + 5] = maxZ;
         groupTree[group] = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
-        joinTop(group);
+    }
+
+    /** After its tree was built: a group with nodes joins the top level or updates its box there, an empty one leaves. */
+    private void placeGroup(int group) {
+        groupDirty[group] = false;
+        if (groupCount[group] > 0) {
+            joinTop(group);
+            return;
+        }
+        groupTree[group] = null;
+        // It had a slot: a group gains nodes only in an update that then rebuilds it. Its slot is free now; its box
+        // shrinks to its center, so the tree does not keep spanning areas left behind.
+        int box = group * 6;
+        double cx = (groupBox[box] + groupBox[box + 3]) * 0.5;
+        double cy = (groupBox[box + 1] + groupBox[box + 4]) * 0.5;
+        double cz = (groupBox[box + 2] + groupBox[box + 5]) * 0.5;
+        top.primitiveBounds().set(topSlot[group], cx, cy, cz, cx, cy, cz);
+        topGroups[topSlot[group]] = -1;
+        freeTop[freeTopCount++] = topSlot[group];
+        topSlot[group] = -1;
+        topCount--;
     }
 
     /** Gives a group with a tree a slot in the top level, if it has none, and sets its box there. */

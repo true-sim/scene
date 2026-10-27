@@ -7,7 +7,6 @@ description = "Scene world for true-sim: cells, data layers with levels, loaders
 
 dependencies {
     api(project(":scene-core"))
-    api("com.truesim.common:common-jobs:0.3.0")
 }
 
 coverage {
