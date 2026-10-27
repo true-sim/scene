@@ -118,8 +118,6 @@ dependencies {
 }
 ```
 
-Nothing is released yet.
-
 ## Building
 
 ```bash
