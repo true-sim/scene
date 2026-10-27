@@ -25,6 +25,24 @@ final class LongIntMap {
         return size;
     }
 
+    /** Removes every entry, keeping the capacity. */
+    void clear() {
+        if (size > 0) {
+            Arrays.fill(keys, EMPTY);
+            size = 0;
+        }
+    }
+
+    /** The number of slots, for walking the entries with {@link #keyAt}. */
+    int capacity() {
+        return keys.length;
+    }
+
+    /** The key in slot {@code slot}, or -1 for an empty slot. */
+    long keyAt(int slot) {
+        return keys[slot];
+    }
+
     /** The value of {@code key}, or -1. */
     int get(long key) {
         int mask = keys.length - 1;

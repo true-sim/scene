@@ -7,8 +7,10 @@ import com.truesim.common.jobs.TaskScheduler;
 import com.truesim.common.jobs.TaskState;
 import com.truesim.scene.core.CellGrid;
 import com.truesim.scene.core.SceneGraph;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -61,8 +63,10 @@ public final class World implements AutoCloseable {
     private int loaded;
     private int failed;
     private boolean closed;
+    private final List<InterestSource> sources = new ArrayList<>();
 
     /** A world filling {@code scene} with cells loaded on {@code tasks}' lanes. */
+    @AllowAllocation("set up once")
     public World(SceneGraph scene, TaskScheduler tasks) {
         this.scene = scene;
         this.tasks = tasks;
@@ -173,6 +177,181 @@ public final class World implements AutoCloseable {
     /** Cells whose load failed and that are still requested. */
     public int failedCount() {
         return failed;
+    }
+
+    // ---------------------------------------------------------------- interest
+
+    /**
+     * Adds an observer that wants what {@code profile} says around its position; move it with
+     * {@link InterestSource#moveTo} and close it when the observer goes. Its cells load on the next {@link #update()}.
+     */
+    @AllowAllocation("adding an observer")
+    public InterestSource addInterest(InterestProfile profile, Priority priority) {
+        checkOpen();
+        for (InterestProfile.Entry entry : profile.entries()) {
+            registered(entry.layer());
+        }
+        InterestSource source = new InterestSource(this, profile, priority);
+        sources.add(source);
+        return source;
+    }
+
+    /** The open interest sources. */
+    public int interestCount() {
+        return sources.size();
+    }
+
+    /**
+     * Brings the cells in line with the interest sources: for every source that moved, requests the cells it now
+     * needs and releases the ones it no longer needs. Requests are counted, so cells several sources share load once
+     * and stay until the last lets go. Call once per frame on the main thread, e.g. before draining the scheduler.
+     */
+    public void update() {
+        checkOpen();
+        for (int i = 0; i < sources.size(); i++) {
+            InterestSource source = sources.get(i);
+            if (source.moved) {
+                source.moved = false;
+                refresh(source);
+            }
+        }
+    }
+
+    /** Recomputes a source's cells for each layer of its profile and applies the difference. */
+    private void refresh(InterestSource source) {
+        selecting = source;
+        for (int i = 0; i < source.wanted.length; i++) {
+            InterestProfile.Entry entry = source.profile().entries().get(i);
+            LongIntMap[] next = source.next[i];
+            for (LongIntMap level : next) {
+                level.clear();
+            }
+            selectingLevels = entry.layer().levels();
+            selectingDetail = entry.detail();
+            selectingInto = next;
+            if (entry.detail().isFull()) {
+                selectingLevel = 0;
+                selectingReach = entry.range().radius();
+                forEachCellInReach(0, selectingReach, addFull);
+            } else {
+                int coarsest = entry.detail().bandCount() - 1;
+                selectingLevel = coarsest;
+                selectingReach = entry.detail().band(coarsest);
+                forEachCellInReach(coarsest, selectingReach, addBanded);
+            }
+            LongIntMap[] wanted = source.wanted[i];
+            for (int level = 0; level < next.length; level++) {
+                requestNew(entry.layer(), level, next[level], wanted[level]);
+                releaseGone(entry.layer(), level, wanted[level], next[level]);
+            }
+            source.wanted[i] = next;
+            source.next[i] = wanted;
+        }
+        selecting = null;
+        selectingInto = null;
+    }
+
+    private void requestNew(Layer<?> layer, int level, LongIntMap now, LongIntMap before) {
+        for (int slot = 0; slot < now.capacity(); slot++) {
+            long cell = now.keyAt(slot);
+            if (cell >= 0 && before.get(cell) < 0) {
+                request(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+            }
+        }
+    }
+
+    private void releaseGone(Layer<?> layer, int level, LongIntMap before, LongIntMap now) {
+        for (int slot = 0; slot < before.capacity(); slot++) {
+            long cell = before.keyAt(slot);
+            if (cell >= 0 && now.get(cell) < 0) {
+                release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+            }
+        }
+    }
+
+    // The selection running in refresh(): fields, so the visitors below are made once.
+    private InterestSource selecting;
+    private Levels selectingLevels;
+    private Detail selectingDetail;
+    private LongIntMap[] selectingInto;
+    private int selectingLevel;
+    private double selectingReach;
+    private final CellGrid.CellVisitor addFull = (x, y, z) -> {
+        if (distanceSquared(selectingLevel, x, y, z) <= selectingReach * selectingReach) {
+            selectingInto[selectingLevel].put(CellGrid.key(x, y, z), 1);
+        }
+    };
+    private final CellGrid.CellVisitor addBanded = (x, y, z) -> {
+        if (distanceSquared(selectingLevel, x, y, z) <= selectingReach * selectingReach) {
+            refine(selectingLevel, x, y, z);
+        }
+    };
+
+    /** Visits the cells of {@code level} whose box may lie within {@code reach} of the selecting source. */
+    private void forEachCellInReach(int level, double reach, CellGrid.CellVisitor visitor) {
+        InterestSource s = selecting;
+        boolean volumetric = selectingLevels.isVolumetric();
+        selectingLevels.grid(level).forEachCell(s.x - reach, volumetric ? s.y - reach : 0, s.z - reach, s.x + reach,
+            volumetric ? s.y + reach : 0, s.z + reach, visitor);
+    }
+
+    /**
+     * Takes a cell, or, if the source is closer to it than the next finer band, its finer cells instead, each refined
+     * the same way: the result covers the cell's area once, finest where nearest.
+     */
+    private void refine(int level, int x, int y, int z) {
+        if (level == 0 || distanceSquared(level, x, y, z) >= square(selectingDetail.band(level - 1))) {
+            selectingInto[level].put(CellGrid.key(x, y, z), 1);
+            return;
+        }
+        boolean volumetric = selectingLevels.isVolumetric();
+        int y0 = volumetric ? 2 * y : 0;
+        int y1 = volumetric ? 2 * y + 1 : 0;
+        for (int cy = y0; cy <= y1; cy++) {
+            for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
+                for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
+                    refine(level - 1, cx, cy, cz);
+                }
+            }
+        }
+    }
+
+    /** The squared distance from the selecting source to a cell's box; flat levels ignore height. */
+    private double distanceSquared(int level, int x, int y, int z) {
+        CellGrid grid = selectingLevels.grid(level);
+        double size = grid.size();
+        InterestSource s = selecting;
+        double dx = axisDistance(s.x, grid.cellMin(x), size);
+        double dy = selectingLevels.isVolumetric() ? axisDistance(s.y, grid.cellMin(y), size) : 0;
+        double dz = axisDistance(s.z, grid.cellMin(z), size);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private static double square(double value) {
+        return value * value;
+    }
+
+    private static double axisDistance(double position, double min, double size) {
+        return position < min ? min - position : Math.max(0, position - (min + size));
+    }
+
+    /** A source closed (always before the world: closing the world closes its sources): its cells are released. */
+    void closed(InterestSource source) {
+        for (int i = 0; i < source.wanted.length; i++) {
+            Layer<?> layer = source.profile().entries().get(i).layer();
+            LongIntMap[] wanted = source.wanted[i];
+            for (int level = 0; level < wanted.length; level++) {
+                LongIntMap cells = wanted[level];
+                for (int slot = 0; slot < cells.capacity(); slot++) {
+                    long cell = cells.keyAt(slot);
+                    if (cell >= 0) {
+                        release(layer, level, CellGrid.keyX(cell), CellGrid.keyY(cell), CellGrid.keyZ(cell));
+                    }
+                }
+                cells.clear();
+            }
+        }
+        sources.remove(source);
     }
 
     // ---------------------------------------------------------------- loading
@@ -291,6 +470,9 @@ public final class World implements AutoCloseable {
     public void close() {
         if (closed) {
             return;
+        }
+        for (int i = sources.size() - 1; i >= 0; i--) {
+            sources.get(i).close();
         }
         for (int entry = 0; entry < entryCount; entry++) {
             if (owner[entry] != null) {
