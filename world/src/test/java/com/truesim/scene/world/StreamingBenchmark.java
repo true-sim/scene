@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.truesim.common.jobs.TaskScheduler;
 import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.core.Mobility;
+import com.truesim.scene.core.SceneBatch;
 import com.truesim.scene.core.SceneGraph;
 import com.truesim.scene.core.SpatialIndex;
 import java.util.Arrays;
@@ -24,15 +25,23 @@ class StreamingBenchmark {
     private static final int GRID = 64;
     private static final int PROPS = 64;
 
-    /** A cell's props: positions within the cell. */
-    record PropCell(double[] positions) {
+    /** A cell's props: positions within the cell, or a batch prepared in the background. */
+    record PropCell(double[] positions, SceneBatch batch) {
     }
 
     private static final Layer<PropCell> LAYER = Layer.of("props", PropCell.class, Levels.single(32));
 
-    /** Generates props in the background; attaches them as static boxes. */
+    /**
+     * Generates props in the background; attaches them as static boxes, node by node or, batched, as a batch prepared
+     * in the background.
+     */
     private static final class Loader implements CellLoader<PropCell> {
         final AtomicInteger finished = new AtomicInteger();
+        final boolean batched;
+
+        Loader(boolean batched) {
+            this.batched = batched;
+        }
 
         @Override
         public PropCell load(Cell cell) {
@@ -42,12 +51,27 @@ class StreamingBenchmark {
                 positions[i * 3 + 1] = 0;
                 positions[i * 3 + 2] = cell.minZ() + (i / 8) * 4 + 2;
             }
+            SceneBatch batch = null;
+            if (batched) {
+                batch = new SceneBatch(PROPS);
+                for (int i = 0; i < PROPS; i++) {
+                    int node = batch.add();
+                    batch.setTranslation(node, positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+                    batch.setLocalBounds(node, -1, 0, -1, 1, 2, 1);
+                    batch.setMobility(node, Mobility.STATIC);
+                }
+                batch.prepare();
+            }
             finished.incrementAndGet();
-            return new PropCell(positions);
+            return new PropCell(positions, batch);
         }
 
         @Override
         public void attach(PropCell data, CellContent content) {
+            if (data.batch() != null) {
+                content.apply(data.batch());
+                return;
+            }
             SceneGraph scene = content.scene();
             double[] p = data.positions();
             for (int i = 0; i < PROPS; i++) {
@@ -70,15 +94,17 @@ class StreamingBenchmark {
     @Test
     void streamAGridInAndOut() throws InterruptedException {
         // Warm up the JIT on a smaller run first, then measure a fresh world.
-        run(16, false);
-        run(GRID, true);
+        run(16, false, false);
+        run(16, false, true);
+        run(GRID, true, false);
+        run(GRID, true, true);
     }
 
-    private void run(int grid, boolean print) throws InterruptedException {
+    private void run(int grid, boolean print, boolean batched) throws InterruptedException {
         SceneGraph scene = new SceneGraph(new ChangeClock(), (grid * grid + 64) * PROPS, 1 << 20); // room for step 3
         SpatialIndex index = new SpatialIndex(scene);
         try (TaskScheduler tasks = new TaskScheduler(); World world = new World(scene, tasks)) {
-            Loader loader = new Loader();
+            Loader loader = new Loader(batched);
             world.register(LAYER, loader);
             int cells = grid * grid;
 
@@ -157,8 +183,9 @@ class StreamingBenchmark {
                 indexOut[round] = s4 - s3;
             }
             if (print) {
-                System.out.printf(Locale.ROOT, "  %d cells streaming into the loaded world (median of %d): attach and "
-                    + "scene update %.1f ms, index update %.1f ms; leaving: %.1f ms and %.1f ms%n", extra, rounds,
+                System.out.printf(Locale.ROOT, "  %s: %d cells streaming into the loaded world (median of %d): attach "
+                    + "and scene update %.1f ms, index update %.1f ms; leaving: %.1f ms and %.1f ms%n",
+                    batched ? "batched" : "nodes", extra, rounds,
                     median(attachIn) / 1e6, median(indexIn) / 1e6, median(detachOut) / 1e6, median(indexOut) / 1e6);
             }
 
@@ -177,7 +204,8 @@ class StreamingBenchmark {
             sink += frames;
 
             if (print) {
-                System.out.printf(Locale.ROOT, "Streaming benchmark: %,d cells of %d props, %,d nodes%n", cells, PROPS,
+                System.out.printf(Locale.ROOT, "Streaming benchmark (%s): %,d cells of %d props, %,d nodes%n",
+                    batched ? "batches prepared in the background" : "nodes created on attach", cells, PROPS,
                     cells * PROPS);
                 System.out.printf(Locale.ROOT, "  request all: %.1f ms (%.2f us per cell)%n", (requested - start) / 1e6,
                     (requested - start) / 1e3 / cells);

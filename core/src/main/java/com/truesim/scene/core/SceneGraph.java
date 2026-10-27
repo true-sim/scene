@@ -7,10 +7,13 @@ import com.truesim.common.math.TransformArray;
 import com.truesim.common.math.Vec3;
 import com.truesim.common.math.geometry.Aabb;
 import com.truesim.common.math.geometry.AabbArray;
+import com.truesim.common.math.spatial.Bvh;
 import com.truesim.common.state.ChangeClock;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * The scene's nodes: their transform hierarchy, bounds, {@link Mobility} and {@link SceneLayer layers}. Nodes are {@link NodeHandle}s; each has a local transform relative
@@ -45,9 +48,11 @@ public final class SceneGraph {
 
     private static final int NONE = -1;
     /** Bounds from +infinity to -infinity: none. */
-    private static final double EMPTY = Double.POSITIVE_INFINITY;
+    static final double EMPTY = Double.POSITIVE_INFINITY;
 
     private final ChangeClock clock;
+    private final List<Prepared> prepared = new ArrayList<>();
+    private long updates;
 
     // Slots, by index.
     private int[] generation;
@@ -171,15 +176,7 @@ public final class SceneGraph {
     /** A new node with identity local transform under {@code parent} ({@link NodeHandle#NONE} for none). */
     public long create(long parent) {
         int parentSlot = parent == NodeHandle.NONE ? NONE : slot(parent);
-        int slot;
-        if (freeCount > 0) {
-            slot = freeSlots[--freeCount];
-        } else {
-            if (slotCount == generation.length) {
-                allocate(generation.length * 2);
-            }
-            slot = slotCount++;
-        }
+        int slot = newSlot();
         generation[slot]++;
         alive[slot] = true;
         this.parent[slot] = NONE;
@@ -200,6 +197,112 @@ public final class SceneGraph {
         markDirty(slot);
         markPending(slot, NodeChange.CREATED);
         return NodeHandle.of(slot, generation[slot]);
+    }
+
+    /** A free slot, growing the storage when there is none. */
+    private int newSlot() {
+        if (freeCount > 0) {
+            return freeSlots[--freeCount];
+        }
+        if (slotCount == generation.length) {
+            allocate(generation.length * 2);
+        }
+        return slotCount++;
+    }
+
+    // ---------------------------------------------------------------- batches
+
+    /**
+     * Adds a {@link SceneBatch}'s nodes to the scene in {@code group}, writing their handles to {@code handles} in the
+     * batch's numbering. A prepared batch (see {@link SceneBatch#prepare()}) is copied with its world transforms and
+     * bounds as computed, so {@link #update()} has nothing to propagate, and the tree of its static nodes is handed to
+     * the scene's {@link SpatialIndex}, which adopts it instead of building one. The nodes are reported as
+     * {@link NodeChange#CREATED} on the next update, like created ones.
+     */
+    @AllowAllocation("applying a batch: handing its tree over")
+    public void apply(SceneBatch batch, int group, long[] handles) {
+        if (group < 0) {
+            throw new IllegalArgumentException("Groups are 0 or more: " + group);
+        }
+        if (handles.length < batch.size()) {
+            throw new IllegalArgumentException("Room for " + handles.length + " handles, the batch has " + batch.size());
+        }
+        if (!batch.isPrepared()) {
+            batch.prepare();
+        }
+        long transformStride = local.stride();
+        long boundsStride = localBounds.stride();
+        for (int node = 0; node < batch.size(); node++) {
+            int slot = newSlot();
+            generation[slot]++;
+            alive[slot] = true;
+            parent[slot] = NONE;
+            firstChild[slot] = NONE;
+            nextSibling[slot] = NONE;
+            previousSibling[slot] = NONE;
+            if (batch.parent(node) >= 0) {
+                link(slot, NodeHandle.index(handles[batch.parent(node)]));
+            }
+            MemorySegment.copy(batch.local().segment(), node * transformStride, local.segment(),
+                slot * transformStride, transformStride);
+            MemorySegment.copy(batch.world().segment(), node * transformStride, world.segment(),
+                slot * transformStride, transformStride);
+            MemorySegment.copy(batch.localBounds().segment(), node * boundsStride, localBounds.segment(),
+                slot * boundsStride, boundsStride);
+            MemorySegment.copy(batch.worldBounds().segment(), node * boundsStride, worldBounds.segment(),
+                slot * boundsStride, boundsStride);
+            dynamic[slot] = batch.isDynamic(node);
+            layers[slot] = batch.layers(node);
+            groups[slot] = group;
+            size++;
+            boolean bounded = hasBounds(slot, localBounds);
+            markPending(slot, NodeChange.CREATED | NodeChange.TRANSFORM | (bounded ? NodeChange.BOUNDS : 0)
+                | (bounded && !dynamic[slot] ? NodeChange.PREPARED : 0));
+            handles[node] = NodeHandle.of(slot, generation[slot]);
+        }
+        if (batch.staticTree() != null) {
+            int[] statics = batch.staticNodes();
+            long[] nodes = new long[statics.length];
+            for (int i = 0; i < statics.length; i++) {
+                nodes[i] = handles[statics[i]];
+            }
+            prepared.add(new Prepared(group, batch.staticTree(), nodes, batch.staticBox().clone(), updates));
+        }
+    }
+
+    /** A static tree from an applied batch, waiting for the spatial index to adopt it. */
+    static final class Prepared {
+        final int group;
+        final Bvh tree;
+        final long[] nodes;
+        final double[] box;
+        final long applied;
+        boolean adopted;
+
+        Prepared(int group, Bvh tree, long[] nodes, double[] box, long applied) {
+            this.group = group;
+            this.tree = tree;
+            this.nodes = nodes;
+            this.box = box;
+            this.applied = applied;
+        }
+    }
+
+    int preparedCount() {
+        return prepared.size();
+    }
+
+    Prepared prepared(int index) {
+        return prepared.get(index);
+    }
+
+    /** Forgets prepared trees older than the last update: an index that missed them builds its own. */
+    private void prunePrepared() {
+        for (int i = prepared.size() - 1; i >= 0; i--) {
+            if (prepared.get(i).applied < updates - 1) {
+                prepared.remove(i);
+            }
+        }
     }
 
     /** Removes {@code node} and all its descendants; their handles become stale. */
@@ -410,7 +513,7 @@ public final class SceneGraph {
         return world;
     }
 
-    private static void identity(TransformArray transforms, int slot) {
+    static void identity(TransformArray transforms, int slot) {
         MemorySegment s = transforms.segment();
         long offset = slot * transforms.stride();
         for (int component = 0; component < 10; component++) {
@@ -418,7 +521,7 @@ public final class SceneGraph {
         }
     }
 
-    private static void put(MemorySegment segment, long offset, int component, double value) {
+    static void put(MemorySegment segment, long offset, int component, double value) {
         segment.set(ValueLayout.JAVA_DOUBLE, offset + (long) component * Double.BYTES, value);
     }
 
@@ -457,7 +560,7 @@ public final class SceneGraph {
         return hasBounds(slot(node), localBounds);
     }
 
-    private static boolean hasBounds(int slot, AabbArray bounds) {
+    static boolean hasBounds(int slot, AabbArray bounds) {
         return bounds.get(slot, 0) <= bounds.get(slot, 3);
     }
 
@@ -542,6 +645,13 @@ public final class SceneGraph {
      * from the absolute rotation-scale matrix, so it encloses the rotated box exactly.
      */
     private void computeWorldBounds(int slot) {
+        worldBox(world, localBounds, worldBounds, slot);
+    }
+
+    /** Sets {@code out[slot]} to {@code local[slot]} under {@code transforms[slot]}, or empty without local bounds. */
+    static void worldBox(TransformArray transforms, AabbArray localBounds, AabbArray out, int slot) {
+        TransformArray world = transforms;
+        AabbArray worldBounds = out;
         if (!hasBounds(slot, localBounds)) {
             worldBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
             return;
@@ -629,6 +739,8 @@ public final class SceneGraph {
             }
             pendingCount = 0;
         }
+        updates++;
+        prunePrepared();
     }
 
     private boolean hasDirtyAncestor(int slot) {
@@ -712,6 +824,9 @@ public final class SceneGraph {
         if (!listed[slot]) {
             listed[slot] = true;
             pendingSlots[pendingCount++] = slot;
+        }
+        if ((change & NodeChange.PREPARED) == 0) {
+            pending[slot] &= ~NodeChange.PREPARED; // changed after applying: its prepared tree is out of date
         }
         pending[slot] |= change;
     }
