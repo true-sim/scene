@@ -52,11 +52,11 @@ Importers (glTF and others), a serialization format and networking come later, i
 |---------------------------------------------|----------|
 | nothing moved: scene and index update       | 0.002 ms |
 | 10,000 moved: scene update                  | 0.6 ms   |
-| 10,000 moved: spatial index update (refit)  | 0.3 ms   |
-| frustum query, about 20,000 visible         | 4.5 ms   |
+| 10,000 moved: spatial index update (refit)  | 0.4 ms   |
+| frustum query, about 20,000 visible         | 0.66 ms  |
 
-The frustum query is the next target: faster culling in common-math's BVH (true-sim/common-math#11) and per-cell
-static hierarchies with milestone 2.
+The frustum query uses plane masks and accepts fully visible subtrees untested (common-math 0.4.0); per-cell static
+hierarchies come with milestone 2.
 
 ### Positions
 
