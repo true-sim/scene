@@ -98,7 +98,7 @@ static final Layer<CollisionCell> COLLISION = Layer.of("collision", CollisionCel
 
 // Interest: reusable profiles saying what a kind of observer needs.
 static final InterestProfile PLAYER_VIEW = InterestProfile.builder()
-    .layer(TERRAIN, Detail.screenError(2f), Range.horizon())
+    .layer(TERRAIN, Detail.bands(256, 512, 1024, 2048, 4096, 8192)) // screen-space error comes with #7
     .layer(PROPS, Detail.bands(150, 600, 2500))
     .layer(COLLISION, Detail.full(), Range.radius(200))
     .build();
@@ -108,8 +108,12 @@ static final InterestProfile SERVER_PLAYER = InterestProfile.builder()
 
 // Sources: one per camera, viewport or player; cheap and mutable.
 InterestSource camera = world.addInterest(PLAYER_VIEW, Priority.HIGH);
-camera.moveTo(position);            // every frame, allocation-free
-world.update();                     // residency: starts and cancels loads within the budgets
+camera.moveTo(x, y, z);             // every frame, allocation-free
+world.update();                     // requests what sources newly need, releases what none needs
+
+// Loaders: load in the background, attach on the main thread at the frame boundary.
+world.register(PROPS, propLoader);
+tasks.drainCompleted();             // once per frame: finished loads attach here
 ```
 
 - **Several kinds of detail:** LOD chains and mips inside assets, HLOD proxies for groups of cells (house → block →
