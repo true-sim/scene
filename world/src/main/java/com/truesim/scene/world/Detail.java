@@ -20,14 +20,16 @@ import java.util.Arrays;
  */
 public final class Detail {
 
-    private static final Detail FULL = new Detail(new double[0], 0);
+    private static final Detail FULL = new Detail(new double[0], 0, 0);
 
     private final double[] bands;
     private final double pixels;
+    private final double errorPerMeter;
 
-    private Detail(double[] bands, double pixels) {
+    private Detail(double[] bands, double pixels, double errorPerMeter) {
         this.bands = bands;
         this.pixels = pixels;
+        this.errorPerMeter = errorPerMeter;
     }
 
     /** The finest level everywhere within the range. */
@@ -47,7 +49,7 @@ public final class Detail {
                     + Arrays.toString(distances));
             }
         }
-        return new Detail(distances.clone(), 0);
+        return new Detail(distances.clone(), 0, 0);
     }
 
     /**
@@ -55,10 +57,27 @@ public final class Detail {
      * while its size, projected at its distance on the source's view, exceeds {@code pixels}.
      */
     public static Detail screenError(double pixels) {
+        return screenError(pixels, 1);
+    }
+
+    /**
+     * As fine as needed for no cell to look more than {@code pixels} too coarse, where a cell's geometric error is its
+     * size times {@code errorPerMeter}: e.g. 0.01 for terrain whose coarser tiles deviate by about 1 % of their size.
+     * {@link #screenError(double)} takes the whole size as the error, which is conservative.
+     */
+    public static Detail screenError(double pixels, double errorPerMeter) {
         if (!(pixels > 0) || Double.isInfinite(pixels)) {
             throw new IllegalArgumentException("The screen-space error must be positive and finite: " + pixels);
         }
-        return new Detail(new double[0], pixels);
+        if (!(errorPerMeter > 0) || Double.isInfinite(errorPerMeter)) {
+            throw new IllegalArgumentException("The error per meter must be positive and finite: " + errorPerMeter);
+        }
+        return new Detail(new double[0], pixels, errorPerMeter);
+    }
+
+    /** A cell's geometric error per meter of its size, for {@link #screenError(double, double)}. */
+    public double errorPerMeter() {
+        return errorPerMeter;
     }
 
     /** Whether this is {@link #screenError(double)}. */

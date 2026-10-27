@@ -18,5 +18,6 @@ coverage {
 tasks.test {
     if (providers.environmentVariable("TRUESIM_BENCHMARK").orNull == "true") {
         maxHeapSize = "4g"
+        extensions.configure<JacocoTaskExtension> { isEnabled = false } // measure the code, not its coverage probes
     }
 }
