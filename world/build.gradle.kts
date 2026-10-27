@@ -13,3 +13,10 @@ dependencies {
 coverage {
     minimum = 1.0
 }
+
+// The benchmark (TRUESIM_BENCHMARK=true) streams a large grid of cells.
+tasks.test {
+    if (providers.environmentVariable("TRUESIM_BENCHMARK").orNull == "true") {
+        maxHeapSize = "4g"
+    }
+}
