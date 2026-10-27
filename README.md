@@ -44,6 +44,20 @@ Importers (glTF and others), a serialization format and networking come later, i
 - **Deterministic.** The same inputs give the same scene on every machine and thread count, as in common-jobs and
   common-collision.
 
+### Measured
+
+`SceneBenchmark` (run with `TRUESIM_BENCHMARK=true`): 1,000,000 static and 10,000 moving nodes, on a desktop CPU.
+
+| Per frame                                   | Time     |
+|---------------------------------------------|----------|
+| nothing moved: scene and index update       | 0.002 ms |
+| 10,000 moved: scene update                  | 0.6 ms   |
+| 10,000 moved: spatial index update (refit)  | 0.3 ms   |
+| frustum query, about 20,000 visible         | 4.5 ms   |
+
+The frustum query is the next target: faster culling in common-math's BVH (true-sim/common-math#11) and per-cell
+static hierarchies with milestone 2.
+
 ### Positions
 
 World positions are `double`, like common-math and common-collision: precise to about a nanometre even 10,000 km from

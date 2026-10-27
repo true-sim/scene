@@ -154,6 +154,11 @@ public final class SceneGraph {
         return grown;
     }
 
+    /** The clock this scene stamps its changes on, e.g. for {@link ChangeClock#cursor()}. */
+    public ChangeClock clock() {
+        return clock;
+    }
+
     // ---------------------------------------------------------------- nodes
 
     /** A new node at the world's origin, without a parent. */
@@ -645,13 +650,26 @@ public final class SceneGraph {
         if (since < logIncompleteThrough) {
             return false;
         }
-        for (int i = 0; i < logSize; i++) {
+        for (int i = firstAfter(since); i < logSize; i++) {
             int entry = (logStart + i) % logStamps.length;
-            if (logStamps[entry] > since) {
-                visitor.changed(logNodes[entry], logChanges[entry]);
-            }
+            visitor.changed(logNodes[entry], logChanges[entry]);
         }
         return true;
+    }
+
+    /** The position in the log of the first entry stamped after {@code since}: stamps only grow, so a binary search. */
+    private int firstAfter(long since) {
+        int low = 0;
+        int high = logSize;
+        while (low < high) {
+            int middle = (low + high) >>> 1;
+            if (logStamps[(logStart + middle) % logStamps.length] > since) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        return low;
     }
 
     /** The stamp of the node's last logged change. */
