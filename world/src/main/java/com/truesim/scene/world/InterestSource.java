@@ -1,5 +1,7 @@
 package com.truesim.scene.world;
 
+import com.truesim.common.math.Maths;
+
 /**
  * One observer of the world, e.g. a camera, a viewport or a player on a server: a position, an
  * {@link InterestProfile} saying what it needs, and a priority for ordering loads. Sources are cheap: create one per
@@ -25,6 +27,8 @@ public final class InterestSource implements AutoCloseable {
     double y;
     double z;
     boolean moved = true;
+    /** Pixels per unit of size at distance 1: viewport height / (2 tan(fovY / 2)). */
+    double projection = projection(Math.PI / 3, 1080);
     boolean closed;
 
     InterestSource(World world, InterestProfile profile, Priority priority) {
@@ -64,6 +68,27 @@ public final class InterestSource implements AutoCloseable {
             z = newZ;
             moved = true;
         }
+    }
+
+    /**
+     * Sets the view the source renders, for {@link Detail#screenError(double)}: the vertical field of view in radians
+     * and the viewport height in pixels. A narrower view (zooming in) or a taller viewport loads finer detail. Defaults
+     * to 60 degrees and 1080 pixels.
+     */
+    public void setView(double fovY, double viewportHeight) {
+        if (!(fovY > 0 && fovY < Math.PI) || !(viewportHeight > 0)) {
+            throw new IllegalArgumentException("A view needs a field of view between 0 and pi and a positive height: "
+                + fovY + ", " + viewportHeight);
+        }
+        double updated = projection(fovY, viewportHeight);
+        if (updated != projection) {
+            projection = updated;
+            moved = true;
+        }
+    }
+
+    private static double projection(double fovY, double viewportHeight) {
+        return viewportHeight / (2 * Maths.tan(fovY / 2));
     }
 
     public double x() {

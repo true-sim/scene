@@ -51,17 +51,18 @@ public final class InterestProfile {
         private Builder() {
         }
 
-        /** Wants {@code layer} at bands of detail; full detail needs a range: see the other overload. */
+        /** Wants {@code layer} at bands of detail; full detail and screen-space error need a range (other overload). */
         public Builder layer(Layer<?> layer, Detail detail) {
-            if (detail.isFull()) {
-                throw new IllegalArgumentException("Full detail of " + layer + " needs a range");
+            if (detail.isFull() || detail.isScreenError()) {
+                throw new IllegalArgumentException((detail.isFull() ? "Full detail" : "Screen-space error") + " of "
+                    + layer + " needs a range");
             }
             return add(layer, detail, null);
         }
 
-        /** Wants {@code layer} at full detail within {@code range}. */
+        /** Wants {@code layer} at full detail, or as fine as its screen-space error needs, within {@code range}. */
         public Builder layer(Layer<?> layer, Detail detail, Range range) {
-            if (!detail.isFull()) {
+            if (!detail.isFull() && !detail.isScreenError()) {
                 throw new IllegalArgumentException("Bands of " + layer + " carry their own range");
             }
             return add(layer, detail, range);
