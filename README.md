@@ -63,19 +63,44 @@ hierarchies come with milestone 2.
 `StreamingBenchmark` (`TRUESIM_BENCHMARK=true`): 4,096 cells of 64 static props (262,144 nodes), generated in memory,
 so it measures the world, scene and index rather than a disk.
 
-| Step                                          | Cost                      |
-|-----------------------------------------------|---------------------------|
-| request a new cell (starts its load)          | 25-40 µs (#26)            |
-| attach a loaded cell (64 nodes)               | 18.5 µs                   |
-| request and release an already loaded cell   | 0.2 µs                    |
-| release a cell (detach 64 nodes)              | 5 µs                      |
-| 64 cells streaming into the loaded world       | 0.5 ms attach, 2.2 ms index |
-| 64 cells leaving it                           | 1.1 ms                    |
+| Step                                       | Nodes created on attach     | Batches prepared in the background |
+|--------------------------------------------|-----------------------------|------------------------------------|
+| request a new cell (starts its load)       | 3-26 µs (#26)               | 3-26 µs                            |
+| attach a loaded cell (64 nodes)            | 18 µs                       | 12 µs                              |
+| request and release an already loaded cell | 16 ns                       | 16 ns                              |
+| 64 cells streaming into the loaded world   | 0.4 ms attach, 0.8 ms index | 0.3 ms attach, 0.1 ms index        |
+| 64 cells leaving it                        | 0.1 ms                      | 0.1 ms                             |
+| all 4,096 cells in one go: worst frame     | 191 ms                      | 25 ms                              |
 
 Static nodes are indexed per cell: each streamed cell builds a small tree of its own, under a top-level tree of
 cells, so a cell coming or going costs about its own size. Before that, any static change rebuilt one tree over
-everything (154 ms at this size). Attaching all 4,096 cells in a single frame still takes about 160 ms; a per-frame
-attach budget (#7) spreads such bursts over frames.
+everything (154 ms at this size). A per-frame attach budget (#7) spreads bursts over frames.
+
+### Staged content: prepare in the background, apply cheaply
+
+A loader can build a cell's nodes as a `SceneBatch` on its lane: hierarchy, transforms, bounds, mobility and layers,
+as arrays. `prepare()`, still in the background, computes world transforms and bounds and builds the tree of the
+static nodes. On the main thread `content.apply(batch)` copies the arrays into the scene and hands the tree to the
+spatial index, which adopts it instead of building one, so attaching is mostly copying memory:
+
+```java
+// CellLoader.load(), on a lane:
+SceneBatch batch = new SceneBatch();
+for (Prop prop : props) {
+    int node = batch.add();               // or batch.add(parent): parents first
+    batch.setTranslation(node, prop.x(), prop.y(), prop.z());
+    batch.setLocalBounds(node, -1, 0, -1, 1, 4, 1);
+    batch.setMobility(node, Mobility.STATIC);
+}
+batch.prepare();
+
+// CellLoader.attach(), on the main thread:
+content.apply(batch);
+```
+
+Nodes from a batch are ordinary nodes: they report `CREATED` through the change log, and moving one later rebuilds
+its cell's tree as usual. If anything touches them before the index catches up, or an index misses the hand-over, the
+index builds the tree itself.
 
 ### Fly-through, measured
 

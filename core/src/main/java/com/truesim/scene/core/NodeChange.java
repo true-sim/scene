@@ -22,6 +22,11 @@ public final class NodeChange {
     public static final int MOBILITY = 1 << 6;
     /** The node's group changed; see {@link SceneGraph#setGroup}. */
     public static final int GROUP = 1 << 7;
+    /**
+     * The node came from a prepared {@link SceneBatch} and has not changed since: the spatial index adopted the
+     * batch's tree for it. Reported together with {@link #CREATED}.
+     */
+    public static final int PREPARED = 1 << 8;
 
     private NodeChange() {
     }

@@ -1,6 +1,7 @@
 package com.truesim.scene.world;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.scene.core.SceneBatch;
 import com.truesim.scene.core.SceneGraph;
 import java.util.Arrays;
 
@@ -63,6 +64,22 @@ public final class CellContent {
         nodes[count++] = node;
         scene.setGroup(node, group);
         return node;
+    }
+
+    /**
+     * Adds a {@link SceneBatch}'s nodes, in this cell's group, removed with the cell: the way to attach content
+     * prepared in {@link CellLoader#load} (build the batch there and call {@link SceneBatch#prepare()}), so the main
+     * thread mostly copies memory and the spatial index takes the batch's tree as it is.
+     */
+    @AllowAllocation("applying a batch")
+    public void apply(SceneBatch batch) {
+        long[] handles = new long[batch.size()];
+        scene.apply(batch, group, handles);
+        if (count + handles.length > nodes.length) {
+            nodes = Arrays.copyOf(nodes, Math.max(nodes.length * 2, count + handles.length));
+        }
+        System.arraycopy(handles, 0, nodes, count, handles.length);
+        count += handles.length;
     }
 
     /** How many nodes belong to this cell. */

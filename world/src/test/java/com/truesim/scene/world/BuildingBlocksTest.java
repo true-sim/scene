@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.truesim.common.state.ChangeClock;
+import com.truesim.scene.core.Mobility;
+import com.truesim.scene.core.SceneBatch;
 import com.truesim.scene.core.SceneGraph;
+import com.truesim.scene.core.SpatialIndex;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -127,6 +130,36 @@ class BuildingBlocksTest {
         assertThat(map.get(at15.get(0))).isEqualTo(1);
         assertThat(map.get(at15.get(1))).isEqualTo(2);
         assertThat(map.get(at14)).isEqualTo(-1);
+    }
+
+    @Test
+    void contentAppliesPreparedBatches() {
+        SceneGraph scene = new SceneGraph(new ChangeClock());
+        SpatialIndex index = new SpatialIndex(scene);
+        CellContent content = new CellContent(scene, 4);
+        content.create();
+        SceneBatch small = new SceneBatch();
+        small.add();
+        content.apply(small); // fits as it is
+        SceneBatch batch = new SceneBatch();
+        for (int i = 0; i < 20; i++) { // past the content's initial capacity
+            int node = batch.add();
+            batch.setTranslation(node, i, 0, 0);
+            batch.setLocalBounds(node, 0, 0, 0, 1, 1, 1);
+            batch.setMobility(node, Mobility.STATIC);
+        }
+        batch.prepare();
+        content.apply(batch);
+        assertThat(content.nodeCount()).isEqualTo(22);
+        assertThat(scene.group(content.node(6))).isEqualTo(4);
+        scene.update();
+        index.update();
+        assertThat(index.staticCount()).isEqualTo(20);
+        content.removeAll();
+        scene.update();
+        index.update();
+        assertThat(scene.size()).isZero();
+        assertThat(index.staticCount()).isZero();
     }
 
     @Test

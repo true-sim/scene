@@ -100,6 +100,8 @@ public final class SpatialIndex {
     private long rayNode;
     private final RayHit groupHit = new RayHit();
     private final RayHit rayHit = new RayHit();
+    private SceneGraph.Prepared[] adoptions = new SceneGraph.Prepared[0];
+    private boolean[] adopting = new boolean[0];
     private final Bvh.Visitor visitGroup = primitive ->
         report(groupNodes[currentGroup][primitive], groupLayers[currentGroup][primitive]);
     private final Bvh.Visitor visitDynamic = primitive -> report(dynamicNodes[primitive], dynamicLayers[primitive]);
@@ -183,11 +185,13 @@ public final class SpatialIndex {
      */
     public void update() {
         long since = cursor.mark();
+        int noted = collectPrepared();
         if (!scene.changesSince(since, onChange)) {
             clear();
             scene.forEach(onNode);
         }
-        if (dirtyGroupCount > 0) {
+        boolean adopted = finishAdoptions(noted);
+        if (dirtyGroupCount > 0 || adopted) {
             for (int i = 0; i < dirtyGroupCount; i++) {
                 rebuildGroup(dirtyGroups[i]);
             }
@@ -224,6 +228,11 @@ public final class SpatialIndex {
         return dynamicCount;
     }
 
+    /** Group {@code group}'s static tree, or {@code null}: for tests. */
+    Bvh groupTree(int group) {
+        return group < groupTree.length ? groupTree[group] : null;
+    }
+
     /** How many groups have static nodes. */
     public int groupCount() {
         return topCount;
@@ -236,8 +245,92 @@ public final class SpatialIndex {
                 remove(slot);
             }
         } else if (scene.contains(node)) {
+            int slot = NodeHandle.index(slotSafe(node));
+            int group = scene.group(node);
+            if (NodeChange.has(changes, NodeChange.PREPARED) && group < adopting.length && adopting[group]) {
+                return; // unchanged since its batch was applied: joins with the batch's tree after the log
+            }
             place(node);
         }
+    }
+
+    /**
+     * Notes the static trees of batches applied to the scene since the last update: their groups are adopted after the
+     * change log is read (see {@link #finishAdoptions}), so that removals of nodes whose slots they reuse come first.
+     */
+    @AllowAllocation("growing")
+    private int collectPrepared() {
+        int count = 0;
+        for (int i = 0; i < scene.preparedCount(); i++) {
+            SceneGraph.Prepared prepared = scene.prepared(i);
+            if (!prepared.adopted) {
+                prepared.adopted = true;
+                if (count == adoptions.length) {
+                    adoptions = Arrays.copyOf(adoptions, Math.max(8, count * 2));
+                }
+                adoptions[count++] = prepared;
+                if (prepared.group >= adopting.length) {
+                    adopting = Arrays.copyOf(adopting, Math.max(prepared.group + 1, adopting.length * 2));
+                }
+                adopting[prepared.group] = true;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Takes over the noted trees, for groups this index has nothing in: their nodes join the group as the batch
+     * numbered them and the batch's tree becomes the group's, so nothing is built here. Where that is not possible (a
+     * node is gone, or the group is in use), the batch's nodes are placed one by one, as without a tree.
+     */
+    private boolean finishAdoptions(int count) {
+        boolean any = false;
+        for (int i = 0; i < count; i++) {
+            SceneGraph.Prepared prepared = adoptions[i];
+            adoptions[i] = null;
+            adopting[prepared.group] = false;
+            if (adopt(prepared)) {
+                any = true;
+            } else {
+                for (long node : prepared.nodes) {
+                    if (scene.contains(node)) {
+                        place(node);
+                    }
+                }
+            }
+        }
+        return any;
+    }
+
+    @AllowAllocation("adopting a prepared group")
+    private boolean adopt(SceneGraph.Prepared prepared) {
+        int group = prepared.group;
+        ensureGroup(group);
+        if (groupCount[group] > 0) {
+            return false;
+        }
+        for (long node : prepared.nodes) {
+            if (!scene.contains(node) || where[NodeHandle.index(slotSafe(node))] != NOWHERE) {
+                return false; // gone, or changed and placed already
+            }
+        }
+        int count = prepared.nodes.length;
+        groupNodes[group] = prepared.nodes.clone();
+        groupLayers[group] = new int[count];
+        for (int i = 0; i < count; i++) {
+            long node = prepared.nodes[i];
+            int slot = NodeHandle.index(slotSafe(node));
+            where[slot] = STATIC;
+            position[slot] = i;
+            groupOf[slot] = group;
+            groupLayers[group][i] = scene.layers(node);
+        }
+        groupCount[group] = count;
+        staticCount += count;
+        groupTree[group] = prepared.tree;
+        System.arraycopy(prepared.box, 0, groupBox, group * 6, 6);
+        joinTop(group);
+        return true;
     }
 
     /** {@code node} itself, after making sure the membership arrays reach its slot. */
@@ -302,7 +395,7 @@ public final class SpatialIndex {
     // ---------------------------------------------------------------- static groups
 
     @AllowAllocation("growing")
-    private void addStatic(int slot, long node, int group) {
+    private void ensureGroup(int group) {
         if (group >= groupCount.length) {
             int length = Math.max(group + 1, groupCount.length * 2);
             groupNodes = Arrays.copyOf(groupNodes, length);
@@ -316,6 +409,11 @@ public final class SpatialIndex {
             topSlot = Arrays.copyOf(topSlot, length);
             Arrays.fill(topSlot, was, length, -1);
         }
+    }
+
+    @AllowAllocation("growing")
+    private void addStatic(int slot, long node, int group) {
+        ensureGroup(group);
         if (groupNodes[group] == null) {
             groupNodes[group] = new long[8];
             groupLayers[group] = new int[8];
@@ -383,7 +481,12 @@ public final class SpatialIndex {
         groupBox[box + 4] = maxY;
         groupBox[box + 5] = maxZ;
         groupTree[group] = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
-        if (topSlot[group] < 0) { // joins the top level
+        joinTop(group);
+    }
+
+    /** Gives a group with a tree a slot in the top level, if it has none, and sets its box there. */
+    private void joinTop(int group) {
+        if (topSlot[group] < 0) {
             if (freeTopCount == 0) {
                 growTop(group);
             }
