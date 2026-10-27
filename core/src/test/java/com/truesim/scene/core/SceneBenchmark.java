@@ -2,6 +2,7 @@ package com.truesim.scene.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.truesim.common.jobs.JobSystem;
 import com.truesim.common.math.Mat4;
 import com.truesim.common.math.Vec3;
 import com.truesim.common.math.geometry.Frustum;
@@ -25,9 +26,19 @@ class SceneBenchmark {
 
     @Test
     void mixedStaticAndDynamicScene() {
+        try (JobSystem jobs = JobSystem.ofAvailableProcessors()) {
+            run(null, false); // warm up both paths first
+            run(jobs, false);
+            run(null, true);
+            run(jobs, true);
+        }
+    }
+
+    private void run(JobSystem jobs, boolean print) {
         long start = System.nanoTime();
         ChangeClock clock = new ChangeClock();
         SceneGraph scene = new SceneGraph(clock, GRID * GRID + MOVING, 1 << 20);
+        scene.setJobs(jobs);
         for (int x = 0; x < GRID; x++) {
             for (int z = 0; z < GRID; z++) {
                 long node = scene.create();
@@ -42,8 +53,10 @@ class SceneBenchmark {
             scene.setLocalBounds(moving[i], -0.5, 0, -0.5, 0.5, 1, 0.5);
         }
         SpatialIndex index = new SpatialIndex(scene);
+        index.setJobs(jobs);
         long created = System.nanoTime();
         scene.update();
+        long propagated = System.nanoTime();
         index.update();
         long built = System.nanoTime();
 
@@ -88,17 +101,45 @@ class SceneBenchmark {
                 visible = (int) sink;
             }
         }
+        // Five views at once, e.g. a camera and four shadow cascades looking different ways.
+        Frustum[] views = new Frustum[5];
+        SpatialIndex.ViewResults results = new SpatialIndex.ViewResults();
+        long viewsTime = 0;
+        int viewNodes = 0;
+        for (int frame = 0; frame < FRAMES * 2; frame++) {
+            for (int v = 0; v < views.length; v++) {
+                Vec3 eye = Vec3.of(2000 + frame, 50, 2000);
+                double angle = v * 1.2566 + frame * 0.01;
+                views[v] = Frustum.fromMatrix(projection.mul(Mat4.lookAt(eye, eye.add(Vec3.of(Math.cos(angle), -0.3,
+                    Math.sin(angle))), Vec3.of(0, 1, 0))));
+            }
+            long t0 = System.nanoTime();
+            index.queryFrustums(views, views.length, -1, results);
+            if (frame >= FRAMES) {
+                viewsTime += System.nanoTime() - t0;
+                viewNodes = 0;
+                for (int v = 0; v < views.length; v++) {
+                    viewNodes += results.count(v);
+                }
+            }
+        }
+        assertThat(index.staticCount()).isEqualTo(GRID * GRID);
+        assertThat(index.dynamicCount()).isEqualTo(MOVING);
+        if (!print) {
+            return;
+        }
         int movingFrames = FRAMES / 2;
-        System.out.printf(Locale.ROOT, "Scene benchmark: %,d static and %,d moving nodes%n", GRID * GRID, MOVING);
-        System.out.printf(Locale.ROOT, "  setup: create %.0f ms, first update and index build %.0f ms%n",
-            (created - start) / 1e6, (built - created) / 1e6);
+        System.out.printf(Locale.ROOT, "Scene benchmark (%s): %,d static and %,d moving nodes%n",
+            jobs == null ? "one thread" : jobs.threads() + " threads", GRID * GRID, MOVING);
+        System.out.printf(Locale.ROOT, "  setup: create %.0f ms, first scene update %.0f ms, index build %.0f ms%n",
+            (created - start) / 1e6, (propagated - created) / 1e6, (built - propagated) / 1e6);
         System.out.printf(Locale.ROOT, "  frame with %,d moving: scene update %.2f ms, index update %.2f ms%n", MOVING,
             sceneTime / 1e6 / movingFrames, indexTime / 1e6 / movingFrames);
         System.out.printf(Locale.ROOT, "  frame with nothing moving: scene and index update %.3f ms%n",
             staticOnly / 1e6 / (FRAMES - movingFrames));
         System.out.printf(Locale.ROOT, "  frustum query: %.2f ms for %,d visible nodes%n", queryTime / 1e6 / FRAMES,
             visible);
-        assertThat(index.staticCount()).isEqualTo(GRID * GRID);
-        assertThat(index.dynamicCount()).isEqualTo(MOVING);
+        System.out.printf(Locale.ROOT, "  %d views at once: %.2f ms for %,d nodes found%n", views.length,
+            viewsTime / 1e6 / FRAMES, viewNodes);
     }
 }

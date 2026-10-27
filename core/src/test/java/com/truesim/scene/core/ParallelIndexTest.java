@@ -1,8 +1,13 @@
 package com.truesim.scene.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import com.truesim.common.jobs.JobSystem;
+import com.truesim.common.math.Mat4;
+import com.truesim.common.math.Vec3;
+import com.truesim.common.math.geometry.Frustum;
 import com.truesim.common.state.ChangeClock;
 import java.util.ArrayList;
 import java.util.List;
@@ -10,7 +15,7 @@ import java.util.SplittableRandom;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-/** Group trees rebuilt on a job system: the same index as rebuilt on one thread. */
+/** Group trees rebuilt and views queried on a job system: the same results as on one thread. */
 class ParallelIndexTest {
 
     private static final int GROUPS = 40;
@@ -98,5 +103,64 @@ class ParallelIndexTest {
         }
         assertSame(serial, parallel);
         assertThat(parallel.index.groupCount()).isEqualTo(GROUPS - 1);
+    }
+
+    /** A frustum looking along +x from (x, 30, 50), down a little. */
+    private static Frustum view(double x) {
+        Mat4 projection = Mat4.perspective(Math.PI / 3, 16.0 / 9, 0.1, 400);
+        Vec3 eye = Vec3.of(x, 30, 50);
+        return Frustum.fromMatrix(projection.mul(Mat4.lookAt(eye, eye.add(Vec3.of(1, -0.3, 0)), Vec3.of(0, 1, 0))));
+    }
+
+    @Test
+    void severalViewsAtOnceFindWhatSingleQueriesFind() {
+        Fixture serial = new Fixture(null);
+        Fixture parallel = new Fixture(jobs);
+        long moving = parallel.scene.create(); // a dynamic node too
+        parallel.scene.setTranslation(moving, 400, 0, 50);
+        parallel.scene.setLocalBounds(moving, -1, 0, -1, 1, 2, 1);
+        parallel.update();
+        Frustum[] views = new Frustum[8];
+        for (int v = 0; v < views.length; v++) {
+            views[v] = view(v * 500);
+        }
+        SpatialIndex.ViewResults inParallel = new SpatialIndex.ViewResults();
+        SpatialIndex.ViewResults inOrder = new SpatialIndex.ViewResults();
+        parallel.index.queryFrustums(views, 6, -1, inParallel);
+        parallel.index.setJobs(null);
+        parallel.index.queryFrustums(views, 6, -1, inOrder);
+        assertThat(inParallel.views()).isEqualTo(6);
+        for (int v = 0; v < 6; v++) {
+            List<Long> single = new ArrayList<>();
+            parallel.index.queryFrustum(views[v], -1, node -> single.add(node));
+            assertThat(single).isNotEmpty();
+            assertThat(nodes(inParallel, v)).isEqualTo(single);
+            assertThat(nodes(inOrder, v)).isEqualTo(single);
+        }
+        assertThat(nodes(inParallel, 0)).contains(moving);
+        // Reused with fewer views, with one view on a job system, and checked.
+        parallel.index.setJobs(jobs);
+        parallel.index.queryFrustums(views, 2, -1, inParallel); // the workers' contexts are reused
+        assertThat(nodes(inParallel, 1)).isEqualTo(nodes(inOrder, 1));
+        parallel.index.queryFrustums(views, 1, -1, inParallel);
+        assertThat(inParallel.views()).isEqualTo(1);
+        assertThat(nodes(inParallel, 0)).isEqualTo(nodes(inOrder, 0));
+        serial.index.queryFrustums(views, 0, -1, inOrder);
+        assertThat(inOrder.views()).isZero();
+        assertThatIllegalArgumentException().isThrownBy(() -> serial.index.queryFrustums(views, 9, -1, inOrder));
+        assertThatIllegalArgumentException().isThrownBy(() -> serial.index.queryFrustums(views, -1, -1, inOrder));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> inParallel.count(1));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> inParallel.count(-1));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> inParallel.node(0, -1));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class)
+            .isThrownBy(() -> inParallel.node(0, inParallel.count(0)));
+    }
+
+    private static List<Long> nodes(SpatialIndex.ViewResults results, int view) {
+        List<Long> nodes = new ArrayList<>();
+        for (int i = 0; i < results.count(view); i++) {
+            nodes.add(results.node(view, i));
+        }
+        return nodes;
     }
 }

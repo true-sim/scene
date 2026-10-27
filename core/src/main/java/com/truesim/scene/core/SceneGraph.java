@@ -1,6 +1,7 @@
 package com.truesim.scene.core;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.common.jobs.JobSystem;
 import com.truesim.common.math.Quat;
 import com.truesim.common.math.Transform;
 import com.truesim.common.math.TransformArray;
@@ -47,6 +48,10 @@ public final class SceneGraph {
     public static final int DEFAULT_LOG_CAPACITY = 1 << 16;
 
     private static final int NONE = -1;
+    /** Fewer moved nodes than this propagate on the calling thread even with a job system: not worth the hand-off. */
+    private static final int PARALLEL_MIN = 256;
+    /** Moved subtrees per parallel chunk: most are single moving nodes. */
+    private static final int ROOTS_PER_CHUNK = 64;
     /** Bounds from +infinity to -infinity: none. */
     static final double EMPTY = Double.POSITIVE_INFINITY;
 
@@ -83,6 +88,16 @@ public final class SceneGraph {
     private int[] pendingSlots;
     private int pendingCount;
     private int[] stack;
+
+    // Propagating in parallel, when a job system is set: the roots of the moved subtrees, computed one per index.
+    private JobSystem jobs;
+    private int[] roots;
+    private int rootCount;
+    private final JobSystem.RangeTask computeRoots = (from, to, worker) -> {
+        for (int i = from; i < to; i++) {
+            compute(roots[i]);
+        }
+    };
     private boolean[] boundsDirty;
     private int[] boundsDirtySlots;
     private int boundsDirtyCount;
@@ -132,6 +147,7 @@ public final class SceneGraph {
         listed = Arrays.copyOf(listed == null ? new boolean[0] : listed, capacity);
         pendingSlots = Arrays.copyOf(pendingSlots == null ? new int[0] : pendingSlots, capacity);
         stack = Arrays.copyOf(stack == null ? new int[0] : stack, capacity);
+        roots = Arrays.copyOf(roots == null ? new int[0] : roots, capacity);
         dynamic = Arrays.copyOf(dynamic == null ? new boolean[0] : dynamic, capacity);
         layers = Arrays.copyOf(layers == null ? new int[0] : layers, capacity);
         groups = Arrays.copyOf(groups == null ? new int[0] : groups, capacity);
@@ -706,10 +722,14 @@ public final class SceneGraph {
      * descendants, parents first; then logs the changes with one stamp.
      */
     public void update() {
-        for (int i = 0; i < dirtyCount; i++) {
-            int slot = dirtySlots[i];
-            if (alive[slot] && !hasDirtyAncestor(slot)) {
-                propagate(slot);
+        if (jobs != null && dirtyCount >= PARALLEL_MIN) {
+            propagateInParallel();
+        } else {
+            for (int i = 0; i < dirtyCount; i++) {
+                int slot = dirtySlots[i];
+                if (alive[slot] && !hasDirtyAncestor(slot)) {
+                    propagate(slot);
+                }
             }
         }
         for (int i = 0; i < dirtyCount; i++) {
@@ -750,6 +770,84 @@ public final class SceneGraph {
             }
         }
         return false;
+    }
+
+    /**
+     * Computes the world transforms of the nodes moved since the last update on {@code jobs}, e.g. when many nodes
+     * move or a large scene first updates; {@code null} (the default) computes on the calling thread. Moved subtrees
+     * are computed in parallel, each writing only its own nodes; their changes are then recorded in the same order as
+     * on one thread, so the change log does not depend on the number of threads. Call {@link #update()} from the thread
+     * that submits to {@code jobs}.
+     */
+    public void setJobs(JobSystem jobs) {
+        this.jobs = jobs;
+    }
+
+    /**
+     * Like the serial loop in {@link #update()}: the moved subtrees' transforms and bounds in parallel, then their
+     * changes recorded in order.
+     */
+    private void propagateInParallel() {
+        rootCount = 0;
+        for (int i = 0; i < dirtyCount; i++) {
+            int slot = dirtySlots[i];
+            if (alive[slot] && !hasDirtyAncestor(slot)) {
+                roots[rootCount++] = slot;
+            }
+        }
+        jobs.parallelFor(rootCount, ROOTS_PER_CHUNK, computeRoots);
+        for (int i = 0; i < rootCount; i++) {
+            record(roots[i]);
+        }
+    }
+
+    /**
+     * Computes the world transforms and bounds of {@code root} and everything below it, walking the child and sibling
+     * links without a stack, so threads need nothing of their own.
+     */
+    private void compute(int root) {
+        int slot = root;
+        while (true) {
+            computeNode(slot);
+            if (firstChild[slot] != NONE) {
+                slot = firstChild[slot];
+                continue;
+            }
+            while (slot != root && nextSibling[slot] == NONE) {
+                slot = parent[slot];
+            }
+            if (slot == root) {
+                return;
+            }
+            slot = nextSibling[slot];
+        }
+    }
+
+    private void computeNode(int slot) {
+        int parentSlot = parent[slot];
+        if (parentSlot == NONE) {
+            MemorySegment.copy(local.segment(), slot * local.stride(), world.segment(), slot * world.stride(),
+                world.stride());
+        } else {
+            world.setProduct(slot, world, parentSlot, local, slot);
+        }
+        if (hasBounds(slot, localBounds)) {
+            computeWorldBounds(slot);
+        }
+    }
+
+    /** Records the changes of {@code root} and everything below it, in the order {@link #propagate} does. */
+    private void record(int root) {
+        int top = 0;
+        stack[top++] = root;
+        while (top > 0) {
+            int slot = stack[--top];
+            markPending(slot, hasBounds(slot, localBounds) ? NodeChange.TRANSFORM | NodeChange.BOUNDS
+                : NodeChange.TRANSFORM);
+            for (int child = firstChild[slot]; child != NONE; child = nextSibling[child]) {
+                stack[top++] = child;
+            }
+        }
     }
 
     /** Recomputes the world transforms of {@code root} and everything below it. */
