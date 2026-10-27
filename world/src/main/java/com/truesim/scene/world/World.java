@@ -60,6 +60,8 @@ public final class World implements AutoCloseable {
     private boolean[] ready = new boolean[16];
     private int[] generation = new int[16];
     private CellContent[] content = new CellContent[16];
+    private Object[] pending = new Object[16]; // a reload's data, waiting to swap in
+    private long[][] reads = new long[16][]; // the features each cell's last load read
     private int[] free = new int[16];
     private int freeCount;
     private int entryCount;
@@ -69,6 +71,7 @@ public final class World implements AutoCloseable {
     private int failed;
     private boolean closed;
     private final List<InterestSource> sources = new ArrayList<>();
+    private final Features features = new Features();
     private double hysteresis = 0.15;
     private int attachBudget = Integer.MAX_VALUE;
     private int attachedThisFrame;
@@ -103,6 +106,11 @@ public final class World implements AutoCloseable {
 
     public SceneGraph scene() {
         return scene;
+    }
+
+    /** The feature states loads read; changes apply on the next {@link #update()}. */
+    public Features features() {
+        return features;
     }
 
     /** Makes {@code layer}'s cells loadable with {@code loader}. Once per layer. */
@@ -231,6 +239,9 @@ public final class World implements AutoCloseable {
     public void update() {
         checkOpen();
         attachedThisFrame = 0;
+        if (features.pending()) {
+            applyFeatures();
+        }
         attachWaiting();
         for (int i = 0; i < sources.size(); i++) {
             InterestSource source = sources.get(i);
@@ -595,34 +606,53 @@ public final class World implements AutoCloseable {
     private void startLoad(int entry, Cell cell) {
         Registered registered = owner[entry];
         int expected = generation[entry];
-        content[entry].reset(cell);
+        if (state[entry] != CellState.LOADED) { // a loaded cell keeps its content until the reload swaps in
+            content[entry].reset(cell);
+        }
         // A flag instead of cancelling: cancelling interrupts a running load (which can close its file channels) and
         // drops its result unseen; a load no longer wanted when it starts skips, one finished is discarded.
         AtomicBoolean stillWanted = new AtomicBoolean(true);
         wanted[entry] = stillWanted;
-        registered.lane.task(() -> stillWanted.get() ? registered.loader.load(cell) : null)
+        FeatureReads featureReads = new FeatureReads(features.applied());
+        registered.lane.task(() -> stillWanted.get() ? registered.loader.load(cell, featureReads) : null)
             .priority(priority[entry].ordinal() * Levels.MAX_LEVELS + level[entry]) // urgent first, then coarse
-            .deliver(done -> delivered(entry, expected, registered, done))
+            .deliver(done -> delivered(entry, expected, registered, done, featureReads))
             .submit();
     }
 
     /** A load finished, failed or was cancelled; runs on the main thread when the scheduler is drained. */
-    private void delivered(int entry, int expected, Registered registered, Task<?> done) {
+    private void delivered(int entry, int expected, Registered registered, Task<?> done, FeatureReads featureReads) {
         if (generation[entry] != expected) {
-            // Released while loading; the slot may hold another cell by now. Hand finished data back.
+            // Released (or reloaded) while loading; the slot may hold another cell by now. Hand finished data back.
             if (done.state() == TaskState.SUCCEEDED && done.result() != null) {
                 registered.loader.discard(done.result());
             }
             return;
         }
         wanted[entry] = null;
+        reads[entry] = featureReads.bits();
+        if (featureReads.outdated(features.applied())) {
+            // A feature it read changed while it loaded: load again with the new states.
+            if (done.state() == TaskState.SUCCEEDED) {
+                registered.loader.discard(done.result());
+            }
+            restart(entry);
+            return;
+        }
+        boolean reloading = state[entry] == CellState.LOADED;
         if (done.state() == TaskState.SUCCEEDED) {
-            data[entry] = done.result();
+            if (reloading) {
+                pending[entry] = done.result();
+            } else {
+                data[entry] = done.result();
+            }
             if (readyCount == 0 && attachedThisFrame < attachBudget) {
                 attach(entry);
             } else {
                 enqueue(entry);
             }
+        } else if (reloading) {
+            fail(entry, done.failure()); // the cell keeps its content
         } else {
             loading--;
             state[entry] = CellState.FAILED;
@@ -631,13 +661,75 @@ public final class World implements AutoCloseable {
         }
     }
 
-    /** Attaches a loaded cell to the scene. */
+    /** Attaches a loaded cell to the scene, or swaps a reloaded one's content in the same frame. */
     private void attach(int entry) {
         attachedThisFrame++;
-        loading--;
-        state[entry] = CellState.LOADED;
-        loaded++;
-        owner[entry].loader.attach(data[entry], content[entry]);
+        CellLoader<Object> loader = owner[entry].loader;
+        if (state[entry] == CellState.LOADED) {
+            loader.detach(data[entry], content[entry]);
+            content[entry].reset(content[entry].cell());
+            data[entry] = pending[entry];
+            pending[entry] = null;
+        } else {
+            loading--;
+            state[entry] = CellState.LOADED;
+            loaded++;
+        }
+        loader.attach(data[entry], content[entry]);
+    }
+
+    // ---------------------------------------------------------------- features
+
+    /**
+     * Applies the feature changes since the last update: reloads every cell whose last load read a changed feature.
+     * Cells still loading are checked when their load is delivered.
+     */
+    @AllowAllocation("applying feature changes")
+    private void applyFeatures() {
+        FeatureState before = features.apply();
+        long[] changed = FeatureState.changed(before, features.applied());
+        for (int entry = 0; entry < entryCount; entry++) {
+            if (owner[entry] != null && wanted[entry] == null && FeatureReads.intersects(reads[entry], changed)) {
+                reload(entry);
+            }
+        }
+        features.notifyChanged(changed);
+    }
+
+    /** Loads a cell again that has no load running: it keeps its content until the new one swaps in. */
+    private void reload(int entry) {
+        if (ready[entry]) { // loaded data waiting for the attach budget, now outdated
+            unqueue(entry);
+            if (state[entry] == CellState.LOADED) {
+                owner[entry].loader.discard(pending[entry]);
+                pending[entry] = null;
+            } else {
+                owner[entry].loader.discard(data[entry]);
+                data[entry] = null;
+            }
+        } else if (state[entry] == CellState.FAILED) {
+            failed--;
+            loading++;
+            state[entry] = CellState.LOADING;
+        }
+        restart(entry);
+    }
+
+    /** Starts a new load for a cell, so a delivery of the previous one is discarded. */
+    private void restart(int entry) {
+        generation[entry]++;
+        startLoad(entry, content[entry].cell());
+    }
+
+    /** Loaded cells loading again after a feature change; their old content stays until the new one swaps in. */
+    public int reloadingCount() {
+        int count = 0;
+        for (int entry = 0; entry < entryCount; entry++) {
+            if (owner[entry] != null && state[entry] == CellState.LOADED && (wanted[entry] != null || ready[entry])) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** Keeps a loaded cell waiting for a frame with room in the attach budget. */
@@ -709,6 +801,13 @@ public final class World implements AutoCloseable {
             }
             case LOADED -> {
                 loaded--;
+                if (ready[entry]) { // a reload waiting to swap in
+                    unqueue(entry);
+                    registered.loader.discard(pending[entry]);
+                } else if (wanted[entry] != null) { // a reload running
+                    wanted[entry].set(false);
+                    wanted[entry] = null;
+                }
                 registered.loader.detach(data[entry], content[entry]);
             }
             default -> failed--;
@@ -717,6 +816,8 @@ public final class World implements AutoCloseable {
         generation[entry]++;
         owner[entry] = null;
         data[entry] = null;
+        pending[entry] = null;
+        reads[entry] = null;
         state[entry] = CellState.ABSENT;
         free[freeCount++] = entry;
     }
@@ -739,6 +840,8 @@ public final class World implements AutoCloseable {
             ready = Arrays.copyOf(ready, capacity);
             generation = Arrays.copyOf(generation, capacity);
             content = Arrays.copyOf(content, capacity);
+            pending = Arrays.copyOf(pending, capacity);
+            reads = Arrays.copyOf(reads, capacity);
             free = Arrays.copyOf(free, capacity);
         }
         content[entryCount] = new CellContent(scene, entryCount + 1); // group 0 is everything not streamed
