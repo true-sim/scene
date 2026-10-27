@@ -58,6 +58,22 @@ Importers (glTF and others), a serialization format and networking come later, i
 The frustum query uses plane masks and accepts fully visible subtrees untested (common-math 0.4.0); per-cell static
 hierarchies come with milestone 2.
 
+### Streaming, measured
+
+`StreamingBenchmark` (`TRUESIM_BENCHMARK=true`): 4,096 cells of 64 static props (262,144 nodes), generated in memory,
+so it measures the world, scene and index rather than a disk.
+
+| Step                                          | Cost                      |
+|-----------------------------------------------|---------------------------|
+| request a new cell (starts its load)          | 25-40 µs (#26)            |
+| attach a loaded cell (64 nodes)               | 18.5 µs                   |
+| request and release an already loaded cell   | 0.2 µs                    |
+| release a cell (detach 64 nodes)              | 5 µs                      |
+| frame attaching 2,048 cells at once           | 303 ms, 154 ms of it the static index |
+
+The last line is what the next steps fix: per-cell static indexes (#25), so a streamed cell indexes only its own
+nodes, and a per-frame attach budget (#7), so a burst of finished loads spreads over frames.
+
 ### Positions
 
 World positions are `double`, like common-math and common-collision: precise to about a nanometre even 10,000 km from
