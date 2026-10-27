@@ -93,6 +93,22 @@ class StaticGroupsTest {
     }
 
     @Test
+    void theTopLevelGrowsReusesSlotsAndRebuildsWhenDegraded() {
+        index.setRebuildThreshold(1); // rebuild whenever refitting made it worse
+        List<Long> nodes = new ArrayList<>();
+        for (int group = 0; group < 40; group++) { // more groups than the top level starts with
+            nodes.add(box(group * 10, 0, group));
+        }
+        update();
+        assertThat(index.groupCount()).isEqualTo(40);
+        for (int group = 0; group < 40; group++) { // scatter the groups: refits degrade, so it rebuilds
+            scene.setTranslation(nodes.get(group), (group * 37 % 40) * 10, 0, group * 25);
+        }
+        update();
+        assertThat(inBox(369, 371)).hasSize(1);
+    }
+
+    @Test
     void queriesCrossGroupsAndStopAcrossThem() {
         List<Long> nodes = new ArrayList<>();
         for (int group = 0; group < 4; group++) {

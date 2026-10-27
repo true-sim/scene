@@ -341,18 +341,40 @@ public final class World implements AutoCloseable {
         }
     }
 
-    /** Whether every wanted cell overlapping a held one has loaded or failed (true when none overlaps). */
+    /**
+     * Whether every wanted cell overlapping a held one has loaded or failed (true when none overlaps). Looks only where
+     * an overlap can be: the coarser cells containing it, and the finer cells inside it, descending only below cells
+     * that are not wanted themselves, since the wanted cells cover the area once.
+     */
     private boolean replaced(Layer<?> layer, LongIntMap[] wanted, int level, long cell) {
         int x = CellGrid.keyX(cell);
         int y = CellGrid.keyY(cell);
         int z = CellGrid.keyZ(cell);
-        for (int other = 0; other < wanted.length; other++) {
-            LongIntMap cells = wanted[other];
-            for (int slot = 0; slot < cells.capacity(); slot++) {
-                long key = cells.keyAt(slot);
-                if (key >= 0 && overlaps(level, x, y, z, other, key)) {
-                    CellState state = state(layer, other, CellGrid.keyX(key), CellGrid.keyY(key), CellGrid.keyZ(key));
-                    if (state == CellState.LOADING) {
+        for (int coarser = level + 1; coarser < wanted.length; coarser++) {
+            int shift = coarser - level;
+            if (loading(layer, wanted, coarser, x >> shift, y >> shift, z >> shift)) {
+                return false;
+            }
+        }
+        return finerLoaded(layer, wanted, level, x, y, z);
+    }
+
+    /** Whether the wanted cells inside cell (x, y, z) of {@code level}, at finer levels, have all loaded or failed. */
+    private boolean finerLoaded(Layer<?> layer, LongIntMap[] wanted, int level, int x, int y, int z) {
+        if (level == 0) {
+            return true;
+        }
+        boolean volumetric = layer.levels().isVolumetric();
+        int y0 = volumetric ? 2 * y : 0;
+        int y1 = volumetric ? 2 * y + 1 : 0;
+        for (int cy = y0; cy <= y1; cy++) {
+            for (int cz = 2 * z; cz <= 2 * z + 1; cz++) {
+                for (int cx = 2 * x; cx <= 2 * x + 1; cx++) {
+                    if (wanted[level - 1].get(CellGrid.key(cx, cy, cz)) >= 0) {
+                        if (loading(layer, wanted, level - 1, cx, cy, cz)) {
+                            return false;
+                        }
+                    } else if (!finerLoaded(layer, wanted, level - 1, cx, cy, cz)) {
                         return false;
                     }
                 }
@@ -361,17 +383,9 @@ public final class World implements AutoCloseable {
         return true;
     }
 
-    /** Whether cell (x, y, z) of level {@code level} and cell {@code key} of level {@code other} share any area. */
-    private static boolean overlaps(int level, int x, int y, int z, int other, long key) {
-        int ox = CellGrid.keyX(key);
-        int oy = CellGrid.keyY(key);
-        int oz = CellGrid.keyZ(key);
-        if (level <= other) {
-            int shift = other - level;
-            return x >> shift == ox && y >> shift == oy && z >> shift == oz;
-        }
-        int shift = level - other;
-        return ox >> shift == x && oy >> shift == y && oz >> shift == z;
+    /** Whether a cell is wanted and still loading. */
+    private boolean loading(Layer<?> layer, LongIntMap[] wanted, int level, int x, int y, int z) {
+        return wanted[level].get(CellGrid.key(x, y, z)) >= 0 && state(layer, level, x, y, z) == CellState.LOADING;
     }
 
     /** Whether everything {@code source} wants has loaded (or failed), e.g. to end a loading screen. */
@@ -465,9 +479,12 @@ public final class World implements AutoCloseable {
     private void refine(int level, int x, int y, int z) {
         long key = CellGrid.key(x, y, z);
         if (level > 0) {
-            boolean wasSplit = selectingPrevious[level].get(key) < 0 && heldBelow(level, x, y, z);
-            double band = band(level - 1) * (wasSplit ? 1 + hysteresis : 1);
-            if (distanceSquared(level, x, y, z) < square(band)) {
+            // Split nearer than the band; within the hysteresis beyond it only if it was split before (the history is
+            // looked up only there, as it is the costly part).
+            double distance = distanceSquared(level, x, y, z);
+            double band = band(level - 1);
+            if (distance < square(band) || distance < square(band * (1 + hysteresis))
+                && selectingPrevious[level].get(key) < 0 && heldBelow(level, x, y, z)) {
                 boolean volumetric = selectingLevels.isVolumetric();
                 int y0 = volumetric ? 2 * y : 0;
                 int y1 = volumetric ? 2 * y + 1 : 0;
@@ -490,7 +507,8 @@ public final class World implements AutoCloseable {
      */
     private double band(int finer) {
         if (selectingDetail.isScreenError()) {
-            return selectingLevels.grid(finer + 1).size() * selecting.projection / selectingDetail.pixels();
+            return selectingLevels.grid(finer + 1).size() * selectingDetail.errorPerMeter() * selecting.projection
+                / selectingDetail.pixels();
         }
         return selectingDetail.band(finer);
     }

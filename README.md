@@ -77,6 +77,26 @@ cells, so a cell coming or going costs about its own size. Before that, any stat
 everything (154 ms at this size). Attaching all 4,096 cells in a single frame still takes about 160 ms; a per-frame
 attach budget (#7) spreads such bursts over frames.
 
+### Fly-through, measured
+
+`FlyThroughBenchmark` (`TRUESIM_BENCHMARK=true`): a camera flies over a 16 km x 16 km world at 300 m/s for 10 s,
+paced at 60 fps, streaming terrain by screen-space error (2 px, coarser tiles 1 % off) to an 8 km horizon, props by
+distance bands with HLOD proxies, and collision within 200 m. Loaders sleep 2-5 ms per cell like a disk; the attach
+budget is 32 cells per frame; it is measured after a warm-up flight elsewhere, as a game runs after its first minute.
+
+| Per frame, main thread                      | median  | p99     |
+|---------------------------------------------|---------|---------|
+| all of it (update, attach, scene, index, query) | 0.59 ms | 9.4 ms |
+| world update (selection, requests, releases) | 0.37 ms | 0.79 ms |
+| attaching                                    | 0.01 ms | 0.07 ms |
+| spatial index update                        | 0.07 ms | 1.9 ms  |
+| frustum query (about 1,000 visible)          | 0.12 ms | 0.41 ms |
+
+About 2,900 cells are resident; 640 load per second in flight, and on average 11 of the camera's cells are still
+loading in any frame (42 at most), so streaming keeps up. A few frames still take 10-50 ms in a single phase, which
+none of the phases shows at p99; without the warm-up, the first second of flight has hitches of up to 360 ms while
+the JIT compiles.
+
 ### Positions
 
 World positions are `double`, like common-math and common-collision: precise to about a nanometre even 10,000 km from

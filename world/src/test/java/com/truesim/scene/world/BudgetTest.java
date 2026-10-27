@@ -136,6 +136,22 @@ class BudgetTest {
     }
 
     @Test
+    void waitingCellsAttachByPriorityWhateverTheirArrival() throws InterruptedException {
+        world.setAttachBudget(1);
+        world.update();
+        world.request(TERRAIN, 0, 1, 0, 0); // takes this frame's budget
+        awaitLoaded(1);
+        world.request(TERRAIN, 0, 2, 0, 0, Priority.HIGH); // waits first ...
+        awaitLoaded(2);
+        world.request(TERRAIN, 0, 3, 0, 0, Priority.LOW); // ... then a lower one behind it
+        awaitLoaded(3);
+        attached.clear();
+        world.update();
+        world.update();
+        assertThat(attached).containsExactly("0:2", "0:3");
+    }
+
+    @Test
     void screenErrorFollowsTheView() {
         InterestProfile profile = InterestProfile.builder()
             .layer(TERRAIN, Detail.screenError(100), Range.radius(400)).build(); // finest within about 190 m
@@ -169,6 +185,10 @@ class BudgetTest {
         assertThat(Detail.full().pixels()).isZero();
         assertThatIllegalArgumentException().isThrownBy(() -> Detail.screenError(0));
         assertThatIllegalArgumentException().isThrownBy(() -> Detail.screenError(Double.POSITIVE_INFINITY));
+        assertThatIllegalArgumentException().isThrownBy(() -> Detail.screenError(1, 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> Detail.screenError(1, Double.POSITIVE_INFINITY));
+        assertThat(Detail.screenError(1, 0.01).errorPerMeter()).isEqualTo(0.01);
+        assertThat(detail.errorPerMeter()).isEqualTo(1);
         assertThatIllegalArgumentException().isThrownBy(() -> InterestProfile.builder().layer(TERRAIN, detail))
             .withMessage("Screen-space error of layer terrain needs a range");
     }

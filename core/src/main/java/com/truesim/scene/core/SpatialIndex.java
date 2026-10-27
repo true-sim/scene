@@ -18,8 +18,8 @@ import java.util.Arrays;
  * <p>Static and dynamic nodes ({@link Mobility}) are indexed apart, so the cost per frame follows what moves:
  * <ul>
  *   <li>Static nodes are indexed per {@linkplain SceneGraph#setGroup group}: each group has a tree of its own, and a
- *       top-level tree holds the groups' boxes. Changing a group's static nodes rebuilds only its tree, then refits
- *       the top level (or rebuilds it when groups appear or disappear). Streaming puts each cell in a group, so a cell
+ *       top-level tree holds the groups' boxes in slots that groups joining and leaving reuse. Changing a group's
+ *       static nodes rebuilds only its tree, then refits the top level. Streaming puts each cell in a group, so a cell
  *       coming or going costs about its own size.</li>
  *   <li>Dynamic nodes are in a tree with spare room: each frame it refits the boxes of the nodes that moved;
  *       spawning and despawning reuse slots. It is rebuilt only when its quality has degraded too far
@@ -65,10 +65,13 @@ public final class SpatialIndex {
     private int dirtyGroupCount;
     private int staticCount;
 
-    // The top level: one primitive per group with static nodes.
+    // The top level: slots holding the boxes of groups with static nodes, with a free list, refit on change.
     private Bvh top;
     private int[] topGroups = new int[0];
-    private boolean topMembershipChanged;
+    private int[] topSlot = new int[0];
+    private int[] freeTop = new int[0];
+    private int freeTopCount;
+    private int topCount;
 
     // Dynamic nodes: slots with a free list, refit on change.
     private long[] dynamicNodes = new long[0];
@@ -102,16 +105,25 @@ public final class SpatialIndex {
     private final Bvh.Visitor visitDynamic = primitive -> report(dynamicNodes[primitive], dynamicLayers[primitive]);
     private final Bvh.Visitor topAabb = primitive -> {
         int group = currentGroup = topGroups[primitive];
+        if (group < 0) {
+            return true; // a free slot
+        }
         groupTree[group].queryAabb(qa, qb, qc, qd, qe, qf, visitGroup);
         return !stopped;
     };
     private final Bvh.Visitor topSphere = primitive -> {
         int group = currentGroup = topGroups[primitive];
+        if (group < 0) {
+            return true;
+        }
         groupTree[group].querySphere(qa, qb, qc, qd, visitGroup);
         return !stopped;
     };
     private final Bvh.Visitor topFrustum = primitive -> {
         int group = currentGroup = topGroups[primitive];
+        if (group < 0) {
+            return true;
+        }
         groupTree[group].queryFrustum(qFrustum, visitGroup);
         return !stopped;
     };
@@ -120,7 +132,7 @@ public final class SpatialIndex {
             .primitiveBounds(), primitive, ox, oy, oz, dx, dy, dz, max);
     private final Bvh.RayTest rayTop = (primitive, ox, oy, oz, dx, dy, dz, max) -> {
         int group = currentGroup = topGroups[primitive];
-        if (groupTree[group].raycast(ox, oy, oz, dx, dy, dz, max, rayGroup, groupHit)) {
+        if (group >= 0 && groupTree[group].raycast(ox, oy, oz, dx, dy, dz, max, rayGroup, groupHit)) {
             rayNode = groupNodes[group][groupHit.primitive()];
             return groupHit.distance();
         }
@@ -214,7 +226,7 @@ public final class SpatialIndex {
 
     /** How many groups have static nodes. */
     public int groupCount() {
-        return top == null ? 0 : top.primitiveCount();
+        return topCount;
     }
 
     private void changed(long node, int changes) {
@@ -300,6 +312,9 @@ public final class SpatialIndex {
             groupBox = Arrays.copyOf(groupBox, length * 6);
             groupDirty = Arrays.copyOf(groupDirty, length);
             dirtyGroups = Arrays.copyOf(dirtyGroups, length);
+            int was = topSlot.length;
+            topSlot = Arrays.copyOf(topSlot, length);
+            Arrays.fill(topSlot, was, length, -1);
         }
         if (groupNodes[group] == null) {
             groupNodes[group] = new long[8];
@@ -322,15 +337,24 @@ public final class SpatialIndex {
         }
     }
 
-    /** Rebuilds a group's tree and box from its nodes' current bounds; notes whether it joined or left the top. */
+    /** Rebuilds a group's tree and box from its nodes' current bounds, and its slot in the top level. */
     @AllowAllocation("rebuilding a group's tree, when its static nodes changed")
     private void rebuildGroup(int group) {
         groupDirty[group] = false;
         int count = groupCount[group];
-        boolean wasOnTop = groupTree[group] != null;
         if (count == 0) {
             groupTree[group] = null;
-            topMembershipChanged |= wasOnTop;
+            // It leaves the top level. It had a slot: a group gains nodes only in an update that then rebuilds it. Its
+            // slot is free now; its box shrinks to its center, so the tree does not keep spanning areas left behind.
+            int box = group * 6;
+            double cx = (groupBox[box] + groupBox[box + 3]) * 0.5;
+            double cy = (groupBox[box + 1] + groupBox[box + 4]) * 0.5;
+            double cz = (groupBox[box + 2] + groupBox[box + 5]) * 0.5;
+            top.primitiveBounds().set(topSlot[group], cx, cy, cz, cx, cy, cz);
+            topGroups[topSlot[group]] = -1;
+            freeTop[freeTopCount++] = topSlot[group];
+            topSlot[group] = -1;
+            topCount--;
             return;
         }
         AabbArray bounds = AabbArray.onHeap(count);
@@ -359,41 +383,49 @@ public final class SpatialIndex {
         groupBox[box + 4] = maxY;
         groupBox[box + 5] = maxZ;
         groupTree[group] = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
-        topMembershipChanged |= !wasOnTop;
+        if (topSlot[group] < 0) { // joins the top level
+            if (freeTopCount == 0) {
+                growTop(group);
+            }
+            int slot = freeTop[--freeTopCount];
+            topSlot[group] = slot;
+            topGroups[slot] = group;
+            topCount++;
+        }
+        setBox(top.primitiveBounds(), topSlot[group], group);
     }
 
-    /** Rebuilds the top level when groups joined or left it; otherwise refits it to the groups' new boxes. */
-    @AllowAllocation("rebuilding the top level, when groups appeared or disappeared")
+    /**
+     * Doubles the top level's slots, like the dynamic tree: groups joining and leaving reuse slots and only refit, so
+     * a streaming world rebuilds the top level only when it grows or has degraded.
+     */
+    @AllowAllocation("growing the top level")
+    private void growTop(int group) {
+        int old = topGroups.length;
+        int capacity = Math.max(16, old * 2);
+        AabbArray boxes = AabbArray.onHeap(capacity);
+        if (top != null) {
+            MemorySegment.copy(top.primitiveBounds().segment(), 0, boxes.segment(), 0,
+                top.primitiveBounds().segment().byteSize());
+        }
+        for (int i = old; i < capacity; i++) {
+            setBox(boxes, i, group);
+        }
+        topGroups = Arrays.copyOf(topGroups, capacity);
+        freeTop = Arrays.copyOf(freeTop, capacity);
+        for (int i = capacity - 1; i >= old; i--) {
+            topGroups[i] = -1;
+            freeTop[freeTopCount++] = i;
+        }
+        top = Bvh.build(Arena.ofAuto(), boxes, LEAF_SIZE);
+    }
+
+    /** Refits the top level to its groups' boxes (it changed: groups were rebuilt); rebuilds it when degraded. */
     private void updateTop() {
-        if (topMembershipChanged) {
-            topMembershipChanged = false;
-            int groups = 0;
-            for (int group = 0; group < groupTree.length; group++) {
-                if (groupTree[group] != null) {
-                    groups++;
-                }
-            }
-            if (groups == 0) {
-                top = null;
-                return;
-            }
-            topGroups = new int[groups];
-            AabbArray boxes = AabbArray.onHeap(groups);
-            int next = 0;
-            for (int group = 0; group < groupTree.length; group++) {
-                if (groupTree[group] != null) {
-                    topGroups[next] = group;
-                    setBox(boxes, next++, group);
-                }
-            }
-            top = Bvh.build(Arena.ofAuto(), boxes, LEAF_SIZE);
-            return;
-        }
-        AabbArray boxes = top.primitiveBounds();
-        for (int i = 0; i < topGroups.length; i++) {
-            setBox(boxes, i, topGroups[i]);
-        }
         top.refit();
+        if (top.degradation() > rebuildThreshold) {
+            top.rebuild();
+        }
     }
 
     private void setBox(AabbArray boxes, int index, int group) {
