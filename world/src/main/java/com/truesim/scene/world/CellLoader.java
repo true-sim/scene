@@ -29,8 +29,22 @@ package com.truesim.scene.world;
  */
 public interface CellLoader<T> {
 
-    /** Loads a cell's data, in the background. Exceptions mark the cell failed. */
-    T load(Cell cell) throws Exception;
+    /**
+     * Loads a cell's data, in the background. Exceptions mark the cell failed. Implement this or
+     * {@link #load(Cell, FeatureView)}.
+     */
+    default T load(Cell cell) throws Exception {
+        throw new UnsupportedOperationException(getClass().getName() + " implements no load method");
+    }
+
+    /**
+     * Loads a cell's data with the world's feature states, in the background: the features read here are what the
+     * cell depends on, so changing one reloads it (content tagged for a feature, or parameters choosing assets). By
+     * default calls {@link #load(Cell)}, reading none.
+     */
+    default T load(Cell cell, FeatureView features) throws Exception {
+        return load(cell);
+    }
 
     /** Creates the cell's scene content from its data, on the main thread. */
     void attach(T data, CellContent content);

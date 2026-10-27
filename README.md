@@ -181,6 +181,45 @@ tasks.drainCompleted();             // once per frame: finished loads attach her
 - **The scene sees only resident content:** loaders turn cell data into nodes, proxies and colliders, which arrive
   through the change logs at the frame boundary.
 
+### Features and variants
+
+One world can have several versions, e.g. a racetrack's layouts or event scenarios: the same cells and shared content
+(terrain, grandstands), with the parts that depend on **features**. A feature is on or off and carries a parameter; a
+**variant** is a named set of feature states, and can build on another one:
+
+```java
+static final Feature<Chicane> CHICANE = Feature.of("chicane", Chicane.class, Chicane.TIGHT);
+static final Feature<Void> NIGHT_LIGHTS = Feature.toggle("night-lights");
+static final Feature<Double> FLOODLIGHTS = Feature.live("floodlights", Double.class, 1.0);
+
+static final Variant GRAND_PRIX = Variant.builder("grand-prix").enable(CHICANE, Chicane.WIDE).build();
+static final Variant NIGHT_RACE = Variant.builder("night-race").basedOn(GRAND_PRIX).enable(NIGHT_LIGHTS).build();
+
+// Loaders read features while loading: what they read is what the cell depends on.
+public PropCell load(Cell cell, FeatureView features) {
+    PropCell props = PropCell.read(archive, cell);
+    if (!features.isOn(NIGHT_LIGHTS)) {
+        props.removeTagged("night-lights");               // content tagged for a feature
+    }
+    props.useChicane(features.value(CHICANE));           // or a parameter choosing assets
+    return props;
+}
+
+world.features().select(NIGHT_RACE);
+world.features().disable(NIGHT_LIGHTS);                  // single features on top of the variant
+world.features().listen(FLOODLIGHTS, (feature, on, intensity) -> lights.setIntensity(intensity));
+world.update();                                          // applies the changes
+```
+
+- **Exact reloads:** the world records which features each cell's load read; a change reloads exactly those cells.
+  Cells that read nothing, like the shared terrain, stay as they are.
+- **No gaps:** a reloading cell keeps its content until the new data has loaded, then swaps in the same frame, within
+  the attach budget. Loads that read a feature changed while they ran load again; a failed reload keeps the old
+  content.
+- **Live features** apply without reloading: their changes reach listeners instead.
+- **Small and immutable states:** loads in the background read a consistent snapshot, and a server can later
+  replicate the selected variant and its changes.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
