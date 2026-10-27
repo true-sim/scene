@@ -1,0 +1,33 @@
+package com.truesim.scene.core;
+
+/**
+ * What changed about a node, as bits of the {@code changes} that {@link SceneGraph#changesSince} reports. One report
+ * can carry several bits, e.g. {@code CREATED | TRANSFORM} for a node created and placed in the same frame.
+ */
+public final class NodeChange {
+
+    /** The node was created. */
+    public static final int CREATED = 1;
+    /** The node was removed; its handle is stale now. Reported alone. */
+    public static final int REMOVED = 1 << 1;
+    /** The node's world transform changed, by its own or an ancestor's transform or by a new parent. */
+    public static final int TRANSFORM = 1 << 2;
+    /** The node got a new parent. */
+    public static final int PARENT = 1 << 3;
+
+    private NodeChange() {
+    }
+
+    /** Whether {@code changes} has any of the bits in {@code mask}. */
+    public static boolean has(int changes, int mask) {
+        return (changes & mask) != 0;
+    }
+
+    /** Receives changed nodes. */
+    @FunctionalInterface
+    public interface Visitor {
+
+        /** {@code node} changed in the ways {@code changes} lists ({@link NodeChange} bits). */
+        void changed(long node, int changes);
+    }
+}
