@@ -33,6 +33,9 @@ import org.slf4j.LoggerFactory;
  * world.release(PROPS, 0, 4, 0, 7);     // detaches it; a load still queued skips, a running one is discarded
  * }</pre>
  *
+ * <p>Finished loads attach when the scheduler is drained, within the attach budget ({@link #setAttachBudget}); cells
+ * waiting for the budget attach in later frames.
+ *
  * <p>Use a world on the main thread, the one that drains the task scheduler; loaders' {@link CellLoader#load} runs on
  * lanes and never sees the scene. Requesting, releasing and looking up cells allocate nothing for cells already
  * known; starting a load allocates its task.
@@ -53,6 +56,8 @@ public final class World implements AutoCloseable {
     private int[] refs = new int[16];
     private Object[] data = new Object[16];
     private AtomicBoolean[] wanted = new AtomicBoolean[16];
+    private Priority[] priority = new Priority[16];
+    private boolean[] ready = new boolean[16];
     private int[] generation = new int[16];
     private CellContent[] content = new CellContent[16];
     private int[] free = new int[16];
@@ -65,6 +70,10 @@ public final class World implements AutoCloseable {
     private boolean closed;
     private final List<InterestSource> sources = new ArrayList<>();
     private double hysteresis = 0.15;
+    private int attachBudget = Integer.MAX_VALUE;
+    private int attachedThisFrame;
+    private int[] readyQueue = new int[16];
+    private int readyCount;
 
     /** A world filling {@code scene} with cells loaded on {@code tasks}' lanes. */
     @AllowAllocation("set up once")
@@ -114,6 +123,14 @@ public final class World implements AutoCloseable {
      * {@link #release}.
      */
     public void request(Layer<?> layer, int level, int x, int y, int z) {
+        request(layer, level, x, y, z, Priority.NORMAL);
+    }
+
+    /**
+     * Asks for a cell with a priority: higher priority cells load and attach first. Interest sources request with
+     * their own priority; a cell keeps the highest it was asked with.
+     */
+    public void request(Layer<?> layer, int level, int x, int y, int z, Priority urgency) {
         checkOpen();
         Registered registered = registered(layer);
         long cellKey = CellGrid.key(x, y, z);
@@ -121,6 +138,9 @@ public final class World implements AutoCloseable {
         int entry = cells.get(cellKey);
         if (entry >= 0) {
             refs[entry]++;
+            if (urgency.compareTo(priority[entry]) > 0) {
+                priority[entry] = urgency;
+            }
             return;
         }
         entry = newEntry();
@@ -128,6 +148,7 @@ public final class World implements AutoCloseable {
         this.level[entry] = level;
         key[entry] = cellKey;
         refs[entry] = 1;
+        priority[entry] = urgency;
         state[entry] = CellState.LOADING;
         cells.put(cellKey, entry);
         loading++;
@@ -209,6 +230,8 @@ public final class World implements AutoCloseable {
      */
     public void update() {
         checkOpen();
+        attachedThisFrame = 0;
+        attachWaiting();
         for (int i = 0; i < sources.size(); i++) {
             InterestSource source = sources.get(i);
             if (source.moved) {
@@ -239,6 +262,11 @@ public final class World implements AutoCloseable {
                 selectingLevel = 0;
                 selectingReach = entry.range().radius();
                 forEachCellInReach(0, selectingReach * grace, addFull);
+            } else if (entry.detail().isScreenError()) {
+                int coarsest = entry.layer().levels().count() - 1;
+                selectingLevel = coarsest;
+                selectingReach = entry.range().radius();
+                forEachCellInReach(coarsest, selectingReach * grace, addBanded);
             } else {
                 int coarsest = entry.detail().bandCount() - 1;
                 selectingLevel = coarsest;
@@ -369,6 +397,23 @@ public final class World implements AutoCloseable {
     }
 
     /**
+     * Attaches at most {@code cells} loaded cells per frame (a frame runs from one {@link #update()} to the next),
+     * so a burst of finished loads, e.g. after a teleport, spreads over frames instead of stalling one. Cells that wait
+     * attach highest priority first, then coarsest. Unlimited by default.
+     */
+    public void setAttachBudget(int cells) {
+        if (cells < 1) {
+            throw new IllegalArgumentException("The attach budget is at least one cell: " + cells);
+        }
+        this.attachBudget = cells;
+    }
+
+    /** Loaded cells waiting for room in the attach budget. */
+    public int waitingCount() {
+        return readyCount;
+    }
+
+    /**
      * How far beyond a band or range a cell already held is kept (0.15: 15 %), so a source moving back and forth near
      * a boundary does not load and unload the same cells over and over. A cell switches to finer detail at the band
      * distance, but back to coarser only this much further out.
@@ -421,7 +466,7 @@ public final class World implements AutoCloseable {
         long key = CellGrid.key(x, y, z);
         if (level > 0) {
             boolean wasSplit = selectingPrevious[level].get(key) < 0 && heldBelow(level, x, y, z);
-            double band = selectingDetail.band(level - 1) * (wasSplit ? 1 + hysteresis : 1);
+            double band = band(level - 1) * (wasSplit ? 1 + hysteresis : 1);
             if (distanceSquared(level, x, y, z) < square(band)) {
                 boolean volumetric = selectingLevels.isVolumetric();
                 int y0 = volumetric ? 2 * y : 0;
@@ -437,6 +482,17 @@ public final class World implements AutoCloseable {
             }
         }
         selectingInto[level].put(key, 1);
+    }
+
+    /**
+     * The distance within which cells of level {@code finer} replace the next coarser ones: the profile's band, or for
+     * screen-space error the distance at which a coarser cell would look as big as the allowed error.
+     */
+    private double band(int finer) {
+        if (selectingDetail.isScreenError()) {
+            return selectingLevels.grid(finer + 1).size() * selecting.projection / selectingDetail.pixels();
+        }
+        return selectingDetail.band(finer);
     }
 
     /** Whether the source held this cell, or finer cells within it, before. */
@@ -517,6 +573,7 @@ public final class World implements AutoCloseable {
         AtomicBoolean stillWanted = new AtomicBoolean(true);
         wanted[entry] = stillWanted;
         registered.lane.task(() -> stillWanted.get() ? registered.loader.load(cell) : null)
+            .priority(priority[entry].ordinal() * Levels.MAX_LEVELS + level[entry]) // urgent first, then coarse
             .deliver(done -> delivered(entry, expected, registered, done))
             .submit();
     }
@@ -531,17 +588,75 @@ public final class World implements AutoCloseable {
             return;
         }
         wanted[entry] = null;
-        loading--;
         if (done.state() == TaskState.SUCCEEDED) {
             data[entry] = done.result();
-            state[entry] = CellState.LOADED;
-            loaded++;
-            owner[entry].loader.attach(data[entry], content[entry]);
+            if (readyCount == 0 && attachedThisFrame < attachBudget) {
+                attach(entry);
+            } else {
+                enqueue(entry);
+            }
         } else {
+            loading--;
             state[entry] = CellState.FAILED;
             failed++;
             fail(entry, done.failure());
         }
+    }
+
+    /** Attaches a loaded cell to the scene. */
+    private void attach(int entry) {
+        attachedThisFrame++;
+        loading--;
+        state[entry] = CellState.LOADED;
+        loaded++;
+        owner[entry].loader.attach(data[entry], content[entry]);
+    }
+
+    /** Keeps a loaded cell waiting for a frame with room in the attach budget. */
+    @AllowAllocation("growing")
+    private void enqueue(int entry) {
+        if (readyCount == readyQueue.length) {
+            readyQueue = Arrays.copyOf(readyQueue, readyCount * 2);
+        }
+        ready[entry] = true;
+        readyQueue[readyCount++] = entry;
+    }
+
+    /**
+     * Attaches waiting cells up to the budget: highest priority first, then coarsest (it covers the most), then the
+     * longest waiting.
+     */
+    private void attachWaiting() {
+        while (readyCount > 0 && attachedThisFrame < attachBudget) {
+            int best = -1;
+            for (int i = 0; i < readyCount; i++) {
+                int entry = readyQueue[i];
+                if (best < 0 || better(entry, readyQueue[best])) {
+                    best = i;
+                }
+            }
+            int entry = readyQueue[best];
+            readyCount--;
+            System.arraycopy(readyQueue, best + 1, readyQueue, best, readyCount - best);
+            ready[entry] = false;
+            attach(entry);
+        }
+    }
+
+    private boolean better(int entry, int than) {
+        int byPriority = priority[entry].compareTo(priority[than]);
+        return byPriority != 0 ? byPriority > 0 : level[entry] > level[than];
+    }
+
+    /** Takes a dropped cell out of the waiting queue. */
+    private void unqueue(int entry) {
+        int i = 0;
+        while (readyQueue[i] != entry) { // it is there: ready[entry] says so
+            i++;
+        }
+        readyCount--;
+        System.arraycopy(readyQueue, i + 1, readyQueue, i, readyCount - i);
+        ready[entry] = false;
     }
 
     @AllowAllocation("logging a failure")
@@ -556,8 +671,13 @@ public final class World implements AutoCloseable {
         switch (state[entry]) {
             case LOADING -> {
                 loading--;
-                wanted[entry].set(false); // a queued load skips, a running one is discarded when delivered
-                wanted[entry] = null;
+                if (ready[entry]) { // loaded, waiting for the attach budget
+                    unqueue(entry);
+                    registered.loader.discard(data[entry]);
+                } else {
+                    wanted[entry].set(false); // a queued load skips, a running one is discarded when delivered
+                    wanted[entry] = null;
+                }
             }
             case LOADED -> {
                 loaded--;
@@ -587,6 +707,8 @@ public final class World implements AutoCloseable {
             refs = Arrays.copyOf(refs, capacity);
             data = Arrays.copyOf(data, capacity);
             wanted = Arrays.copyOf(wanted, capacity);
+            priority = Arrays.copyOf(priority, capacity);
+            ready = Arrays.copyOf(ready, capacity);
             generation = Arrays.copyOf(generation, capacity);
             content = Arrays.copyOf(content, capacity);
             free = Arrays.copyOf(free, capacity);

@@ -98,7 +98,7 @@ static final Layer<CollisionCell> COLLISION = Layer.of("collision", CollisionCel
 
 // Interest: reusable profiles saying what a kind of observer needs.
 static final InterestProfile PLAYER_VIEW = InterestProfile.builder()
-    .layer(TERRAIN, Detail.bands(256, 512, 1024, 2048, 4096, 8192)) // screen-space error comes with #7
+    .layer(TERRAIN, Detail.screenError(2), Range.radius(20_000))  // as fine as 2 px allow, to the horizon
     .layer(PROPS, Detail.bands(150, 600, 2500))
     .layer(COLLISION, Detail.full(), Range.radius(200))
     .build();
@@ -108,6 +108,7 @@ static final InterestProfile SERVER_PLAYER = InterestProfile.builder()
 
 // Sources: one per camera, viewport or player; cheap and mutable.
 InterestSource camera = world.addInterest(PLAYER_VIEW, Priority.HIGH);
+camera.setView(fovY, viewportHeight);   // for screen-space error: zooming in loads finer detail
 camera.moveTo(x, y, z);             // every frame, allocation-free
 world.update();                     // requests what sources newly need, releases what none needs
 
@@ -119,6 +120,8 @@ tasks.drainCompleted();             // once per frame: finished loads attach her
 - **Several kinds of detail:** LOD chains and mips inside assets, HLOD proxies for groups of cells (house → block →
   district → horizon), and per-layer resolutions such as a terrain pyramid out to the horizon.
 - **Policies per layer:** always resident (full loading), distance bands, or screen-space error.
+- **Budgets and order:** loads queue on the lane by source priority, coarse levels first; `setAttachBudget` caps
+  how many loaded cells attach per frame, so a burst (a teleport) spreads over frames, best first.
 - **No holes:** a source holds the cells it no longer wants until the cells replacing them in their area have
   loaded, coarse to fine and back.
 - **Hysteresis:** a cell switches to finer detail at the band distance, but back to coarser only 15 % further out
