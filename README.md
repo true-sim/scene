@@ -24,6 +24,7 @@ example, takes core, world and collision without any render data.
 | `scene-world`     | worlds and instances, cells, data layers, interest sources, multi-level streaming         | milestone 2 |
 | `scene-collision` | each cell's colliders and terrain heights, on common-collision shapes                    | milestone 3 |
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
+| `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
 | `scene-render`    | renderables, cameras, lights, environment, sort layers                                    | milestone 5 |
 
 Importers (glTF and others), a serialization format and networking come later, in their own repositories.
@@ -345,7 +346,7 @@ vertices and triangles; 64 / 124 by default when built), culled and drawn on the
 | meshlet vertices | meshlet vertex | 4 | uint32 vertex index |
 | meshlet triangles | triangle | 3 | 3 × uint8 index into the meshlet's vertices |
 | meshlets | meshlet | 32 | offsets, counts, submesh, bounding sphere, normal cone (snorm8, rounded so it never culls wrongly) |
-| cluster LOD | meshlet | 32 | own group's center and error, parent group's center and error |
+| cluster LOD | meshlet | 40 | own group's sphere (center, radius) and error, parent group's the same |
 
 - **Two GPU paths, one format:** task and mesh shaders (`VK_EXT_mesh_shader`) read meshlets directly; without them,
   compute culling writes multi-draw-indirect draws over `expandIndices()`, where a meshlet's first index is its
@@ -357,8 +358,21 @@ vertices and triangles; 64 / 124 by default when built), culled and drawn on the
 - **Streaming:** levels are stored coarsest first, so a mesh can stream in from its coarsest level.
 - **Memory:** a typical lit vertex takes 8 + 12 bytes instead of 48 as floats. The cache counts `MeshData.bytes()`:
   `AssetType.of("mesh", MeshData.class, MeshData::bytes)`.
-- **Building:** meshes come from the mesh builder (#48, on meshoptimizer: vertex cache and fetch order, meshlets,
-  simplification into a cluster hierarchy) or an importer, through `MeshData.builder(...)`.
+- **Building:** `scene-meshbuild` builds meshes with meshoptimizer, at import or load time:
+
+  ```java
+  MeshData mesh = new MeshBuilder(VertexFormat.of(NORMAL, UV0), vertexCount)
+      .positions(positions).attribute(NORMAL, normals).attribute(UV0, uvs)
+      .submesh(bodyIndices).submesh(glassIndices)   // one per material slot
+      .buildHierarchy();                            // or buildDiscrete(levels, ratio), buildFlat()
+  ```
+
+  Vertex cache order, meshlets with bounds and normal cones, then for a hierarchy: meshlets partitioned into groups of
+  about 8, each group simplified to half with its border locked (so neighbors still meet) and split again, until one
+  group remains; each group's sphere holds its children's and its error includes theirs, so the selection rule never
+  cracks or overlaps. Vertices are reordered as meshlets first use them, coarsest level first. Deterministic.
+- **Measured** (`MeshBuildBenchmark`, 524,288 triangles): flat 445 ms, 5,422 meshlets, 5.5 MB; cluster hierarchy
+  715 ms, 12,291 meshlets in 10 levels down to 25, 9.1 MB; six discrete LODs 1.1 s.
 
 ### Multiplayer
 
@@ -371,10 +385,11 @@ vertices and triangles; 64 / 124 by default when built), culled and drawn on the
 
 ```kotlin
 dependencies {
-    implementation("com.truesim.scene:scene-core:0.16.0")
-    implementation("com.truesim.scene:scene-world:0.16.0")     // streaming
-    implementation("com.truesim.scene:scene-collision:0.16.0") // colliders and terrain heights per cell
-    implementation("com.truesim.scene:scene-assets:0.16.0")    // asset references and the cache
+    implementation("com.truesim.scene:scene-core:0.17.0")
+    implementation("com.truesim.scene:scene-world:0.17.0")     // streaming
+    implementation("com.truesim.scene:scene-collision:0.17.0") // colliders and terrain heights per cell
+    implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
+    implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
 }
 ```
 

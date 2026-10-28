@@ -120,7 +120,7 @@ class MeshDataTest {
         assertThat(mesh.meshletVertexCount(1)).isEqualTo(4);
         assertThat(mesh.meshletTriangleCount(1)).isEqualTo(2);
         assertThat(mesh.meshletSubmesh(1)).isEqualTo(1);
-        double[] out = new double[8];
+        double[] out = new double[10];
         mesh.meshletSphere(1, out);
         assertThat(out).startsWith(1.5, 0, 0.5, 0.800000011920929);
         // Cones: the axis rounded, the cutoff rounded up, so a facing meshlet is never culled.
@@ -136,7 +136,7 @@ class MeshDataTest {
             expanded[k] = indices.get(U32, 4L * k);
         }
         assertThat(expanded).containsExactly(TRIANGLES);
-        assertThat(mesh.bytes()).isEqualTo(48 + 168 + 32 + 12 + 64 + 64);
+        assertThat(mesh.bytes()).isEqualTo(48 + 168 + 32 + 12 + 64 + 80);
         assertThat(mesh.meshletVertices().byteSize()).isEqualTo(32);
         assertThat(mesh.meshletTriangles().byteSize()).isEqualTo(12);
         assertThat(mesh.meshlets().byteSize()).isEqualTo(2L * MeshData.MESHLET_BYTES);
@@ -144,8 +144,9 @@ class MeshDataTest {
         // Without levels: one level, every meshlet always drawn.
         assertThat(mesh.levels()).containsExactly(new MeshLevel(0, 2, 0));
         mesh.meshletLod(0, out);
-        assertThat(out[3]).isZero();
-        assertThat(out[7]).isEqualTo(Double.POSITIVE_INFINITY);
+        assertThat(out[3]).isEqualTo((float) 0.8); // the meshlet's own sphere
+        assertThat(out[4]).isZero();
+        assertThat(out[9]).isEqualTo(Double.POSITIVE_INFINITY);
     }
 
     @Test
@@ -165,9 +166,9 @@ class MeshDataTest {
             .level(0)
             .build();
         assertThat(mesh.levels()).containsExactly(new MeshLevel(0, 1, 0.25), new MeshLevel(1, 2, 0));
-        double[] lod = new double[8];
+        double[] lod = new double[10];
         mesh.meshletLod(2, lod);
-        assertThat(lod).containsExactly(1.5, 0, 0.5, 0, 1, 0, 0.5, 0.25);
+        assertThat(lod).containsExactly(1.5, 0, 0.5, (float) 0.8, 0, 1, 0, 0.5, (float) 1.2, 0.25);
         assertThat(mesh.attributes().byteSize()).isZero();
     }
 
@@ -184,14 +185,14 @@ class MeshDataTest {
             .level(0)
             .discreteLods()
             .build();
-        double[] lod = new double[8];
+        double[] lod = new double[10];
         Sphere b = mesh.bounds();
         mesh.meshletLod(0, lod); // the coarsest level: its error, parent +∞, around the whole mesh
-        assertThat(lod).containsExactly((float) b.x(), (float) b.y(), (float) b.z(), 0.5, (float) b.x(),
-            (float) b.y(), (float) b.z(), Double.POSITIVE_INFINITY);
+        assertThat(lod).containsExactly((float) b.x(), (float) b.y(), (float) b.z(), (float) b.radius(), 0.5,
+            (float) b.x(), (float) b.y(), (float) b.z(), (float) b.radius(), Double.POSITIVE_INFINITY);
         mesh.meshletLod(2, lod); // full detail: error 0, parent the coarser level's
-        assertThat(lod[3]).isZero();
-        assertThat(lod[7]).isEqualTo(0.5);
+        assertThat(lod[4]).isZero();
+        assertThat(lod[9]).isEqualTo(0.5);
     }
 
     @Test
