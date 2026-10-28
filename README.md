@@ -332,6 +332,34 @@ assets.release(barrier);                         // in CellLoader.detach
   Failed assets stay failed while held and load again when acquired after their last release.
 - Identical content under two ids is caught at import time, by content hashes, not at runtime.
 
+### Meshes: meshlets for a GPU-driven renderer
+
+`MeshData` is a mesh as a GPU-driven renderer draws it, uploadable as it is: little-endian buffers with scalar layout,
+one big GPU buffer per kind for all meshes, addressed by buffer device address. Geometry is in meshlets (up to 255
+vertices and triangles; 64 / 124 by default when built), culled and drawn on the GPU, over quantized vertex streams:
+
+| Buffer | Per | Bytes | Contents |
+|---|---|---|---|
+| positions | vertex | 8 | 3 × unorm16 in the mesh's quantization box (position-only passes: depth, shadows) |
+| attributes | vertex | 4 each | interleaved, as the format says: normal and tangent octahedral, UVs float16, color, joints, weights |
+| meshlet vertices | meshlet vertex | 4 | uint32 vertex index |
+| meshlet triangles | triangle | 3 | 3 × uint8 index into the meshlet's vertices |
+| meshlets | meshlet | 32 | offsets, counts, submesh, bounding sphere, normal cone (snorm8, rounded so it never culls wrongly) |
+| cluster LOD | meshlet | 32 | own group's center and error, parent group's center and error |
+
+- **Two GPU paths, one format:** task and mesh shaders (`VK_EXT_mesh_shader`) read meshlets directly; without them,
+  compute culling writes multi-draw-indirect draws over `expandIndices()`, where a meshlet's first index is its
+  triangle offset.
+- **Detail, one rule:** draw a meshlet when its own group's projected error is at most the allowed error and its parent
+  group's is more. Cluster hierarchies (Nanite-style, from simplifying groups of meshlets) give each group its own
+  sphere and error, so detail varies across a large mesh without popping; `discreteLods()` makes authored LOD chains
+  switch whole levels with the same rule.
+- **Streaming:** levels are stored coarsest first, so a mesh can stream in from its coarsest level.
+- **Memory:** a typical lit vertex takes 8 + 12 bytes instead of 48 as floats. The cache counts `MeshData.bytes()`:
+  `AssetType.of("mesh", MeshData.class, MeshData::bytes)`.
+- **Building:** meshes come from the mesh builder (#48, on meshoptimizer: vertex cache and fetch order, meshlets,
+  simplification into a cluster hierarchy) or an importer, through `MeshData.builder(...)`.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -343,10 +371,10 @@ assets.release(barrier);                         // in CellLoader.detach
 
 ```kotlin
 dependencies {
-    implementation("com.truesim.scene:scene-core:0.15.0")
-    implementation("com.truesim.scene:scene-world:0.15.0")     // streaming
-    implementation("com.truesim.scene:scene-collision:0.15.0") // colliders and terrain heights per cell
-    implementation("com.truesim.scene:scene-assets:0.15.0")    // asset references and the cache
+    implementation("com.truesim.scene:scene-core:0.16.0")
+    implementation("com.truesim.scene:scene-world:0.16.0")     // streaming
+    implementation("com.truesim.scene:scene-collision:0.16.0") // colliders and terrain heights per cell
+    implementation("com.truesim.scene:scene-assets:0.16.0")    // asset references and the cache
 }
 ```
 
