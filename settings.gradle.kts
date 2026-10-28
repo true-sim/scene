@@ -19,10 +19,11 @@ plugins {
 rootProject.name = "scene"
 
 // Each module is published on its own, so a dedicated server takes core and world without render data.
-include("scene-core", "scene-world", "scene-collision")
+include("scene-core", "scene-world", "scene-collision", "scene-assets")
 project(":scene-core").projectDir = file("core")
 project(":scene-world").projectDir = file("world")
 project(":scene-collision").projectDir = file("collision")
+project(":scene-assets").projectDir = file("assets")
 
 providers.gradleProperty("truesim.build-logic").orNull?.let { includeBuild(it) }
 
