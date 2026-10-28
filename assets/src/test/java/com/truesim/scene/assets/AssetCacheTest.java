@@ -10,6 +10,7 @@ import com.truesim.common.jobs.TaskScheduler;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -110,6 +111,31 @@ class AssetCacheTest {
 
     private int loads(Object id) {
         return loads.getOrDefault(id.toString(), new AtomicInteger()).get();
+    }
+
+    @Test
+    void removedListenersHearNoMore() throws InterruptedException {
+        List<String> heard = new ArrayList<>();
+        AssetCache.Listener listener = new AssetCache.Listener() {
+            @Override
+            public void loaded(AssetRef<?> ref, Object data) {
+                heard.add("loaded");
+            }
+
+            @Override
+            public void evicted(AssetRef<?> ref, Object data) {
+                heard.add("evicted");
+            }
+        };
+        cache.addListener(listener);
+        cache.removeListener(listener);
+        cache.removeListener(listener); // not a listener any more: nothing happens
+        AssetRef<Mesh> barrier = barrierRef();
+        cache.acquire(barrier);
+        await(() -> cache.get(barrier) != null);
+        assertThat(heard).isEmpty();
+        assertThat(events).anyMatch(event -> event.startsWith("loaded ")); // the other listener still hears
+        cache.release(barrier);
     }
 
     @Test
