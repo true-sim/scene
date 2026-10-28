@@ -23,7 +23,7 @@ example, takes core, world and collision without any render data.
 | `scene-core`      | node handles, the transform hierarchy, bounds, layers, change tracking, spatial queries   | milestone 1 |
 | `scene-world`     | worlds and instances, cells, data layers, interest sources, multi-level streaming         | milestone 2 |
 | `scene-collision` | each cell's colliders and terrain heights, on common-collision shapes                    | milestone 3 |
-| `scene-assets`    | meshes with LOD chains and meshlets, materials, textures, animation, sprites, tilesets    | milestone 4 |
+| `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-render`    | renderables, cameras, lights, environment, sort layers                                    | milestone 5 |
 
 Importers (glTF and others), a serialization format and networking come later, in their own repositories.
@@ -291,6 +291,39 @@ int material = ground.materialAt(x, z);                                   // the
 - **Levels:** coarser collision levels (a whole valley as one low-resolution heightfield) cover what finer cells do
   not; each loaded cell adds its colliders, so overlapping levels both collide while a swap is under way.
 
+### Assets: references, sources and the cache
+
+Nodes, cells and other assets point at assets with typed references, by stable id (assigned at import, kept when an
+asset is renamed or moved) or by procedural recipe. One `AssetCache` per process owns the loaded data, so every asset
+loads once however many use it:
+
+```java
+static final AssetType<MeshData> MESH = AssetType.of("mesh", MeshData.class, MeshData::byteSize);
+
+AssetCache assets = new AssetCache(tasks);
+assets.register(MESH, (id, part) -> MeshData.read(archive.open(id), part));   // storage, network, ...
+assets.setBudget(512L << 20);                    // bytes of unused assets kept for later
+assets.addListener(gpuResources);                // the engine uploads on loaded, frees on evicted
+
+AssetRef<MeshData> barrier = AssetRef.of(MESH, AssetId.parse("4f1c09d2a7e35b6c81f0e2d4c6a8b9e1"));
+AssetRef<MeshData> farLod = barrier.part(2);     // assets that stream in parts: LOD levels, mip ranges
+AssetRef<MeshData> rock = AssetRef.generated(MESH, ROCKS, new RockParams(2.5, 3), 42);
+
+assets.acquire(barrier);                         // e.g. in CellLoader.attach
+MeshData mesh = assets.get(barrier);             // null until loaded
+assets.release(barrier);                         // in CellLoader.detach
+```
+
+- **Loaded once:** a second acquire of an asset that is loading joins the load in flight; one that is loaded gets the
+  same data. Equal references are the same asset: the same id and part, or the same generator, parameters and seed.
+- **Kept for later:** at no holders an asset stays cached until the budget needs the room, least recently released
+  first, so streaming back and forth does not reload. Assets in use are never evicted.
+- **Uploaded once:** the engine's GPU resource cache listens to the asset cache and follows its residency (`loaded`,
+  `evicted`), not node changes, so all instances share one upload.
+- **Deterministic:** loads finish at the frame boundary in the order they started; failed assets stay failed while held
+  and load again when acquired after their last release.
+- Identical content under two ids is caught at import time, by content hashes, not at runtime.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -302,9 +335,10 @@ int material = ground.materialAt(x, z);                                   // the
 
 ```kotlin
 dependencies {
-    implementation("com.truesim.scene:scene-core:0.13.0")
-    implementation("com.truesim.scene:scene-world:0.13.0")     // streaming
-    implementation("com.truesim.scene:scene-collision:0.13.0") // colliders and terrain heights per cell
+    implementation("com.truesim.scene:scene-core:0.14.0")
+    implementation("com.truesim.scene:scene-world:0.14.0")     // streaming
+    implementation("com.truesim.scene:scene-collision:0.14.0") // colliders and terrain heights per cell
+    implementation("com.truesim.scene:scene-assets:0.14.0")    // asset references and the cache
 }
 ```
 
