@@ -208,9 +208,11 @@ public final class MeshBuilder {
     }
 
     /**
-     * Discrete LODs: full detail, then up to {@code maxLevels - 1} simplifications of the whole mesh, each to
-     * {@code ratio} of the previous level's triangles (submesh borders locked, so materials still meet), until
-     * simplifying stops paying.
+     * Discrete LODs: full detail, then up to {@code maxLevels - 1} simplifications of the whole mesh, each of the
+     * previous level to {@code ratio} of its triangles (submesh borders locked, so materials still meet), until
+     * simplifying stops paying. A level's error is the sum of its steps' errors, as in a hierarchy: a step's error is
+     * an estimate, and measured from full detail it undershoots a coarse level's real deviation by about 2x, so the
+     * level would be drawn too early.
      */
     @AllowAllocation("building meshes, offline")
     public MeshData buildDiscrete(int maxLevels, double ratio) {
@@ -227,28 +229,25 @@ public final class MeshBuilder {
             List<Double> lodErrors = new ArrayList<>();
             lods.add(current);
             lodErrors.add(0.0);
-            double target = 1;
             for (int level = 1; level < maxLevels; level++) {
-                target *= ratio;
                 List<int[]> next = new ArrayList<>();
-                double error = lodErrors.getLast();
+                double step = 0;
                 long before = 0;
                 long after = 0;
                 for (int s = 0; s < submeshes.size(); s++) {
-                    int[] original = lods.getFirst().get(s);
+                    int[] previous = current.get(s);
                     float[] resultError = new float[1];
-                    int[] simplified = work.simplify(original, (int) (original.length / 3 * target) * 3,
-                        resultError);
+                    int[] simplified = work.simplify(previous, (int) (previous.length / 3 * ratio) * 3, resultError);
                     next.add(simplified);
-                    error = Math.max(error, resultError[0]);
-                    before += current.get(s).length;
+                    step = Math.max(step, resultError[0]);
+                    before += previous.length;
                     after += simplified.length;
                 }
                 if (!progress(after, before)) {
                     break;
                 }
                 lods.add(next);
-                lodErrors.add(error);
+                lodErrors.add(lodErrors.getLast() + step);
                 current = next;
             }
             List<List<Cluster>> levels = new ArrayList<>();
@@ -544,6 +543,7 @@ public final class MeshBuilder {
                     continue; // will not simplify: its meshlets stay roots
                 }
                 Sphere group = enclose(members);
+                // summed: the step's error is measured from the children, not from full detail
                 double error = childError + resultError[0];
                 for (Cluster member : members) {
                     member.parent = group;
