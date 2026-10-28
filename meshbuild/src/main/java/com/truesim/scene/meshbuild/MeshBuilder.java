@@ -203,7 +203,7 @@ public final class MeshBuilder {
                 }
                 errors[depth] = max;
             }
-            return assemble(byDepth, errors, false);
+            return assemble(rootsToCoarsest(byDepth), errors, false);
         }
     }
 
@@ -273,6 +273,29 @@ public final class MeshBuilder {
         double low = 3;
         double high = before * MIN_REDUCTION;
         return Math.abs(kept - (low + high) / 2) <= (high - low) / 2;
+    }
+
+    /**
+     * Moves every root (a meshlet whose group would not simplify further: parent error +∞) into the coarsest level, so
+     * all that can be drawn at coarse detail comes first: renderers may skip levels too fine for a distance, and
+     * streaming loads the coarsest level first. No level empties: below the coarsest, every depth holds members of a
+     * group that did simplify (its submesh went deeper), so levels and their errors stay as they are.
+     */
+    private static List<List<Cluster>> rootsToCoarsest(List<List<Cluster>> byDepth) {
+        int coarsest = byDepth.size() - 1;
+        List<List<Cluster>> out = new ArrayList<>();
+        List<Cluster> moved = new ArrayList<>();
+        for (int depth = 0; depth < coarsest; depth++) {
+            List<Cluster> kept = new ArrayList<>();
+            for (Cluster cluster : byDepth.get(depth)) {
+                (cluster.parentError == Double.POSITIVE_INFINITY ? moved : kept).add(cluster);
+            }
+            out.add(kept);
+        }
+        List<Cluster> top = new ArrayList<>(byDepth.get(coarsest));
+        top.addAll(moved);
+        out.add(top);
+        return out;
     }
 
     private static void add(List<List<Cluster>> byDepth, int depth, List<Cluster> clusters) {

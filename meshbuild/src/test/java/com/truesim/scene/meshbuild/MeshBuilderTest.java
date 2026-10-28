@@ -142,6 +142,9 @@ class MeshBuilderTest {
         double[] lod = new double[10];
         for (int m = 0; m < mesh.meshletCount(); m++) {
             mesh.meshletLod(m, lod);
+            if (lod[9] == Double.POSITIVE_INFINITY) {
+                assertThat(m).as("roots are in the coarsest level").isLessThan(levels.getFirst().meshletCount());
+            }
             assertThat(lod[9]).isGreaterThanOrEqualTo(lod[4]);
             if (lod[9] != Double.POSITIVE_INFINITY) {
                 double d = Math.sqrt(Math.pow(lod[5] - lod[0], 2) + Math.pow(lod[6] - lod[1], 2)
@@ -256,6 +259,30 @@ class MeshBuilderTest {
                 assertThat(p[0]).isBetween(submesh * 8 - 1e-3, submesh * 8 + 8 + 1e-3);
             }
         }
+    }
+
+    @Test
+    void rootsOfShallowSubmeshesGoToTheCoarsestLevel() {
+        // A one-quad submesh is a root at full detail; the large one goes many levels deeper.
+        MeshData mesh = new MeshBuilder(VertexFormat.POSITIONS_ONLY, vertices())
+            .positions(grid())
+            .submesh(triangles(0, N - 1, N))
+            .submesh(triangles(N - 1, N, 1))
+            .buildHierarchy();
+        assertThat(mesh.levels().size()).isGreaterThan(2);
+        double[] lod = new double[10];
+        int roots = 0;
+        for (int m = 0; m < mesh.meshletCount(); m++) {
+            mesh.meshletLod(m, lod);
+            if (lod[9] == Double.POSITIVE_INFINITY) {
+                roots++;
+                assertThat(m).isLessThan(mesh.levels().getFirst().meshletCount());
+            }
+            if (mesh.meshletSubmesh(m) == 1) {
+                assertThat(lod[9]).isEqualTo(Double.POSITIVE_INFINITY); // the quad: its own root
+            }
+        }
+        assertThat(roots).isGreaterThan(1);
     }
 
     @Test
