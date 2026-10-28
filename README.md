@@ -278,10 +278,14 @@ collisions.update();
 
 TerrainHeights ground = new TerrainHeights(world, COLLISION);
 double y = ground.heightAt(x, z);                                         // NaN where no terrain has loaded
+int material = ground.materialAt(x, z);                                   // the ground type, e.g. for footsteps
 ```
 
 - **Features apply:** a loader reading features (barriers on or off, a layout) reloads its cells on a change, and
   their colliders swap like any other content.
+- **Materials:** each collider has its own material, and meshes and heightfields one per triangle or cell; contacts
+  and hits report them, so physics needs nothing more. `terrain(heightfield, x, y, z, material, group, mask)` also
+  gives the terrain collider a filter, e.g. for queries that skip terrain.
 - **Heights match collision:** `heightAt` uses the finest loaded level and the same two triangles per heightfield
   cell as common-collision, so it is where a ray straight down hits the terrain.
 - **Levels:** coarser collision levels (a whole valley as one low-resolution heightfield) cover what finer cells do

@@ -164,6 +164,32 @@ class CellCollidersTest {
     }
 
     @Test
+    void terrainHasItsOwnFilterAndCellMaterials() throws InterruptedException {
+        int mud = 3;
+        int gravel = 4;
+        int terrainGroup = 1 << 4;
+        Layer<CellColliders> fields = Layer.of("fields", CellColliders.class, Levels.single(64));
+        world.register(fields, new ColliderLoader(collisions, (cell, features) -> CellColliders.builder()
+            .terrain(HeightfieldShape.of(3, 3, 32, 32, new double[9], new int[] {mud, gravel, mud, mud}),
+                cell.minX(), 0, cell.minZ(), 9, terrainGroup, -1)
+            .build()));
+        world.request(fields, 0, 0, 0, 0);
+        await(() -> world.loadedCount() == 1);
+        TerrainHeights ground = new TerrainHeights(world, fields);
+        // The cell materials, as hits report them.
+        for (double[] p : new double[][] {{10, 10}, {40, 10}, {10, 40}, {63, 63}, {64, 64}}) {
+            assertThat(query.raycast(Vec3.of(p[0], 10, p[1]), Vec3.of(0, -1, 0), 20, -1, hit)).isTrue();
+            assertThat(ground.materialAt(p[0], p[1])).isEqualTo(hit.material());
+        }
+        assertThat(ground.materialAt(40, 10)).isEqualTo(gravel);
+        assertThat(ground.materialAt(-1, 10)).isEqualTo(TerrainHeights.NONE);
+        // The collider's own material and filter: a query can skip terrain.
+        assertThat(collisions.material(hit.collider())).isEqualTo(9);
+        assertThat(collisions.group(hit.collider())).isEqualTo(terrainGroup);
+        assertThat(query.raycast(Vec3.of(10, 10, 10), Vec3.of(0, -1, 0), 20, ~terrainGroup, hit)).isFalse();
+    }
+
+    @Test
     void terrainSamplesBothTrianglesOfACell() {
         double[] heights = {0, 1, 2, 3}; // (0,0)=0, (1,0)=1, (0,1)=2, (1,1)=3
         HeightfieldShape terrain = HeightfieldShape.of(2, 2, 10, 10, heights);
@@ -184,6 +210,9 @@ class CellCollidersTest {
         assertThat(empty.colliders()).isEmpty();
         assertThat(empty.terrain()).isNull();
         assertThat(empty.terrainOrigin()).isNull();
+        assertThat(empty.terrainMaterial()).isZero();
+        assertThat(empty.terrainGroup()).isEqualTo(1);
+        assertThat(empty.terrainMask()).isEqualTo(-1);
         assertThat(empty.isAttached()).isFalse();
         CellColliders.Builder builder = CellColliders.builder();
         assertThatNullPointerException().isThrownBy(() -> builder.add(null, Transform.IDENTITY));
