@@ -36,12 +36,18 @@ public final class CellColliders {
     private final List<Collider> colliders;
     private final HeightfieldShape terrain;
     private final Vec3 terrainOrigin;
+    private final int terrainMaterial;
+    private final int terrainGroup;
+    private final int terrainMask;
     private int[] ids; // in the collision world while attached; set on the main thread
 
-    private CellColliders(List<Collider> colliders, HeightfieldShape terrain, Vec3 terrainOrigin) {
-        this.colliders = colliders;
-        this.terrain = terrain;
-        this.terrainOrigin = terrainOrigin;
+    private CellColliders(Builder builder) {
+        this.colliders = List.copyOf(builder.colliders);
+        this.terrain = builder.terrain;
+        this.terrainOrigin = builder.terrainOrigin;
+        this.terrainMaterial = builder.terrainMaterial;
+        this.terrainGroup = builder.terrainGroup;
+        this.terrainMask = builder.terrainMask;
     }
 
     @AllowAllocation("building a cell, in the background")
@@ -64,6 +70,24 @@ public final class CellColliders {
         return terrainOrigin;
     }
 
+    /**
+     * The terrain collider's own material (0 by default); the materials of its cells, which contacts and hits
+     * report, are in the heightfield.
+     */
+    public int terrainMaterial() {
+        return terrainMaterial;
+    }
+
+    /** The terrain collider's collision group (1 by default), see {@code CollisionWorld.setFilter}. */
+    public int terrainGroup() {
+        return terrainGroup;
+    }
+
+    /** The terrain collider's collision mask (-1, everything, by default). */
+    public int terrainMask() {
+        return terrainMask;
+    }
+
     /** Whether the cell is in a collision world now. */
     public boolean isAttached() {
         return ids != null;
@@ -82,6 +106,9 @@ public final class CellColliders {
         private final List<Collider> colliders = new ArrayList<>();
         private HeightfieldShape terrain;
         private Vec3 terrainOrigin;
+        private int terrainMaterial;
+        private int terrainGroup = 1;
+        private int terrainMask = -1;
 
         private Builder() {
         }
@@ -103,18 +130,32 @@ public final class CellColliders {
 
         /**
          * Sets the cell's terrain: a heightfield whose first sample lies at ({@code x}, {@code y}, {@code z}), axis
-         * aligned. Its heights are offsets from {@code y}.
+         * aligned. Its heights are offsets from {@code y}. The terrain collider gets material 0 and collides with
+         * everything.
+         */
+        public Builder terrain(HeightfieldShape heightfield, double x, double y, double z) {
+            return terrain(heightfield, x, y, z, 0, 1, -1);
+        }
+
+        /**
+         * Sets the cell's terrain, as {@link #terrain(HeightfieldShape, double, double, double)}, with the terrain
+         * collider's own material and collision filter, e.g. so a query can skip terrain. Contacts and hits report the
+         * materials of the heightfield's cells either way.
          */
         @AllowAllocation("building a cell, in the background")
-        public Builder terrain(HeightfieldShape heightfield, double x, double y, double z) {
+        public Builder terrain(HeightfieldShape heightfield, double x, double y, double z, int material, int group,
+            int mask) {
             this.terrain = Objects.requireNonNull(heightfield, "heightfield");
             this.terrainOrigin = Vec3.of(x, y, z);
+            this.terrainMaterial = material;
+            this.terrainGroup = group;
+            this.terrainMask = mask;
             return this;
         }
 
         @AllowAllocation("building a cell, in the background")
         public CellColliders build() {
-            return new CellColliders(List.copyOf(colliders), terrain, terrainOrigin);
+            return new CellColliders(this);
         }
     }
 }

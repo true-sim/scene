@@ -27,8 +27,8 @@ import java.util.Objects;
  * collisions.update();
  * }</pre>
  *
- * <p>Colliders get the cell's colliders' materials and filters; their user data is 0. Attaching and detaching run on
- * the main thread, as the collision world is used from one thread at a time.
+ * <p>Colliders get the materials and filters the cell gives them, the terrain too; their user data is 0. Attaching
+ * and detaching run on the main thread, as the collision world is used from one thread at a time.
  */
 public final class ColliderLoader implements CellLoader<CellColliders> {
 
@@ -72,7 +72,10 @@ public final class ColliderLoader implements CellLoader<CellColliders> {
             ids[i] = id;
         }
         if (data.terrain() != null) {
-            ids[colliders.size()] = collisions.addStatic(data.terrain(), Transform.ofTranslation(data.terrainOrigin()));
+            int id = collisions.addStatic(data.terrain(), Transform.ofTranslation(data.terrainOrigin()));
+            collisions.setMaterial(id, data.terrainMaterial());
+            collisions.setFilter(id, data.terrainGroup(), data.terrainMask());
+            ids[colliders.size()] = id;
         }
         data.attached(ids);
     }
