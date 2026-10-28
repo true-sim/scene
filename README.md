@@ -253,6 +253,40 @@ world.update();                                          // applies the changes
 - **Small and immutable states:** loads in the background read a consistent snapshot, and a server can later
   replicate the selected variant and its changes.
 
+### Collision
+
+A collision layer streams each cell's static colliders and terrain into a common-collision `CollisionWorld`, with
+or without rendering. Loaders build a `CellColliders` in the background; `ColliderLoader` adds its colliders when the
+cell attaches and removes them when it goes:
+
+```java
+static final Layer<CellColliders> COLLISION = Layer.of("collision", CellColliders.class, Levels.single(128));
+
+CollisionWorld collisions = new CollisionWorld();
+world.register(COLLISION, new ColliderLoader(collisions, (cell, features) -> CellColliders.builder()
+    .terrain(readHeights(cell), cell.minX(), 0, cell.minZ())             // a heightfield per cell
+    .add(barrierHull, barrierPose, CONCRETE, STATIC_GROUP, -1, false)      // material and filter
+    .add(trackMesh, Transform.IDENTITY, ASPHALT, STATIC_GROUP, -1, true)    // baked into the static tree
+    .build()));
+
+// A physics-only server: one source per player, wanting only collision.
+InterestSource player = world.addInterest(InterestProfile.builder()
+    .layer(COLLISION, Detail.full(), Range.radius(300)).build(), Priority.HIGH);
+
+// Every step, after the frame boundary (tasks.drainCompleted()):
+collisions.update();
+
+TerrainHeights ground = new TerrainHeights(world, COLLISION);
+double y = ground.heightAt(x, z);                                         // NaN where no terrain has loaded
+```
+
+- **Features apply:** a loader reading features (barriers on or off, a layout) reloads its cells on a change, and
+  their colliders swap like any other content.
+- **Heights match collision:** `heightAt` uses the finest loaded level and the same two triangles per heightfield
+  cell as common-collision, so it is where a ray straight down hits the terrain.
+- **Levels:** coarser collision levels (a whole valley as one low-resolution heightfield) cover what finer cells do
+  not; each loaded cell adds its colliders, so overlapping levels both collide while a swap is under way.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -264,8 +298,9 @@ world.update();                                          // applies the changes
 
 ```kotlin
 dependencies {
-    implementation("com.truesim.scene:scene-core:0.2.0")
-    implementation("com.truesim.scene:scene-world:0.2.0") // streaming
+    implementation("com.truesim.scene:scene-core:0.13.0")
+    implementation("com.truesim.scene:scene-world:0.13.0")     // streaming
+    implementation("com.truesim.scene:scene-collision:0.13.0") // colliders and terrain heights per cell
 }
 ```
 
