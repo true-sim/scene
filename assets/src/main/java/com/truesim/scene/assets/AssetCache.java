@@ -5,6 +5,9 @@ import com.truesim.common.jobs.Lane;
 import com.truesim.common.jobs.Task;
 import com.truesim.common.jobs.TaskScheduler;
 import com.truesim.common.jobs.TaskState;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -17,13 +20,15 @@ import org.slf4j.LoggerFactory;
 /**
  * All loaded asset data of a process, keyed by {@link AssetRef}, so each asset loads once however many nodes, cells or
  * other assets use it. Users {@link #acquire} an asset and {@link #release} it when done; the first acquire starts its
- * load (from the type's {@link AssetSource}, or its {@link Generator}), and later ones join the load in flight or get
+ * load (the type's {@link AssetLoader} reading from its {@link AssetSource}, or the asset's {@link Generator}), and
+ * later ones join the load in flight or get
  * the loaded data. An asset nobody holds stays cached until the memory budget needs the room, least recently released
  * first, so streaming back and forth does not reload.
  *
  * <pre>{@code
  * AssetCache assets = new AssetCache(tasks);
- * assets.register(MESH, (id, part) -> MeshData.read(archive.open(id), part));
+ * assets.setSource(AssetSource.firstOf(AssetSource.directory(patches), cdn.through(AssetSource.GZIP)));
+ * assets.register(MESH, GLTF_MESHES);        // a loader: reads the format from any source
  * assets.setBudget(512L << 20);
  * assets.addListener(gpuResources);          // uploads on loaded, frees on evicted
  *
@@ -33,8 +38,8 @@ import org.slf4j.LoggerFactory;
  * }</pre>
  *
  * <p>Loads finish at the frame boundary ({@code TaskScheduler.drainCompleted()}): those done by the same boundary in
- * the order they started, so residency never changes in between and follows the order of acquisition. Use the cache on the main thread, the one that drains the
- * scheduler.
+ * the order they started, so residency never changes in between. Use the cache on the main thread, the one that
+ * drains the scheduler.
  */
 public final class AssetCache implements AutoCloseable {
 
@@ -67,7 +72,30 @@ public final class AssetCache implements AutoCloseable {
     }
 
     private final TaskScheduler tasks;
-    private final Map<AssetType<?>, AssetSource<?>> sources = new IdentityHashMap<>();
+    /** A type's loader, and its own source or {@code null} for the cache's. */
+    private record Registered(AssetLoader<?> loader, AssetSource source) {
+    }
+
+    /** One asset's resources, from its source: what a loader reads. */
+    private record Input(AssetId id, int part, AssetSource source) implements AssetInput {
+
+        @Override
+        public InputStream open(String resource) throws IOException {
+            InputStream in = source.open(id, Objects.requireNonNull(resource, "resource"));
+            if (in == null) {
+                throw new FileNotFoundException(missing(id, resource));
+            }
+            return in;
+        }
+
+        @AllowAllocation("reporting a missing resource")
+        private static String missing(AssetId id, String resource) {
+            return "No source has " + (AssetSource.MAIN.equals(resource) ? "asset " + id : resource + " of asset " + id);
+        }
+    }
+
+    private final Map<AssetType<?>, Registered> registered = new IdentityHashMap<>();
+    private AssetSource source;
     private final Map<AssetRef<?>, Entry> entries = new HashMap<>();
     private final List<Listener> listeners = new ArrayList<>();
     private Entry oldest;
@@ -84,14 +112,34 @@ public final class AssetCache implements AutoCloseable {
         this.tasks = Objects.requireNonNull(tasks, "tasks");
     }
 
-    /** Makes stored assets of {@code type} loadable from {@code source}. Once per type; generated assets need none. */
+    /**
+     * Where stored assets come from, for types registered without a source of their own; chain several with
+     * {@link AssetSource#firstOf}. None by default.
+     */
+    public void setSource(AssetSource assetSource) {
+        this.source = Objects.requireNonNull(assetSource, "source");
+    }
+
+    /**
+     * Makes stored assets of {@code type} loadable: {@code loader} reads them from the cache's source
+     * ({@link #setSource}). Once per type; generated assets need no loader.
+     */
+    public <T> void register(AssetType<T> type, AssetLoader<T> loader) {
+        register(type, loader, null, false);
+    }
+
+    /** Like {@link #register(AssetType, AssetLoader)}, reading from {@code typeSource} instead of the cache's source. */
+    public <T> void register(AssetType<T> type, AssetLoader<T> loader, AssetSource typeSource) {
+        register(type, loader, Objects.requireNonNull(typeSource, "source"), true);
+    }
+
     @AllowAllocation("registering")
-    public <T> void register(AssetType<T> type, AssetSource<T> source) {
+    private void register(AssetType<?> type, AssetLoader<?> loader, AssetSource typeSource, boolean own) {
         checkOpen();
-        if (sources.containsKey(type)) {
-            throw new IllegalStateException(type + " has a source already");
+        if (registered.containsKey(type)) {
+            throw new IllegalStateException(type + " has a loader already");
         }
-        sources.put(type, Objects.requireNonNull(source, "source"));
+        registered.put(type, new Registered(Objects.requireNonNull(loader, "loader"), own ? typeSource : null));
     }
 
     @AllowAllocation("adding a listener")
@@ -191,15 +239,27 @@ public final class AssetCache implements AutoCloseable {
 
     @AllowAllocation("starting a load")
     private Entry start(AssetRef<?> ref) {
-        AssetSource<?> source = sources.get(ref.type());
-        if (source == null && !ref.isGenerated()) {
-            throw new IllegalArgumentException(ref.type() + " has no source to load " + ref);
+        Registered registration = registered.get(ref.type());
+        AssetLoader<?> loader = null;
+        Input input = null;
+        if (!ref.isGenerated()) {
+            if (registration == null) {
+                throw new IllegalArgumentException(ref.type() + " has no loader for " + ref);
+            }
+            AssetSource from = registration.source() != null ? registration.source() : source;
+            if (from == null) {
+                throw new IllegalStateException("No source to load " + ref + " from: set one");
+            }
+            loader = registration.loader();
+            input = new Input(ref.id(), ref.part(), from);
         }
         Entry entry = new Entry(ref);
         entries.put(ref, entry);
         loading++;
         Lane lane = tasks.lane(ref.type().lane());
-        lane.task(() -> ref.isGenerated() ? ref.generate() : source.load(ref.id(), ref.part()))
+        AssetLoader<?> typeLoader = loader;
+        Input assetInput = input;
+        lane.task(() -> typeLoader == null ? ref.generate() : typeLoader.load(assetInput))
             .deliver(done -> delivered(entry, done))
             .submit();
         return entry;
@@ -248,7 +308,7 @@ public final class AssetCache implements AutoCloseable {
         }
     }
 
-    /** Takes a loaded asset out of the cache: listeners hear of it, its source unloads it. */
+    /** Takes a loaded asset out of the cache: listeners hear of it, its loader unloads it. */
     private void evict(Entry entry) {
         if (entry.refs == 0) {
             unlink(entry);
@@ -263,9 +323,9 @@ public final class AssetCache implements AutoCloseable {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void unload(AssetRef<?> ref, Object data) {
-        AssetSource source = sources.get(ref.type());
-        if (source != null && !ref.isGenerated()) {
-            source.unload(data);
+        Registered registration = registered.get(ref.type());
+        if (registration != null && !ref.isGenerated()) {
+            ((AssetLoader) registration.loader()).unload(data);
         }
     }
 
