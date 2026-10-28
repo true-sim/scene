@@ -19,15 +19,16 @@ plugins {
 rootProject.name = "scene"
 
 // Each module is published on its own, so a dedicated server takes core and world without render data.
-include("scene-core", "scene-world")
+include("scene-core", "scene-world", "scene-collision")
 project(":scene-core").projectDir = file("core")
 project(":scene-world").projectDir = file("world")
+project(":scene-collision").projectDir = file("collision")
 
 providers.gradleProperty("truesim.build-logic").orNull?.let { includeBuild(it) }
 
 dependencyResolutionManagement {
     repositories {
-        for (repo in listOf("build-logic", "common-math", "common-state", "common-jobs")) {
+        for (repo in listOf("build-logic", "common-math", "common-state", "common-jobs", "common-collision")) {
             maven("https://maven.pkg.github.com/true-sim/$repo") {
                 credentials {
                     username = providers.gradleProperty("gpr.user").orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
