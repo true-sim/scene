@@ -399,7 +399,7 @@ dependencies {
 ./gradlew build
 ```
 
-The libraries come from GitHub Packages, which needs a token with `read:packages` (`gpr.user` and `gpr.key` in
-`~/.gradle/gradle.properties`, or `GITHUB_ACTOR` and `GITHUB_TOKEN`). To build against local checkouts instead, add
-`--include-build ../common-math --include-build ../common-state`, and `-Ptruesim.build-logic=../build-logic` for a
-local build-logic.
+Sibling checkouts (`../build-logic`, `../common-math`, `../common-state`, `../common-jobs`, `../common-collision`) are
+used automatically when present (override with `-Ptruesim.<repo>=<path>`). Otherwise they come from GitHub Packages,
+which needs a token with `read:packages` (`gpr.user` and `gpr.key` in `~/.gradle/gradle.properties`, or `GITHUB_ACTOR`
+and `GITHUB_TOKEN`).
