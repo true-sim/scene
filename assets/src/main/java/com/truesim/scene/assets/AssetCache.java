@@ -32,8 +32,8 @@ import org.slf4j.LoggerFactory;
  * assets.release(barrier);                   // when the cell goes
  * }</pre>
  *
- * <p>Loads finish at the frame boundary ({@code TaskScheduler.drainCompleted()}), in the order they started, so
- * residency changes in the same order on every run. Use the cache on the main thread, the one that drains the
+ * <p>Loads finish at the frame boundary ({@code TaskScheduler.drainCompleted()}): those done by the same boundary in
+ * the order they started, so residency never changes in between and follows the order of acquisition. Use the cache on the main thread, the one that drains the
  * scheduler.
  */
 public final class AssetCache implements AutoCloseable {

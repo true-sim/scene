@@ -185,7 +185,11 @@ class AssetCacheTest {
         assertThat(cache.get(barrierRef())).isNull(); // absent
         gate.countDown();
         gate = null;
-        await(() -> cache.loadingCount() == 0);
+        while (tasks.pending() > 0) {
+            Thread.sleep(1); // both finish before one frame boundary delivers them, in the order they started
+        }
+        tasks.drainCompleted();
+        assertThat(cache.loadingCount()).isZero();
         // Both were cached as they arrived, in the order they started; the house did not fit next to the tree, which
         // was released least recently.
         assertThat(cache.state(tree)).isEqualTo(AssetState.ABSENT);

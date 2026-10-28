@@ -320,8 +320,8 @@ assets.release(barrier);                         // in CellLoader.detach
   first, so streaming back and forth does not reload. Assets in use are never evicted.
 - **Uploaded once:** the engine's GPU resource cache listens to the asset cache and follows its residency (`loaded`,
   `evicted`), not node changes, so all instances share one upload.
-- **Deterministic:** loads finish at the frame boundary in the order they started; failed assets stay failed while held
-  and load again when acquired after their last release.
+- **At the frame boundary:** loads finish only there, those done by the same boundary in the order they started.
+  Failed assets stay failed while held and load again when acquired after their last release.
 - Identical content under two ids is caught at import time, by content hashes, not at runtime.
 
 ### Multiplayer
