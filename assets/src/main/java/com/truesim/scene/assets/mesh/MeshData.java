@@ -28,8 +28,8 @@ import java.util.Objects;
  *   <tr><td>{@link #meshlets()}</td><td>meshlet</td><td>32</td><td>vertexOffset u32, triangleOffset u32 (in indices),
  *       vertexCount u8, triangleCount u8, submesh u16, bounding sphere 4 × float32, cone axis 3 × snorm8,
  *       cone cutoff snorm8</td></tr>
- *   <tr><td>{@link #clusterLod()}</td><td>meshlet</td><td>32</td><td>own group: sphere center 3 × float32, error
- *       float32; parent group: center 3 × float32, error float32</td></tr>
+ *   <tr><td>{@link #clusterLod()}</td><td>meshlet</td><td>40</td><td>own group: sphere center 3 × float32, radius
+ *       float32, error float32; parent group: the same</td></tr>
  * </table>
  *
  * <p><b>Detail, one rule:</b> draw a meshlet when its own group's projected error is at most the allowed error and its
@@ -49,7 +49,7 @@ public final class MeshData {
     /** Bytes per meshlet in {@link #meshlets()}. */
     public static final int MESHLET_BYTES = 32;
     /** Bytes per meshlet in {@link #clusterLod()}. */
-    public static final int CLUSTER_LOD_BYTES = 32;
+    public static final int CLUSTER_LOD_BYTES = 40;
     /** The most vertices or triangles a meshlet holds: counts are uint8. */
     public static final int MAX_MESHLET_SIZE = 255;
 
@@ -273,12 +273,13 @@ public final class MeshData {
     }
 
     /**
-     * The meshlet's detail selection data: own group's center and error into {@code out[0..3]}, parent group's center
-     * and error into {@code out[4..7]}.
+     * The meshlet's detail selection data: own group's sphere (center, radius) and error into {@code out[0..4]}, parent
+     * group's into {@code out[5..9]}. A group's projected error uses the distance to its sphere, so a parent's sphere
+     * holds its children's.
      */
     public void meshletLod(int meshlet, double[] out) {
         long o = (long) Objects.checkIndex(meshlet, meshletCount) * CLUSTER_LOD_BYTES;
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 10; i++) {
             out[i] = clusterLod.get(F32, o + 4L * i);
         }
     }
@@ -525,7 +526,7 @@ public final class MeshData {
                 arena.allocate(4L * meshletVertexTotal, 4),
                 arena.allocate(3L * triangleTotal, 4),
                 arena.allocate((long) MESHLET_BYTES * meshlets.size(), 16),
-                arena.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 16)
+                arena.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 8)
             };
             encodeMeshlets(segments, bounds);
             return new MeshData(this, box, bounds, List.copyOf(levels), segments);
@@ -649,8 +650,8 @@ public final class MeshData {
 
         private void putLod(MemorySegment lods, long o, Meshlet meshlet, int m, Sphere meshBounds) {
             if (!discrete) {
-                putCenter(lods, o, meshlet.group, meshlet.groupError);
-                putCenter(lods, o + 16, meshlet.parent, meshlet.parentError);
+                putGroup(lods, o, meshlet.group, meshlet.groupError);
+                putGroup(lods, o + 20, meshlet.parent, meshlet.parentError);
                 return;
             }
             int level = 0;
@@ -658,21 +659,22 @@ public final class MeshData {
                 level++;
             }
             double parentError = level == 0 ? Double.POSITIVE_INFINITY : levels.get(level - 1).error();
-            putCenter(lods, o, meshBounds, levels.get(level).error());
-            putCenter(lods, o + 16, meshBounds, parentError);
+            putGroup(lods, o, meshBounds, levels.get(level).error());
+            putGroup(lods, o + 20, meshBounds, parentError);
         }
 
         /** Center and radius as 4 × float32. */
         private static void putSphere(MemorySegment out, long o, Sphere sphere) {
-            putCenter(out, o, sphere, sphere.radius());
-        }
-
-        /** A sphere's center and a value, e.g. an error, as 4 × float32. */
-        private static void putCenter(MemorySegment out, long o, Sphere sphere, double value) {
             out.set(F32, o, (float) sphere.x());
             out.set(F32, o + 4, (float) sphere.y());
             out.set(F32, o + 8, (float) sphere.z());
-            out.set(F32, o + 12, (float) value);
+            out.set(F32, o + 12, (float) sphere.radius());
+        }
+
+        /** A group's sphere and error as 5 × float32. */
+        private static void putGroup(MemorySegment out, long o, Sphere sphere, double error) {
+            putSphere(out, o, sphere);
+            out.set(F32, o + 16, (float) error);
         }
 
         /**
