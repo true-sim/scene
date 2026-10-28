@@ -1,6 +1,7 @@
 pluginManagement {
-    // Develop against a local build-logic checkout: -Ptruesim.build-logic=../build-logic
-    providers.gradleProperty("truesim.build-logic").orNull?.let { includeBuild(it) }
+    // Use ../build-logic when present; override with -Ptruesim.build-logic=<path> (or false).
+    providers.gradleProperty("truesim.build-logic").orElse("../build-logic").get()
+        .takeIf { file(it).isDirectory }?.let { includeBuild(it) }
     repositories {
         gradlePluginPortal()
         maven("https://maven.pkg.github.com/true-sim/build-logic") {
@@ -26,11 +27,15 @@ project(":scene-collision").projectDir = file("collision")
 project(":scene-assets").projectDir = file("assets")
 project(":scene-meshbuild").projectDir = file("meshbuild")
 
-providers.gradleProperty("truesim.build-logic").orNull?.let { includeBuild(it) }
+val truesimRepos = listOf("build-logic", "common-math", "common-state", "common-jobs", "common-collision")
+for (repo in truesimRepos) {
+    providers.gradleProperty("truesim.$repo").orElse("../$repo").get()
+        .takeIf { file(it).isDirectory }?.let { includeBuild(it) }
+}
 
 dependencyResolutionManagement {
     repositories {
-        for (repo in listOf("build-logic", "common-math", "common-state", "common-jobs", "common-collision")) {
+        for (repo in truesimRepos) {
             maven("https://maven.pkg.github.com/true-sim/$repo") {
                 credentials {
                     username = providers.gradleProperty("gpr.user").orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
