@@ -7,6 +7,9 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.truesim.common.jobs.LaneSpec;
 import com.truesim.common.jobs.TaskScheduler;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,6 +39,10 @@ class AssetCacheTest {
     private static final AssetId HOUSE = new AssetId(5, 6);
     private static final AssetId BROKEN = new AssetId(7, 8);
 
+    /** Asset bytes in memory: an asset's resource holds its own name; the broken asset is missing. */
+    private static final AssetSource SOURCE = (id, resource) -> id.equals(BROKEN) ? null
+        : new ByteArrayInputStream((id + (resource.isEmpty() ? "" : "/" + resource)).getBytes(StandardCharsets.UTF_8));
+
     private final TaskScheduler tasks = new TaskScheduler();
     private final AssetCache cache = new AssetCache(tasks);
     private final Map<String, AtomicInteger> loads = new ConcurrentHashMap<>();
@@ -48,19 +55,20 @@ class AssetCacheTest {
     };
 
     AssetCacheTest() {
-        cache.register(MESH, new AssetSource<>() {
+        cache.setSource(SOURCE);
+        cache.register(MESH, new AssetLoader<>() {
             @Override
-            public Mesh load(AssetId id, int part) throws InterruptedException {
-                String name = id + (part == 0 ? "" : "/" + part);
-                loads.computeIfAbsent(name, k -> new AtomicInteger()).incrementAndGet();
+            public Mesh load(AssetInput input) throws Exception {
+                loads.computeIfAbsent(input.id() + (input.part() == 0 ? "" : "/" + input.part()),
+                    k -> new AtomicInteger()).incrementAndGet();
                 CountDownLatch wait = gate;
                 if (wait != null) {
                     assertThat(wait.await(10, TimeUnit.SECONDS)).isTrue();
                 }
-                if (id.equals(BROKEN)) {
-                    throw new IllegalStateException("No such file");
+                try (InputStream in = input.part() == 0 ? input.open() : input.open(String.valueOf(input.part()))) {
+                    String name = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                    return new Mesh(name, input.id().equals(HOUSE) ? 300 : 100);
                 }
-                return new Mesh(name, id.equals(HOUSE) ? 300 : 100);
             }
 
             @Override
@@ -240,7 +248,7 @@ class AssetCacheTest {
         AssetRef<Mesh> broken = AssetRef.of(MESH, BROKEN);
         cache.acquire(broken);
         await(() -> cache.state(broken) == AssetState.FAILED);
-        assertThat(cache.failure(broken)).hasMessage("No such file");
+        assertThat(cache.failure(broken)).hasMessage("No source has asset " + BROKEN);
         assertThat(cache.get(broken)).isNull();
         cache.acquire(broken); // still failed
         assertThat(loads(BROKEN)).isEqualTo(1);
@@ -276,12 +284,12 @@ class AssetCacheTest {
         gate = null;
         await(() -> events.contains("unload " + HOUSE));
         assertThatIllegalStateException().isThrownBy(() -> cache.acquire(barrier));
-        assertThatIllegalStateException().isThrownBy(() -> cache.register(MESH, (id, part) -> null));
+        assertThatIllegalStateException().isThrownBy(() -> cache.register(MESH, input -> null));
         // A failed load arriving after closing is dropped.
         AssetCache other = new AssetCache(tasks);
-        other.register(MESH, (id, part) -> {
+        other.register(MESH, input -> {
             throw new IllegalStateException("late");
-        });
+        }, SOURCE);
         other.acquire(AssetRef.of(MESH, BROKEN));
         other.close();
         await(() -> other.loadingCount() == 0);
@@ -291,9 +299,14 @@ class AssetCacheTest {
     void misuseIsChecked() {
         AssetRef<Mesh> barrier = AssetRef.of(MESH, BARRIER);
         assertThatIllegalStateException().isThrownBy(() -> cache.release(barrier));
-        assertThatIllegalStateException().isThrownBy(() -> cache.register(MESH, (id, part) -> null));
+        assertThatIllegalStateException().isThrownBy(() -> cache.register(MESH, input -> null));
         assertThatIllegalArgumentException().isThrownBy(() -> cache.acquire(AssetRef.of(PROCEDURAL, BARRIER)))
-            .withMessageContaining("no source");
+            .withMessageContaining("no loader");
+        AssetCache unsourced = new AssetCache(tasks);
+        unsourced.register(MESH, input -> null);
+        assertThatIllegalStateException().isThrownBy(() -> unsourced.acquire(barrier)).withMessageContaining("set one");
+        assertThatNullPointerException().isThrownBy(() -> unsourced.setSource(null));
+        assertThatNullPointerException().isThrownBy(() -> unsourced.register(PROCEDURAL, input -> null, null));
         assertThatIllegalArgumentException().isThrownBy(() -> cache.setBudget(-1));
         assertThatIllegalArgumentException().isThrownBy(() -> barrier.part(-1));
         assertThatNullPointerException().isThrownBy(() -> cache.addListener(null));
@@ -310,12 +323,8 @@ class AssetCacheTest {
         assertThat(MESH.type()).isEqualTo(Mesh.class);
         assertThat(MESH.lane()).isSameAs(AssetType.LOADING);
         assertThat(MESH).hasToString("asset type mesh");
-        assertThat(new AssetSource<Mesh>() {
-            @Override
-            public Mesh load(AssetId id, int part) {
-                return null;
-            }
-        }).satisfies(source -> source.unload(new Mesh("x", 1))); // unloading does nothing by default
+        AssetLoader<Mesh> loader = input -> null;
+        loader.unload(new Mesh("x", 1)); // unloading does nothing by default
     }
 
     @Test

@@ -301,7 +301,11 @@ loads once however many use it:
 static final AssetType<MeshData> MESH = AssetType.of("mesh", MeshData.class, MeshData::byteSize);
 
 AssetCache assets = new AssetCache(tasks);
-assets.register(MESH, (id, part) -> MeshData.read(archive.open(id), part));   // storage, network, ...
+assets.setSource(AssetSource.firstOf(                // where bytes come from, tried in order
+    AssetSource.directory(patches),
+    AssetSource.directory(baseGame).through(AssetSource.GZIP),
+    cdn.through((id, resource, in) -> decrypt(in, keyFor(id)))));
+assets.register(MESH, GLTF_MESHES);              // how bytes become data: one loader per type, any source
 assets.setBudget(512L << 20);                    // bytes of unused assets kept for later
 assets.addListener(gpuResources);                // the engine uploads on loaded, frees on evicted
 
@@ -314,6 +318,10 @@ MeshData mesh = assets.get(barrier);             // null until loaded
 assets.release(barrier);                         // in CellLoader.detach
 ```
 
+- **Sources and loaders apart:** a source only opens byte streams by asset id and resource name (the main resource,
+  and side resources a format names, like glTF buffers and images); transforms decompress or decrypt on the way. A
+  loader reads its format from an `AssetInput`, so the same glTF loader reads from files, archives or the network.
+  Sources are set once per cache, loaders registered once per asset type; a type may have a source of its own.
 - **Loaded once:** a second acquire of an asset that is loading joins the load in flight; one that is loaded gets the
   same data. Equal references are the same asset: the same id and part, or the same generator, parameters and seed.
 - **Kept for later:** at no holders an asset stays cached until the budget needs the room, least recently released
@@ -335,10 +343,10 @@ assets.release(barrier);                         // in CellLoader.detach
 
 ```kotlin
 dependencies {
-    implementation("com.truesim.scene:scene-core:0.14.0")
-    implementation("com.truesim.scene:scene-world:0.14.0")     // streaming
-    implementation("com.truesim.scene:scene-collision:0.14.0") // colliders and terrain heights per cell
-    implementation("com.truesim.scene:scene-assets:0.14.0")    // asset references and the cache
+    implementation("com.truesim.scene:scene-core:0.15.0")
+    implementation("com.truesim.scene:scene-world:0.15.0")     // streaming
+    implementation("com.truesim.scene:scene-collision:0.15.0") // colliders and terrain heights per cell
+    implementation("com.truesim.scene:scene-assets:0.15.0")    // asset references and the cache
 }
 ```
 
