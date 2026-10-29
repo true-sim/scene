@@ -6,7 +6,7 @@ plugins {
 description = "Scene assets for true-sim: typed asset references, pluggable sources and the asset cache."
 
 dependencies {
-    api("com.truesim.common:common-jobs:0.3.0")
+    api("com.truesim.common:common-jobs:0.3.2")
 }
 
 coverage {
