@@ -23,8 +23,12 @@ import org.junit.jupiter.api.Test;
 /** Renderables' nodes take their meshes' bounds once the meshes load, and lose them with their renderables. */
 class RenderableBoundsTest {
 
-    /** A triangle from the origin to {@code size} along x and z. */
-    private static final Generator<Double, MeshData> TRIANGLES = (size, seed) -> {
+    // Loads wait until the test opens the gate, so what is still loading does not depend on timing.
+    private volatile java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(0);
+
+    /** A triangle from the origin to {@code size} along x and z, once the gate is open. */
+    private final Generator<Double, MeshData> triangles = (size, seed) -> {
+        gate.await();
         float s = size.floatValue();
         return MeshData.builder(VertexFormat.POSITIONS_ONLY, 3)
             .positions(new float[] {0, 0, 0, s, 0, 0, 0, 0, s})
@@ -42,8 +46,8 @@ class RenderableBoundsTest {
         tasks.close();
     }
 
-    private static AssetRef<MeshData> mesh(double size) {
-        return AssetRef.generated(RenderAssets.MESH, TRIANGLES, size, 1);
+    private AssetRef<MeshData> mesh(double size) {
+        return AssetRef.generated(RenderAssets.MESH, triangles, size, 1);
     }
 
     private void await(BooleanSupplier condition) throws InterruptedException {
@@ -104,6 +108,7 @@ class RenderableBoundsTest {
     void meshesChangingOrNodesGoingWhileLoadingAreSkipped() throws InterruptedException {
         Renderables renderables = new Renderables(scene);
         try (RenderableBounds bounds = new RenderableBounds(renderables, assets)) {
+            gate = new java.util.concurrent.CountDownLatch(1); // nothing loads until the changes are made
             long c = scene.create();
             long d = scene.create();
             long e = scene.create();
@@ -117,6 +122,7 @@ class RenderableBoundsTest {
             renderables.setMesh(e, mesh(6));
             bounds.update(); // e no longer waits for mesh 4
             scene.remove(e);
+            gate.countDown();
             await(() -> assets.get(mesh(3)) != null && assets.get(mesh(5)) != null && assets.get(mesh(6)) != null);
             assertThat(scene.localBounds(c)).isEqualTo(box(3));
             assertThat(scene.localBounds(d)).isEqualTo(box(5));
