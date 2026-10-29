@@ -392,6 +392,9 @@ renderables.changesSince(since, (node, changes) -> ...);    // ADDED, REMOVED, M
 
 - **Assets by reference:** meshes, materials and textures are assets (`RenderAssets.MESH`, `MATERIAL`, `TEXTURE`), so
   a renderer loads and uploads each once through the asset cache, however many nodes use it.
+- **Bounds from meshes:** `new RenderableBounds(renderables, assets)` gives every renderable's node its mesh's box once
+  the mesh has loaded (call `bounds.update()` each frame, before `scene.update()`), so spatial queries find renderables
+  without anyone setting their bounds. It holds the meshes in the asset cache, so they load on servers too.
 - **Materials as data:** `MaterialData` names its material type and holds its parameters by field name (nested ones
   by path), the features it shows with theirs, the alpha mode (opaque, masked with a cutoff, blended) and
   double-sidedness. Scene knows no engine types: the renderer finds the type by name and reads the values by its
