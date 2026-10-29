@@ -87,6 +87,11 @@ class AssetCacheTest {
             public void evicted(AssetRef<?> ref, Object data) {
                 events.add("evicted " + ((Mesh) data).name());
             }
+
+            @Override
+            public void failed(AssetRef<?> ref, Throwable cause) {
+                events.add("failed " + cause.getMessage());
+            }
         });
     }
 
@@ -271,10 +276,20 @@ class AssetCacheTest {
 
     @Test
     void failedLoadsStayFailedWhileHeldAndRetryLater() throws InterruptedException {
+        cache.addListener(new AssetCache.Listener() { // hears failures by default: nothing
+            @Override
+            public void loaded(AssetRef<?> ref, Object data) {
+            }
+
+            @Override
+            public void evicted(AssetRef<?> ref, Object data) {
+            }
+        });
         AssetRef<Mesh> broken = AssetRef.of(MESH, BROKEN);
         cache.acquire(broken);
         await(() -> cache.state(broken) == AssetState.FAILED);
         assertThat(cache.failure(broken)).hasMessage("No source has asset " + BROKEN);
+        assertThat(events).contains("failed No source has asset " + BROKEN);
         assertThat(cache.get(broken)).isNull();
         cache.acquire(broken); // still failed
         assertThat(loads(BROKEN)).isEqualTo(1);
