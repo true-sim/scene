@@ -145,6 +145,21 @@ class SceneGraphTest {
         scene.update();
         assertThat(scene.world(car)).isEqualTo(placed);
         assertThat(translation(scene.world(wheel))).isEqualTo(Vec3.of(8, 6, 7));
+        // Rotations are kept unit length; what is not a transform is refused, before anything changes.
+        scene.setRotation(car, 0, 0, 0, 2);
+        assertThat(scene.local(car).rotation()).isEqualTo(Quat.IDENTITY);
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setTranslation(car, Double.NaN, 0, 0));
+        assertThatIllegalArgumentException()
+            .isThrownBy(() -> scene.setTranslation(car, 0, Double.POSITIVE_INFINITY, 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setRotation(car, 0, 0, 0, 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setRotation(car, Double.NaN, 0, 0, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setRotation(car, 1e300, 1e300, 0, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setScale(car, 1, 0, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setScale(car, 0, 1, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setScale(car, 1, 1, 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setScale(car, 1, Double.NaN, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocalBounds(car, 0, 0, 0, Double.NaN, 1, 1));
+        assertThat(scene.local(car).translation()).isEqualTo(Vec3.of(5, 6, 7));
     }
 
     @Test
