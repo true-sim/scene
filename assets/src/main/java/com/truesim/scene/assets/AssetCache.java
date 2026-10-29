@@ -53,6 +53,10 @@ public final class AssetCache implements AutoCloseable {
 
         /** {@code ref} left the cache: free what was made from {@code data}. */
         void evicted(AssetRef<?> ref, Object data);
+
+        /** {@code ref} could not load, for {@code cause}: what waits for it would wait for ever. Nothing by default. */
+        default void failed(AssetRef<?> ref, Throwable cause) {
+        }
     }
 
     /** One asset in the cache; unreferenced loaded ones are linked in release order. */
@@ -304,6 +308,9 @@ public final class AssetCache implements AutoCloseable {
     @AllowAllocation("logging a failure")
     private void fail(Entry entry) {
         LOG.warn("Could not load {}", entry.ref, entry.failure);
+        for (int i = 0; i < listeners.size(); i++) {
+            listeners.get(i).failed(entry.ref, entry.failure);
+        }
     }
 
     /** Evicts the least recently released assets until the cached ones fit the budget. */
