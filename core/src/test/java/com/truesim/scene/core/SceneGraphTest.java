@@ -246,6 +246,10 @@ class SceneGraphTest {
         List<Long> recent = new ArrayList<>();
         assertThat(small.changesSince(small.version(a), (node, changes) -> recent.add(node))).isTrue();
         assertThat(recent).containsExactly(b, c);
+        // Counting the changes reports the same, without visiting them.
+        assertThat(small.changeCountSince(since)).isEqualTo(-1);
+        assertThat(small.changeCountSince(small.version(a))).isEqualTo(2);
+        assertThat(small.changeCountSince(clock.now())).isZero();
     }
 
     @Test

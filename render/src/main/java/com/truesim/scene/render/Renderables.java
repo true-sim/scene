@@ -114,7 +114,7 @@ public final class Renderables {
         List<AssetRef<MaterialData>> copied = List.copyOf(materials);
         int index = slot(node);
         if (nodes[index] == node) {
-            int changes = (meshes[index].equals(mesh) ? 0 : MESH) | (this.materials[index].equals(copied) ? 0 : MATERIALS);
+            int changes = (meshes[index].equals(mesh) ? 0 : MESH) | (same(this.materials[index], copied) ? 0 : MATERIALS);
             meshes[index] = mesh;
             this.materials[index] = copied;
             if (changes != 0) {
@@ -146,10 +146,26 @@ public final class Renderables {
     public void setMaterials(long node, List<AssetRef<MaterialData>> materials) {
         List<AssetRef<MaterialData>> copied = List.copyOf(materials);
         int index = held(node);
-        if (!this.materials[index].equals(copied)) {
+        if (!same(this.materials[index], copied)) {
             this.materials[index] = copied;
             log(node, MATERIALS);
         }
+    }
+
+    /** Whether two material lists are equal, by index: {@code List.equals} would allocate an iterator. */
+    private static boolean same(List<AssetRef<MaterialData>> a, List<AssetRef<MaterialData>> b) {
+        if (a == b) {
+            return true;
+        }
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            if (!a.get(i).equals(b.get(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Whether {@code node}'s renderable casts shadows; it does by default. */

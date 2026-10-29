@@ -183,12 +183,18 @@ class RenderablesTest {
         renderables.set(node, ROCK, List.of(STONE));
         long[] since = {clock.now()};
         int[] seen = {0};
+        List<AssetRef<MaterialData>> stone = List.of(STONE);
+        List<AssetRef<MaterialData>> moss = List.of(MOSS);
+        List<AssetRef<MaterialData>> both = List.of(STONE, MOSS);
         Renderables.Visitor count = (n, changes) -> seen[0]++;
         assertAllocationFree(() -> {
             scene.setTranslation(node, seen[0], 0, 0);
             scene.update();
             renderables.update();
             renderables.setCastsShadows(node, !renderables.castsShadows(node));
+            // Material changes, of the same length and not: immutable lists are kept, not copied.
+            renderables.setMaterials(node, seen[0] % 3 == 0 ? stone : seen[0] % 3 == 1 ? moss : both);
+            renderables.set(node, ROCK, renderables.materials(node));
             renderables.changesSince(since[0], count);
             since[0] = clock.now();
             renderables.material(node, 3);

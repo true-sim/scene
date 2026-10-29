@@ -891,6 +891,14 @@ public final class SceneGraph {
         return true;
     }
 
+    /**
+     * How many changes {@link #changesSince} would report for {@code since}, or -1 when changes that old are no longer
+     * kept: e.g. to rewrite everything rather than follow the changes when most nodes changed. Allocates nothing.
+     */
+    public int changeCountSince(long since) {
+        return since < logIncompleteThrough ? -1 : logSize - firstAfter(since);
+    }
+
     /** The position in the log of the first entry stamped after {@code since}: stamps only grow, so a binary search. */
     private int firstAfter(long since) {
         int low = 0;
