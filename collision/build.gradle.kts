@@ -7,7 +7,7 @@ description = "Scene collision for true-sim: each streamed cell's colliders and 
 
 dependencies {
     api(project(":scene-world"))
-    api("com.truesim.common:common-collision:0.1.0")
+    api("com.truesim.common:common-collision:0.2.0")
 }
 
 coverage {
