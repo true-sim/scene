@@ -459,9 +459,16 @@ public final class SceneGraph {
 
     // ---------------------------------------------------------------- transforms
 
-    /** Sets the node's position relative to its parent. */
+    /**
+     * Sets the node's position relative to its parent.
+     *
+     * @throws IllegalArgumentException if it is not finite
+     */
     public void setTranslation(long node, double x, double y, double z) {
         int slot = slot(node);
+        if (!Double.isFinite(x + y + z)) {
+            throw new IllegalArgumentException("Not a finite translation: " + x + ", " + y + ", " + z);
+        }
         MemorySegment s = local.segment();
         long offset = slot * local.stride();
         put(s, offset, 0, x);
@@ -470,21 +477,37 @@ public final class SceneGraph {
         markDirty(slot);
     }
 
-    /** Sets the node's rotation relative to its parent, as a unit quaternion. */
+    /**
+     * Sets the node's rotation relative to its parent, as a quaternion: kept normalized, so one a little off unit
+     * length (accumulated rounding, say) does not scale the node.
+     *
+     * @throws IllegalArgumentException if it is not finite, or too short to give a direction
+     */
     public void setRotation(long node, double x, double y, double z, double w) {
         int slot = slot(node);
+        double length = Math.sqrt(x * x + y * y + z * z + w * w);
+        if (!(length > 1e-12) || length == Double.POSITIVE_INFINITY) {
+            throw new IllegalArgumentException("Not a rotation: " + x + ", " + y + ", " + z + ", " + w);
+        }
         MemorySegment s = local.segment();
         long offset = slot * local.stride();
-        put(s, offset, 3, x);
-        put(s, offset, 4, y);
-        put(s, offset, 5, z);
-        put(s, offset, 6, w);
+        put(s, offset, 3, x / length);
+        put(s, offset, 4, y / length);
+        put(s, offset, 5, z / length);
+        put(s, offset, 6, w / length);
         markDirty(slot);
     }
 
-    /** Sets the node's scale relative to its parent. */
+    /**
+     * Sets the node's scale relative to its parent.
+     *
+     * @throws IllegalArgumentException if it is not finite, or zero on an axis (nothing would be left to draw or hit)
+     */
     public void setScale(long node, double x, double y, double z) {
         int slot = slot(node);
+        if (!Double.isFinite(x + y + z) || x == 0 || y == 0 || z == 0) {
+            throw new IllegalArgumentException("Not a scale on every axis: " + x + ", " + y + ", " + z);
+        }
         MemorySegment s = local.segment();
         long offset = slot * local.stride();
         put(s, offset, 7, x);
@@ -550,6 +573,9 @@ public final class SceneGraph {
     public void setLocalBounds(long node, double minX, double minY, double minZ, double maxX, double maxY,
         double maxZ) {
         int slot = slot(node);
+        if (!Double.isFinite(minX + minY + minZ + maxX + maxY + maxZ)) {
+            throw new IllegalArgumentException("Bounds that are not finite");
+        }
         if (minX > maxX || minY > maxY || minZ > maxZ) {
             throw new IllegalArgumentException("Bounds with a minimum above the maximum");
         }
