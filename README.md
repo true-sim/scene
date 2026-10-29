@@ -392,9 +392,21 @@ renderables.changesSince(since, (node, changes) -> ...);    // ADDED, REMOVED, M
 
 - **Assets by reference:** meshes, materials and textures are assets (`RenderAssets.MESH`, `MATERIAL`, `TEXTURE`), so
   a renderer loads and uploads each once through the asset cache, however many nodes use it.
-- **Materials as data:** `MaterialData` is glTF's metallic-roughness model (base color, metalness, roughness, normal
-  map, occlusion, emission, each a factor times an optional texture) plus the alpha mode (opaque, masked with a
-  cutoff, blended) and double-sidedness. `TextureData` is 8-bit RGBA with its color space; the engine makes mips.
+- **Materials as data:** `MaterialData` names its material type and holds its parameters by field name (nested ones
+  by path), the features it shows with theirs, the alpha mode (opaque, masked with a cutoff, blended) and
+  double-sidedness. Scene knows no engine types: the renderer finds the type by name and reads the values by its
+  parameters' field names; what the data lacks keeps the type's defaults. glTF's materials are type
+  `metallicRoughness`. Material data compares by value, and `data.ref()` makes an inline material asset of it, so
+  equal data on many nodes is one material. `TextureData` is 8-bit RGBA with its color space; the engine makes mips.
+
+  ```java
+  MaterialData paint = MaterialData.builder("carPaint")
+      .set("base.baseColor", 0.6f, 0.05f, 0.05f, 1).set("base.metallic", 0.6f).set("flakes", 0.4f)
+      .texture("base.normalTexture", PAINT_NORMALS)
+      .feature("clearcoat", coat -> coat.set("roughness", 0.05f))
+      .build();
+  renderables.set(car, CAR_MESH, List.of(paint.ref()));
+  ```
 - **Changes, not the whole scene:** renderables log their changes on the scene's clock, as the scene graph does, so a
   renderer follows both with one cursor and uploads only what changed.
 
