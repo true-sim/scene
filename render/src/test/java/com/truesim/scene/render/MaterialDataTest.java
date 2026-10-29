@@ -4,10 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.truesim.common.jobs.TaskScheduler;
+import com.truesim.scene.assets.AssetCache;
 import com.truesim.scene.assets.AssetId;
 import com.truesim.scene.assets.AssetRef;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class MaterialDataTest {
@@ -16,74 +19,107 @@ class MaterialDataTest {
         AssetRef.of(RenderAssets.TEXTURE, AssetId.parse("55555555555555555555555555555555"));
     static final AssetRef<TextureData> NORMALS =
         AssetRef.of(RenderAssets.TEXTURE, AssetId.parse("66666666666666666666666666666666"));
-    static final AssetRef<TextureData> ORM =
-        AssetRef.of(RenderAssets.TEXTURE, AssetId.parse("77777777777777777777777777777777"));
-    static final AssetRef<TextureData> GLOW =
-        AssetRef.of(RenderAssets.TEXTURE, AssetId.parse("88888888888888888888888888888888"));
 
     @Test
-    void defaultsAreLightGrayOpaqueAndRough() {
+    void theDefaultIsMetallicRoughnessOpaqueAndOneSided() {
         MaterialData d = MaterialData.DEFAULT;
-        assertThat(d.baseColor(0)).isEqualTo(0.8f);
-        assertThat(d.baseColor(3)).isEqualTo(1);
-        assertThat(d.emissive(0)).isZero();
-        assertThat(d.roughness()).isEqualTo(0.7f);
-        assertThat(d.metallic()).isZero();
-        assertThat(d.normalScale()).isEqualTo(1);
-        assertThat(d.occlusionStrength()).isEqualTo(1);
+        assertThat(d.type()).isEqualTo(MaterialData.METALLIC_ROUGHNESS).isEqualTo("metallicRoughness");
+        assertThat(d.values().size()).isZero();
+        assertThat(d.values().f32("roughness", 0.7f)).as("the type's default").isEqualTo(0.7f);
+        assertThat(d.features()).isEmpty();
         assertThat(d.textures()).isEmpty();
-        assertThat(d.baseColorTexture()).isNull();
         assertThat(d.alphaMode()).isEqualTo(MaterialData.AlphaMode.OPAQUE);
         assertThat(d.alphaCutoff()).isEqualTo(0.5f);
         assertThat(d.doubleSided()).isFalse();
-        assertThat(d.clearcoat()).isZero();
-        assertThat(d.clearcoatTexture()).isNull();
-        assertThat(d.clearcoatNormalScale()).isEqualTo(1);
         assertThat(d.bytes()).isPositive();
-        assertThat(d).hasToString("material OPAQUE");
+        assertThat(d).hasToString("material metallicRoughness OPAQUE");
     }
 
     @Test
-    void everyPropertyIsSet() {
-        MaterialData.Builder builder = MaterialData.builder().baseColor(0.1f, 0.2f, 0.3f, 0.4f).emissive(1, 2, 3)
-            .roughness(0.25f).metallic(1).baseColorTexture(ALBEDO).normalTexture(NORMALS, 0.5f).ormTexture(ORM, 0.75f)
-            .emissiveTexture(GLOW).alpha(MaterialData.AlphaMode.MASK, 0.3f).doubleSided(true);
+    void valuesAreKeptByFieldName() {
+        MaterialData.Builder builder = MaterialData.builder("carPaint").set("base.baseColor", 0.1f, 0.2f, 0.3f, 0.4f)
+            .set("base.roughness", 0.25f).set("bands", 3).texture("base.baseColorTexture", ALBEDO)
+            .texture("base.normalTexture", NORMALS).alpha(MaterialData.AlphaMode.MASK, 0.3f).doubleSided(true);
         MaterialData m = builder.build();
-        assertThat(m.baseColor(2)).isEqualTo(0.3f);
-        assertThat(m.baseColor(3)).isEqualTo(0.4f);
-        assertThat(m.emissive(1)).isEqualTo(2);
-        assertThat(m.roughness()).isEqualTo(0.25f);
-        assertThat(m.metallic()).isEqualTo(1);
-        assertThat(m.normalTexture()).isEqualTo(NORMALS);
-        assertThat(m.normalScale()).isEqualTo(0.5f);
-        assertThat(m.ormTexture()).isEqualTo(ORM);
-        assertThat(m.occlusionStrength()).isEqualTo(0.75f);
-        assertThat(m.emissiveTexture()).isEqualTo(GLOW);
-        assertThat(m.textures()).containsExactly(ALBEDO, NORMALS, ORM, GLOW);
+        MaterialData.Values v = m.values();
+        assertThat(m.type()).isEqualTo("carPaint");
+        assertThat(v.floats("base.baseColor")).containsExactly(0.1f, 0.2f, 0.3f, 0.4f);
+        assertThat(v.f32("base.roughness", 0)).isEqualTo(0.25f);
+        assertThat(v.f32("bands", 0)).as("an integer read as a float").isEqualTo(3);
+        assertThat(v.i32("bands", 0)).isEqualTo(3);
+        assertThat(v.i32("missing", 7)).isEqualTo(7);
+        assertThat(v.floats("missing")).isNull();
+        assertThat(v.texture("base.baseColorTexture")).isEqualTo(ALBEDO);
+        assertThat(v.texture("missing")).isNull();
+        assertThat(v.has("bands")).isTrue();
+        assertThat(v.names()).containsExactly("base.baseColor", "base.roughness", "bands", "base.baseColorTexture",
+            "base.normalTexture");
+        assertThat(m.textures()).containsExactly(ALBEDO, NORMALS);
         assertThat(m.alphaMode()).isEqualTo(MaterialData.AlphaMode.MASK);
         assertThat(m.alphaCutoff()).isEqualTo(0.3f);
-        assertThat(m).hasToString("material MASK, double-sided");
+        assertThat(m).hasToString("material carPaint MASK, double-sided");
+        assertThat(v).hasToString("{base.baseColor=[0.1, 0.2, 0.3, 0.4], base.roughness=0.25, bands=3, "
+            + "base.baseColorTexture=" + ALBEDO + ", base.normalTexture=" + NORMALS + "}");
+        // Values of the wrong kind say so.
+        assertThatIllegalArgumentException().isThrownBy(() -> v.i32("base.roughness", 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> v.f32("base.baseColor", 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> v.texture("bands"));
+        assertThatIllegalArgumentException().isThrownBy(() -> MaterialData.builder("x").set("v", 1, 2, 3, 4, 5));
         // Built materials do not change with their builder.
-        builder.baseColor(1, 1, 1, 1);
-        assertThat(m.baseColor(0)).isEqualTo(0.1f);
-        assertThatNullPointerException().isThrownBy(() -> MaterialData.builder().alpha(null, 0));
-        assertThat(MaterialData.builder().emissiveTexture(GLOW).build().textures()).containsExactly(GLOW);
+        builder.set("base.roughness", 1f);
+        assertThat(v.f32("base.roughness", 0)).isEqualTo(0.25f);
+        assertThatNullPointerException().isThrownBy(() -> MaterialData.builder("x").alpha(null, 0));
+        assertThatNullPointerException().isThrownBy(() -> MaterialData.builder(null));
     }
 
     @Test
-    void aClearCoatIsALayerOfItsOwn() {
+    void featuresHoldTheirOwnValues() {
         AssetRef<TextureData> coat =
             AssetRef.of(RenderAssets.TEXTURE, AssetId.parse("99999999999999999999999999999999"));
-        MaterialData m = MaterialData.builder().baseColorTexture(ALBEDO).clearcoat(1, 0.05f).clearcoatTexture(coat)
-            .clearcoatRoughnessTexture(coat).clearcoatNormalTexture(NORMALS, 0.5f).build();
-        assertThat(m.clearcoat()).isEqualTo(1);
-        assertThat(m.clearcoatRoughness()).isEqualTo(0.05f);
-        assertThat(m.clearcoatTexture()).isEqualTo(coat);
-        assertThat(m.clearcoatRoughnessTexture()).isEqualTo(coat);
-        assertThat(m.clearcoatNormalTexture()).isEqualTo(NORMALS);
-        assertThat(m.clearcoatNormalScale()).isEqualTo(0.5f);
+        MaterialData m = MaterialData.builder(MaterialData.METALLIC_ROUGHNESS).texture("baseColorTexture", ALBEDO)
+            .feature("clearcoat", c -> c.set("roughness", 0.05f).texture("strengthTexture", coat)
+                .texture("roughnessTexture", coat).texture("normalTexture", NORMALS))
+            .build();
+        assertThat(m.features()).containsExactly("clearcoat");
+        assertThat(m.feature("clearcoat").f32("roughness", 0)).isEqualTo(0.05f);
+        assertThat(m.feature("sheen")).isNull();
         assertThat(m.textures()).as("each once").containsExactly(ALBEDO, coat, NORMALS);
-        assertThat(m).hasToString("material OPAQUE, clear coat");
+        assertThat(m).hasToString("material metallicRoughness OPAQUE, clearcoat");
+    }
+
+    @Test
+    void equalDataIsOneMaterial() {
+        MaterialData a = MaterialData.builder("glow").set("color", 1f, 0f, 1f).set("strength", 2f)
+            .feature("clearcoat", c -> c.set("roughness", 0.1f)).build();
+        MaterialData b = MaterialData.builder("glow").set("color", 1f, 0f, 1f).set("strength", 2f)
+            .feature("clearcoat", c -> c.set("roughness", 0.1f)).build();
+        MaterialData other = MaterialData.builder("glow").set("color", 1f, 0f, 0f).set("strength", 2f).build();
+        assertThat(a).isEqualTo(b).hasSameHashCodeAs(b).isNotEqualTo(other).isNotEqualTo("glow");
+        assertThat(a.ref()).isEqualTo(b.ref()).isNotEqualTo(other.ref());
+        assertThat(a.ref().type()).isEqualTo(RenderAssets.MATERIAL);
+        assertThat(MaterialData.builder("glow").doubleSided(true).build())
+            .isNotEqualTo(MaterialData.builder("glow").build());
+        assertThat(a.values()).isNotEqualTo("glow");
+        assertThat(MaterialData.builder("glow").set("color", 1f, 0f, 1f).build())
+            .as("a vector, not a float").isNotEqualTo(MaterialData.builder("glow").set("color", 1f).build());
+        assertThat(a.values().floats("color")).containsExactly(1, 0, 1);
+        assertThatIllegalArgumentException().isThrownBy(() -> a.values().floats("strength"));
+    }
+
+    @Test
+    void anInlineMaterialLoadsAsItsData() throws InterruptedException {
+        MaterialData data = MaterialData.builder("glow").set("strength", 2f).build();
+        try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
+            AssetRef<MaterialData> ref = data.ref();
+            cache.acquire(ref);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (cache.loadingCount() > 0) {
+                tasks.drainCompleted();
+                assertThat(System.nanoTime()).isLessThan(deadline);
+                Thread.sleep(1);
+            }
+            assertThat(cache.get(ref)).isSameAs(data);
+        }
     }
 
     @Test
