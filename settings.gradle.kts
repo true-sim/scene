@@ -20,12 +20,13 @@ plugins {
 rootProject.name = "scene"
 
 // Each module is published on its own, so a dedicated server takes core and world without render data.
-include("scene-core", "scene-world", "scene-collision", "scene-assets", "scene-meshbuild")
+include("scene-core", "scene-world", "scene-collision", "scene-assets", "scene-meshbuild", "scene-render")
 project(":scene-core").projectDir = file("core")
 project(":scene-world").projectDir = file("world")
 project(":scene-collision").projectDir = file("collision")
 project(":scene-assets").projectDir = file("assets")
 project(":scene-meshbuild").projectDir = file("meshbuild")
+project(":scene-render").projectDir = file("render")
 
 val truesimRepos = listOf("build-logic", "common-math", "common-state", "common-jobs", "common-collision")
 for (repo in truesimRepos) {

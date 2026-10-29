@@ -147,6 +147,11 @@ public final class AssetCache implements AutoCloseable {
         listeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
+    /** Stops telling {@code listener} of loads and evictions, e.g. when what it uploaded is closed. */
+    public void removeListener(Listener listener) {
+        listeners.remove(listener);
+    }
+
     /**
      * How many bytes of loaded assets nobody holds may stay cached: beyond it, the least recently released go.
      * Unlimited by default; assets in use are never evicted, whatever the budget.

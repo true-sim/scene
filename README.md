@@ -25,7 +25,7 @@ example, takes core, world and collision without any render data.
 | `scene-collision` | each cell's colliders and terrain heights, on common-collision shapes                    | milestone 3 |
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
-| `scene-render`    | renderables, cameras, lights, environment, sort layers                                    | milestone 5 |
+| `scene-render`    | renderables on nodes, materials and textures; next: cameras, lights, environment          | milestone 5 |
 
 Importers (glTF and others), a serialization format and networking come later, in their own repositories.
 
@@ -374,6 +374,42 @@ vertices and triangles; 64 / 124 by default when built), culled and drawn on the
 - **Measured** (`MeshBuildBenchmark`, 524,288 triangles): flat 445 ms, 5,422 meshlets, 5.5 MB; cluster hierarchy
   715 ms, 12,291 meshlets in 10 levels down to 25, 9.1 MB; six discrete LODs 1.1 s.
 
+### Render data: renderables, materials, textures
+
+`scene-render` says what draws on which node, as data; the engine decides how. A renderable is a mesh with a material per
+submesh, placed by its node's world transform and filtered by its node's layers:
+
+```java
+Renderables renderables = new Renderables(scene);
+long rock = scene.create();
+renderables.set(rock, ROCK_MESH, List.of(STONE, MOSS));   // submesh 0 stone, submeshes 1 and on moss
+renderables.setCastsShadows(rock, false);
+
+scene.update();
+renderables.update();                                       // drops renderables of nodes removed from the scene
+renderables.changesSince(since, (node, changes) -> ...);    // ADDED, REMOVED, MESH, MATERIALS, SHADOWS
+```
+
+- **Assets by reference:** meshes, materials and textures are assets (`RenderAssets.MESH`, `MATERIAL`, `TEXTURE`), so
+  a renderer loads and uploads each once through the asset cache, however many nodes use it.
+- **Materials as data:** `MaterialData` names its material type and holds its parameters by field name (nested ones
+  by path), the features it shows with theirs, the alpha mode (opaque, masked with a cutoff, blended) and
+  double-sidedness. Scene knows no engine types: the renderer finds the type by name and reads the values by its
+  parameters' field names; what the data lacks keeps the type's defaults. glTF's materials are type
+  `metallicRoughness`. Material data compares by value, and `data.ref()` makes an inline material asset of it, so
+  equal data on many nodes is one material. `TextureData` is 8-bit RGBA with its color space; the engine makes mips.
+
+  ```java
+  MaterialData paint = MaterialData.builder("carPaint")
+      .set("base.baseColor", 0.6f, 0.05f, 0.05f, 1).set("base.metallic", 0.6f).set("flakes", 0.4f)
+      .texture("base.normalTexture", PAINT_NORMALS)
+      .feature("clearcoat", coat -> coat.set("roughness", 0.05f))
+      .build();
+  renderables.set(car, CAR_MESH, List.of(paint.ref()));
+  ```
+- **Changes, not the whole scene:** renderables log their changes on the scene's clock, as the scene graph does, so a
+  renderer follows both with one cursor and uploads only what changed.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -390,6 +426,7 @@ dependencies {
     implementation("com.truesim.scene:scene-collision:0.17.0") // colliders and terrain heights per cell
     implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
+    implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
 }
 ```
 
