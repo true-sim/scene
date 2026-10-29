@@ -36,6 +36,9 @@ class MaterialDataTest {
         assertThat(d.alphaMode()).isEqualTo(MaterialData.AlphaMode.OPAQUE);
         assertThat(d.alphaCutoff()).isEqualTo(0.5f);
         assertThat(d.doubleSided()).isFalse();
+        assertThat(d.clearcoat()).isZero();
+        assertThat(d.clearcoatTexture()).isNull();
+        assertThat(d.clearcoatNormalScale()).isEqualTo(1);
         assertThat(d.bytes()).isPositive();
         assertThat(d).hasToString("material OPAQUE");
     }
@@ -65,6 +68,22 @@ class MaterialDataTest {
         assertThat(m.baseColor(0)).isEqualTo(0.1f);
         assertThatNullPointerException().isThrownBy(() -> MaterialData.builder().alpha(null, 0));
         assertThat(MaterialData.builder().emissiveTexture(GLOW).build().textures()).containsExactly(GLOW);
+    }
+
+    @Test
+    void aClearCoatIsALayerOfItsOwn() {
+        AssetRef<TextureData> coat =
+            AssetRef.of(RenderAssets.TEXTURE, AssetId.parse("99999999999999999999999999999999"));
+        MaterialData m = MaterialData.builder().baseColorTexture(ALBEDO).clearcoat(1, 0.05f).clearcoatTexture(coat)
+            .clearcoatRoughnessTexture(coat).clearcoatNormalTexture(NORMALS, 0.5f).build();
+        assertThat(m.clearcoat()).isEqualTo(1);
+        assertThat(m.clearcoatRoughness()).isEqualTo(0.05f);
+        assertThat(m.clearcoatTexture()).isEqualTo(coat);
+        assertThat(m.clearcoatRoughnessTexture()).isEqualTo(coat);
+        assertThat(m.clearcoatNormalTexture()).isEqualTo(NORMALS);
+        assertThat(m.clearcoatNormalScale()).isEqualTo(0.5f);
+        assertThat(m.textures()).as("each once").containsExactly(ALBEDO, coat, NORMALS);
+        assertThat(m).hasToString("material OPAQUE, clear coat");
     }
 
     @Test
