@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A mesh as a GPU-driven renderer draws it: meshlets (small clusters of up to 255 vertices and triangles, culled and
@@ -40,9 +41,9 @@ import java.util.Objects;
  *
  * <p><b>Fallback path:</b> without mesh shaders, a meshlet draws as indexed triangles: index {@code k} of the mesh is
  * {@code meshletVertices[vertexOffset + meshletTriangles[k]]}, and a meshlet's first index is its triangleOffset
- * ({@link #expandIndices()}).
+ * ({@link #expandIndices(Arena)}).
  */
-public final class MeshData {
+public final class MeshData implements AutoCloseable {
 
     /** Bytes per vertex in {@link #positions()}. */
     public static final int POSITION_BYTES = 8;
@@ -71,8 +72,12 @@ public final class MeshData {
     private final MemorySegment meshletTriangles;
     private final MemorySegment meshlets;
     private final MemorySegment clusterLod;
+    private final Arena arena; // owns the buffers
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    private MeshData(Builder b, double[] box, Sphere bounds, List<MeshLevel> levels, MemorySegment[] segments) {
+    private MeshData(Builder b, double[] box, Sphere bounds, List<MeshLevel> levels, Arena arena,
+        MemorySegment[] segments) {
+        this.arena = arena;
         this.format = b.format;
         this.vertexCount = b.vertexCount;
         this.meshletCount = b.meshlets.size();
@@ -87,6 +92,22 @@ public final class MeshData {
         this.meshletTriangles = segments[3].asReadOnly();
         this.meshlets = segments[4].asReadOnly();
         this.clusterLod = segments[5].asReadOnly();
+    }
+
+    /**
+     * Frees the buffers: segments taken from this mesh throw from now on. The asset cache closes meshes it evicts
+     * (through {@link com.truesim.scene.assets.AssetLoader#unload}); close those built by hand once uploaded.
+     */
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            arena.close();
+        }
+    }
+
+    /** Whether {@link #close()} freed the buffers. */
+    public boolean isClosed() {
+        return closed.get();
     }
 
     /** Starts a mesh of {@code vertexCount} vertices with the attributes of {@code format}. */
@@ -290,11 +311,11 @@ public final class MeshData {
 
     /**
      * The mesh as one uint32 index buffer for the fallback path, meshlet after meshlet: a meshlet's first index is its
-     * triangle offset.
+     * triangle offset. The indices are allocated in {@code arena}, which the caller closes once they are uploaded.
      */
     @AllowAllocation("expanding indices, at upload")
-    public MemorySegment expandIndices() {
-        MemorySegment indices = Arena.ofAuto().allocate(3L * triangleCount * Integer.BYTES, Integer.BYTES);
+    public MemorySegment expandIndices(Arena arena) {
+        MemorySegment indices = arena.allocate(3L * triangleCount * Integer.BYTES, Integer.BYTES);
         for (int m = 0; m < meshletCount; m++) {
             int vertexOffset = meshletVertexOffset(m);
             int first = meshletTriangleOffset(m);
@@ -519,7 +540,7 @@ public final class MeshData {
             }
             double[] box = box();
             Sphere bounds = sphere(box);
-            Arena arena = Arena.ofAuto();
+            Arena arena = Arena.ofShared(); // read from any thread, freed by close()
             MemorySegment[] segments = {
                 encodePositions(arena, box),
                 encodeAttributes(arena),
@@ -529,7 +550,7 @@ public final class MeshData {
                 arena.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 8)
             };
             encodeMeshlets(segments, bounds);
-            return new MeshData(this, box, bounds, List.copyOf(levels), segments);
+            return new MeshData(this, box, bounds, List.copyOf(levels), arena, segments);
         }
 
         private double[] box() {

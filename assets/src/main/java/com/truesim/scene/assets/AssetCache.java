@@ -335,10 +335,11 @@ public final class AssetCache implements AutoCloseable {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void unload(AssetRef<?> ref, Object data) {
-        Registered registration = registered.get(ref.type());
-        if (registration != null && !ref.isGenerated()) {
-            ((AssetLoader) registration.loader()).unload(data);
+        if (ref.isGenerated()) {
+            AssetLoader.closeIfCloseable(data); // made here, so freed here
+            return;
         }
+        ((AssetLoader) registered.get(ref.type()).loader()).unload(data);
     }
 
     private void link(Entry entry) {
