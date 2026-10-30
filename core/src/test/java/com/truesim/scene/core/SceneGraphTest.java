@@ -3,6 +3,7 @@ package com.truesim.scene.core;
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import com.truesim.common.math.Quat;
 import com.truesim.common.math.Transform;
@@ -251,6 +252,7 @@ class SceneGraphTest {
         long a = small.create();
         small.update();
         long b = small.create();
+        small.update();
         long c = small.create();
         small.update(); // three changes in a log of two: the first is gone
         assertThat(small.changesSince(since, (node, changes) -> { })).isFalse();
@@ -265,6 +267,47 @@ class SceneGraphTest {
         assertThat(small.changeCountSince(since)).isEqualTo(-1);
         assertThat(small.changeCountSince(small.version(a))).isEqualTo(2);
         assertThat(small.changeCountSince(clock.now())).isZero();
+    }
+
+    @Test
+    void theLogKeepsEveryChangeSinceTheLastUpdate() {
+        SceneGraph small = new SceneGraph(clock, 4, 2);
+        long since = clock.now();
+        List<Long> created = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            created.add(small.create());
+        }
+        small.update(); // five changes at once: a consumer one update behind still gets them all
+        List<Long> seen = new ArrayList<>();
+        assertThat(small.changesSince(since, (node, changes) -> seen.add(node))).isTrue();
+        assertThat(seen).containsExactlyElementsOf(created);
+        long next = clock.now();
+        small.setTranslation(created.get(0), 1, 0, 0);
+        small.update(); // kept in order after growing
+        assertThat(small.changeCountSince(since)).isEqualTo(6);
+        assertThat(small.changeCountSince(next)).isEqualTo(1);
+    }
+
+    @Test
+    void onlyTheOwnerChangesTheScene() throws InterruptedException {
+        long node = scene.create();
+        Thread other = new Thread(() -> { });
+        clock.ownedBy(other);
+        List<Runnable> changes = List.of(scene::create, () -> scene.create(node), () -> scene.remove(node),
+            () -> scene.setTranslation(node, 1, 2, 3), () -> scene.setRotation(node, 0, 0, 0, 1),
+            () -> scene.setScale(node, 1, 1, 1), () -> scene.setLocal(node, Transform.IDENTITY),
+            () -> scene.setParent(node, NodeHandle.NONE), () -> scene.setLocalBounds(node, 0, 0, 0, 1, 1, 1),
+            () -> scene.clearBounds(node), () -> scene.setMobility(node, Mobility.DYNAMIC),
+            () -> scene.setGroup(node, 1), () -> scene.setLayers(node, 2), scene::update, () -> scene.setJobs(null),
+            () -> scene.apply(new SceneBatch(), 0, new long[0]));
+        for (Runnable change : changes) {
+            assertThatIllegalStateException().isThrownBy(change::run).withMessageContaining("changes on " + other.getName());
+        }
+        assertThat(scene.contains(node)).as("refused changes change nothing").isTrue();
+        assertThat(scene.parent(node)).isEqualTo(NodeHandle.NONE); // reading is not checked
+        clock.ownedBy(Thread.currentThread());
+        scene.setTranslation(node, 1, 2, 3); // the owner may
+        clock.ownedBy(null);
     }
 
     @Test

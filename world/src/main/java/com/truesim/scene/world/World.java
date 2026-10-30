@@ -37,7 +37,8 @@ import org.slf4j.LoggerFactory;
  * <p>Finished loads attach when the scheduler is drained, within the attach budget ({@link #setAttachBudget}); cells
  * waiting for the budget attach in later frames.
  *
- * <p>Use a world on the main thread, the one that drains the task scheduler; loaders' {@link CellLoader#load} runs on
+ * <p>Use a world on the main thread, the one that drains the task scheduler (name it with
+ * {@code scene.clock().ownedBy(thread)} and calls from other threads throw); loaders' {@link CellLoader#load} runs on
  * lanes and never sees the scene. Requesting, releasing and looking up cells allocate nothing for cells already
  * known; starting a load allocates its task.
  */
@@ -745,10 +746,20 @@ public final class World implements AutoCloseable {
         return registered.cells[level];
     }
 
+    /** Throws once closed, or on a thread other than the scene clock's {@linkplain com.truesim.common.state.ChangeClock#ownedBy owner}. */
     private void checkOpen() {
         if (closed) {
             throw new IllegalStateException("The world is closed");
         }
+        Thread owner = scene.clock().owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The world changes on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 
     /**

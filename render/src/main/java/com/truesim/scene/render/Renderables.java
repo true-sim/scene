@@ -110,6 +110,7 @@ public final class Renderables {
      */
     @AllowAllocation("copies the material list")
     public void set(long node, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials) {
+        checkOwner();
         Objects.requireNonNull(mesh, "mesh");
         List<AssetRef<MaterialData>> copied = List.copyOf(materials);
         int index = slot(node);
@@ -133,6 +134,7 @@ public final class Renderables {
 
     /** Changes the mesh of {@code node}'s renderable. */
     public void setMesh(long node, AssetRef<MeshData> mesh) {
+        checkOwner();
         Objects.requireNonNull(mesh, "mesh");
         int index = held(node);
         if (!meshes[index].equals(mesh)) {
@@ -144,6 +146,7 @@ public final class Renderables {
     /** Changes the materials of {@code node}'s renderable. */
     @AllowAllocation("copies the material list")
     public void setMaterials(long node, List<AssetRef<MaterialData>> materials) {
+        checkOwner();
         List<AssetRef<MaterialData>> copied = List.copyOf(materials);
         int index = held(node);
         if (!same(this.materials[index], copied)) {
@@ -170,6 +173,7 @@ public final class Renderables {
 
     /** Whether {@code node}'s renderable casts shadows; it does by default. */
     public void setCastsShadows(long node, boolean casts) {
+        checkOwner();
         int index = held(node);
         if (castsShadows[index] != casts) {
             castsShadows[index] = casts;
@@ -179,6 +183,7 @@ public final class Renderables {
 
     /** Removes {@code node}'s renderable, if it has one. */
     public void remove(long node) {
+        checkOwner();
         if (has(node)) {
             clear(NodeHandle.index(node));
             log(node, REMOVED);
@@ -235,6 +240,7 @@ public final class Renderables {
      * after {@code scene.update()}. Allocates nothing.
      */
     public void update() {
+        checkOwner();
         if (!scene.changesSince(sceneSeen, onSceneChange)) {
             for (int i = 0; i < nodes.length; i++) { // fell behind the scene's log: check every renderable
                 if (nodes[i] != NodeHandle.NONE && !scene.contains(nodes[i])) {
@@ -280,6 +286,19 @@ public final class Renderables {
             }
         }
         return low;
+    }
+
+    /** Throws unless the calling thread may change the scene: any, or its clock's {@linkplain ChangeClock#ownedBy owner}. */
+    private void checkOwner() {
+        Thread owner = clock.owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The renderables change on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 
     private void log(long node, int changes) {

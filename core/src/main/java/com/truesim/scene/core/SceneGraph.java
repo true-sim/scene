@@ -40,7 +40,8 @@ import java.util.List;
  * moving, reparenting, removing, updating and reading changes allocate nothing once the arrays have grown to the
  * scene's size. Everything is deterministic: the same calls give the same handles, transforms and change order.
  *
- * <p>A scene graph is used by one thread at a time.
+ * <p>A scene graph is used by one thread at a time. Name that thread with {@link ChangeClock#ownedBy} on the scene's
+ * clock and every change from another one throws, instead of corrupting the scene unnoticed.
  */
 public final class SceneGraph {
 
@@ -102,13 +103,15 @@ public final class SceneGraph {
     private int[] boundsDirtySlots;
     private int boundsDirtyCount;
 
-    // The change log: a ring of (stamp, handle, changes).
-    private final long[] logStamps;
-    private final long[] logNodes;
-    private final int[] logChanges;
+    // The change log: a ring of (stamp, handle, changes). It grows rather than drop a change made since the last update,
+    // so a consumer that keeps up with updates never has to rebuild, however many nodes change at once.
+    private long[] logStamps;
+    private long[] logNodes;
+    private int[] logChanges;
     private int logStart;
     private int logSize;
     private long logIncompleteThrough = -1;
+    private long updatedAt = -1; // the clock's time at the end of the last update
 
     /** An empty scene stamping its changes on {@code clock}. */
     public SceneGraph(ChangeClock clock) {
@@ -117,7 +120,7 @@ public final class SceneGraph {
 
     /**
      * An empty scene with room for {@code capacity} nodes before it grows, keeping the last {@code logCapacity}
-     * changes for consumers.
+     * changes for consumers, and every change since the last update: the log grows rather than drop one.
      */
     @AllowAllocation("set up once")
     public SceneGraph(ChangeClock clock, int capacity, int logCapacity) {
@@ -191,6 +194,7 @@ public final class SceneGraph {
 
     /** A new node with identity local transform under {@code parent} ({@link NodeHandle#NONE} for none). */
     public long create(long parent) {
+        checkOwner();
         int parentSlot = parent == NodeHandle.NONE ? NONE : slot(parent);
         int slot = newSlot();
         generation[slot]++;
@@ -237,6 +241,7 @@ public final class SceneGraph {
      */
     @AllowAllocation("applying a batch: handing its tree over")
     public void apply(SceneBatch batch, int group, long[] handles) {
+        checkOwner();
         if (group < 0) {
             throw new IllegalArgumentException("Groups are 0 or more: " + group);
         }
@@ -323,7 +328,7 @@ public final class SceneGraph {
 
     /** Removes {@code node} and all its descendants; their handles become stale. */
     public void remove(long node) {
-        int slot = slot(node);
+        int slot = changing(node);
         unlink(slot);
         long stamp = clock.stamp();
         int top = 0;
@@ -407,7 +412,7 @@ public final class SceneGraph {
      * its world transform follows the new parent.
      */
     public void setParent(long node, long newParent) {
-        int slot = slot(node);
+        int slot = changing(node);
         int parentSlot = newParent == NodeHandle.NONE ? NONE : slot(newParent);
         for (int ancestor = parentSlot; ancestor != NONE; ancestor = parent[ancestor]) {
             if (ancestor == slot) {
@@ -465,7 +470,7 @@ public final class SceneGraph {
      * @throws IllegalArgumentException if it is not finite
      */
     public void setTranslation(long node, double x, double y, double z) {
-        int slot = slot(node);
+        int slot = changing(node);
         if (!Double.isFinite(x + y + z)) {
             throw new IllegalArgumentException("Not a finite translation: " + x + ", " + y + ", " + z);
         }
@@ -484,7 +489,7 @@ public final class SceneGraph {
      * @throws IllegalArgumentException if it is not finite, or too short to give a direction
      */
     public void setRotation(long node, double x, double y, double z, double w) {
-        int slot = slot(node);
+        int slot = changing(node);
         double length = Math.sqrt(x * x + y * y + z * z + w * w);
         if (!(length > 1e-12) || length == Double.POSITIVE_INFINITY) {
             throw new IllegalArgumentException("Not a rotation: " + x + ", " + y + ", " + z + ", " + w);
@@ -504,7 +509,7 @@ public final class SceneGraph {
      * @throws IllegalArgumentException if it is not finite, or zero on an axis (nothing would be left to draw or hit)
      */
     public void setScale(long node, double x, double y, double z) {
-        int slot = slot(node);
+        int slot = changing(node);
         if (!Double.isFinite(x + y + z) || x == 0 || y == 0 || z == 0) {
             throw new IllegalArgumentException("Not a scale on every axis: " + x + ", " + y + ", " + z);
         }
@@ -572,7 +577,7 @@ public final class SceneGraph {
      */
     public void setLocalBounds(long node, double minX, double minY, double minZ, double maxX, double maxY,
         double maxZ) {
-        int slot = slot(node);
+        int slot = changing(node);
         if (!Double.isFinite(minX + minY + minZ + maxX + maxY + maxZ)) {
             throw new IllegalArgumentException("Bounds that are not finite");
         }
@@ -592,7 +597,7 @@ public final class SceneGraph {
 
     /** Removes the node's bounds: queries skip it from the next {@link #update()}. */
     public void clearBounds(long node) {
-        int slot = slot(node);
+        int slot = changing(node);
         localBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
         markBoundsDirty(slot);
     }
@@ -632,7 +637,7 @@ public final class SceneGraph {
 
     /** Whether the node is expected to move; see {@link Mobility}. */
     public void setMobility(long node, Mobility mobility) {
-        int slot = slot(node);
+        int slot = changing(node);
         boolean moving = mobility == Mobility.DYNAMIC;
         if (dynamic[slot] != moving) {
             dynamic[slot] = moving;
@@ -651,7 +656,7 @@ public final class SceneGraph {
      * in a group of their own; everything else stays in group 0.
      */
     public void setGroup(long node, int group) {
-        int slot = slot(node);
+        int slot = changing(node);
         if (group < 0) {
             throw new IllegalArgumentException("Groups are 0 or more: " + group);
         }
@@ -668,7 +673,7 @@ public final class SceneGraph {
 
     /** Puts the node on the layers in {@code mask} ({@link SceneLayer#mask()} bits). */
     public void setLayers(long node, int mask) {
-        int slot = slot(node);
+        int slot = changing(node);
         if (layers[slot] != mask) {
             layers[slot] = mask;
             markPending(slot, NodeChange.LAYERS);
@@ -748,6 +753,7 @@ public final class SceneGraph {
      * descendants, parents first; then logs the changes with one stamp.
      */
     public void update() {
+        checkOwner();
         if (jobs != null && dirtyCount >= PARALLEL_MIN) {
             propagateInParallel();
         } else {
@@ -786,6 +792,7 @@ public final class SceneGraph {
             pendingCount = 0;
         }
         updates++;
+        updatedAt = clock.now();
         prunePrepared();
     }
 
@@ -806,6 +813,7 @@ public final class SceneGraph {
      * that submits to {@code jobs}.
      */
     public void setJobs(JobSystem jobs) {
+        checkOwner();
         this.jobs = jobs;
     }
 
@@ -963,11 +971,33 @@ public final class SceneGraph {
         pending[slot] |= change;
     }
 
+    /** Makes the change log hold {@code length} entries, keeping what it holds. */
+    @AllowAllocation("growing to the most changes between two updates")
+    private void growLog(int length) {
+        long[] stamps = new long[length];
+        long[] nodes = new long[length];
+        int[] changes = new int[length];
+        for (int i = 0; i < logSize; i++) {
+            int entry = (logStart + i) % logStamps.length;
+            stamps[i] = logStamps[entry];
+            nodes[i] = logNodes[entry];
+            changes[i] = logChanges[entry];
+        }
+        logStamps = stamps;
+        logNodes = nodes;
+        logChanges = changes;
+        logStart = 0;
+    }
+
     private void log(long stamp, long node, int changes) {
         if (logSize == logStamps.length) {
-            logIncompleteThrough = logStamps[logStart];
-            logStart = (logStart + 1) % logStamps.length;
-            logSize--;
+            if (logStamps[logStart] > updatedAt) {
+                growLog(2 * logStamps.length); // every entry is from since the last update: keep them all
+            } else {
+                logIncompleteThrough = logStamps[logStart];
+                logStart = (logStart + 1) % logStamps.length;
+                logSize--;
+            }
         }
         int entry = (logStart + logSize) % logStamps.length;
         logStamps[entry] = stamp;
@@ -977,6 +1007,25 @@ public final class SceneGraph {
     }
 
     // ---------------------------------------------------------------- handles
+
+    /** Throws unless the calling thread may change the scene: any, or the clock's {@linkplain ChangeClock#ownedBy owner}. */
+    private void checkOwner() {
+        Thread owner = clock.owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    /** The slot of {@code node}, about to change: checks the thread first. */
+    private int changing(long node) {
+        checkOwner();
+        return slot(node);
+    }
+
+    @AllowAllocation("diagnostics")
+    static String notOwner(Thread owner) {
+        return "The scene changes on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
+    }
 
     private int slot(long node) {
         if (!contains(node)) {

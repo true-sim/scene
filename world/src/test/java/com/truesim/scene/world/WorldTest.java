@@ -79,6 +79,19 @@ class WorldTest {
     }
 
     @Test
+    void onlyTheOwnerUsesTheWorld() {
+        world.register(PROPS, new PropLoader());
+        Thread other = new Thread(() -> { });
+        scene.clock().ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(() -> world.request(PROPS, 0, 0, 0, 0))
+            .withMessageContaining("changes on " + other.getName());
+        assertThatIllegalStateException().isThrownBy(world::update);
+        scene.clock().ownedBy(Thread.currentThread());
+        world.request(PROPS, 0, 0, 0, 0); // the owner may
+        scene.clock().ownedBy(null);
+    }
+
+    @Test
     void cellsLoadInTheBackgroundAndAttachAtTheFrameBoundary() throws InterruptedException {
         PropLoader loader = new PropLoader();
         world.register(PROPS, loader);
