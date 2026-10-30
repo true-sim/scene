@@ -123,7 +123,9 @@ class RenderableBoundsTest {
             bounds.update(); // e no longer waits for mesh 4
             scene.remove(e);
             gate.countDown();
-            await(() -> assets.get(mesh(3)) != null && assets.get(mesh(5)) != null && assets.get(mesh(6)) != null);
+            // Mesh 4 too, which nothing waits for now: its arrival finds no nodes.
+            await(() -> assets.get(mesh(3)) != null && assets.get(mesh(5)) != null && assets.get(mesh(6)) != null
+                && assets.state(mesh(4)) != com.truesim.scene.assets.AssetState.LOADING);
             assertThat(scene.localBounds(c)).isEqualTo(box(3));
             assertThat(scene.localBounds(d)).isEqualTo(box(5));
             assertThat(scene.contains(e)).isFalse();
