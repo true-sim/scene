@@ -3,6 +3,7 @@ package com.truesim.scene.render;
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.truesim.common.state.ChangeClock;
@@ -112,6 +113,23 @@ class RenderablesTest {
     }
 
     @Test
+    void onlyTheOwnerChangesRenderables() {
+        long node = scene.create();
+        renderables.set(node, ROCK, List.of());
+        Thread other = new Thread(() -> { });
+        clock.ownedBy(other);
+        List<Runnable> changes = List.of(() -> renderables.set(node, TREE, List.of()),
+            () -> renderables.setMesh(node, TREE), () -> renderables.setMaterials(node, List.of(STONE)),
+            () -> renderables.setCastsShadows(node, false), () -> renderables.remove(node), renderables::update);
+        for (Runnable change : changes) {
+            assertThatIllegalStateException().isThrownBy(change::run).withMessageContaining("change on " + other.getName());
+        }
+        assertThat(renderables.mesh(node)).as("refused changes change nothing").isEqualTo(ROCK);
+        clock.ownedBy(Thread.currentThread());
+        renderables.setMesh(node, TREE); // the owner may
+    }
+
+    @Test
     void removedNodesLoseTheirRenderables() {
         ChangeCursor cursor = clock.cursor();
         long a = scene.create();
@@ -149,10 +167,11 @@ class RenderablesTest {
         onSmall.set(kept, ROCK, List.of());
         onSmall.set(gone, ROCK, List.of());
         small.remove(gone);
-        for (int i = 0; i < 10; i++) {
-            small.create(); // more changes than the scene keeps
-        }
         small.update();
+        for (int i = 0; i < 10; i++) { // more updates than the scene's log keeps
+            small.create();
+            small.update();
+        }
         onSmall.update();
         assertThat(onSmall.has(gone)).isFalse();
         assertThat(onSmall.has(kept)).isTrue();

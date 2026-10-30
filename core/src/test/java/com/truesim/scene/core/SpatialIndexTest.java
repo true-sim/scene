@@ -193,14 +193,21 @@ class SpatialIndexTest {
             nodes[i] = small.create();
             small.setLocalBounds(nodes[i], 0, 0, 0, 1, 1, 1);
             small.setMobility(nodes[i], i % 2 == 0 ? Mobility.STATIC : Mobility.DYNAMIC);
+            small.setGroup(nodes[i], i); // static groups 0 and 2: group 1 stays empty
+            small.update(); // four updates of one change in a log of two: the index falls behind
         }
-        small.update(); // four changes in a log of two
         lagging.update();
         assertThat(lagging.staticCount()).isEqualTo(2);
         assertThat(lagging.dynamicCount()).isEqualTo(2);
         small.remove(nodes[0]);
         small.remove(nodes[1]);
         small.remove(nodes[2]);
+        small.update();
+        for (int i = 0; i < 8; i++) { // more updates than the log holds: the removals drop out of it
+            small.setTranslation(nodes[3], i, 0, 0);
+            small.update();
+        }
+        small.setTranslation(nodes[3], 0, 0, 0);
         small.update();
         lagging.update(); // behind again: rebuilt without the removed nodes
         assertThat(lagging.staticCount()).isZero();
