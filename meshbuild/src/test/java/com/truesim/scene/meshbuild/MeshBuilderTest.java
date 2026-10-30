@@ -135,7 +135,7 @@ class MeshBuilderTest {
         for (int i = 1; i < levels.size(); i++) {
             assertThat(levels.get(i).error()).isLessThanOrEqualTo(levels.get(i - 1).error());
         }
-        MemorySegment indices = mesh.expandIndices();
+        MemorySegment indices = mesh.expandIndices(java.lang.foreign.Arena.ofAuto());
         double fullArea = totalArea(mesh, indices, levels.getLast());
         int leafTriangles = 0;
         for (int m = levels.getLast().firstMeshlet(); m < mesh.meshletCount(); m++) {
@@ -184,7 +184,7 @@ class MeshBuilderTest {
             .buildDiscrete(4, 0.5);
         var levels = mesh.levels();
         assertThat(levels).hasSize(4);
-        MemorySegment indices = mesh.expandIndices();
+        MemorySegment indices = mesh.expandIndices(java.lang.foreign.Arena.ofAuto());
         double fullArea = totalArea(mesh, indices, levels.getLast());
         int previousTriangles = 0;
         double[] lod = new double[10];
@@ -263,7 +263,7 @@ class MeshBuilderTest {
      * surface on its ray.
      */
     private static double deviation(MeshData mesh, double threshold, MeshData original) {
-        MemorySegment indices = mesh.expandIndices();
+        MemorySegment indices = mesh.expandIndices(java.lang.foreign.Arena.ofAuto());
         List<double[]> triangles = new ArrayList<>();
         double[] lod = new double[10];
         for (int m = 0; m < mesh.meshletCount(); m++) {

@@ -237,6 +237,54 @@ class AssetCacheTest {
         assertThat(events).containsSubsequence("loaded " + TREE, "loaded " + HOUSE, "evicted " + TREE);
     }
 
+    /** Asset data holding native memory, say: closed when evicted. */
+    static final class Held implements AutoCloseable {
+        final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+
+        @Override
+        public void close() {
+            closed.set(true);
+        }
+    }
+
+    @Test
+    void evictedAssetsAreClosed() throws InterruptedException {
+        AssetCache cache = new AssetCache(tasks); // its own: the shared one hears meshes only
+        cache.setSource(SOURCE);
+        AssetType<Held> held = AssetType.of("held", Held.class, h -> 10);
+        List<Held> made = new CopyOnWriteArrayList<>();
+        cache.register(held, input -> {
+            Held data = new Held();
+            made.add(data);
+            return data;
+        });
+        AssetRef<Held> loaded = AssetRef.of(held, TREE);
+        AssetRef<Held> generated = AssetRef.generated(held, (params, seed) -> {
+            Held data = new Held();
+            made.add(data);
+            return data;
+        }, "params", 1);
+        cache.acquire(loaded);
+        cache.acquire(generated);
+        await(() -> cache.loadingCount() == 0);
+        assertThat(made).hasSize(2).allMatch(h -> !h.closed.get());
+        cache.setBudget(0);
+        cache.release(loaded);
+        cache.release(generated);
+        assertThat(made).allMatch(h -> h.closed.get()); // by the loader's default unload, and by the cache
+        // Closing that fails: unchecked exceptions as they are, checked ones wrapped.
+        AutoCloseable unchecked = () -> {
+            throw new IllegalArgumentException("unchecked");
+        };
+        AutoCloseable checked = () -> {
+            throw new java.io.IOException("checked");
+        };
+        assertThatIllegalArgumentException().isThrownBy(() -> AssetLoader.closeIfCloseable(unchecked));
+        assertThatIllegalStateException().isThrownBy(() -> AssetLoader.closeIfCloseable(checked))
+            .withCauseInstanceOf(java.io.IOException.class);
+        AssetLoader.closeIfCloseable("not closeable"); // nothing
+    }
+
     @Test
     void equalRecipesAreOneGeneratedAsset() throws InterruptedException {
         AssetRef<Mesh> rock = AssetRef.generated(PROCEDURAL, rocks, new RockParams(2.5, 3), 42);
@@ -365,7 +413,7 @@ class AssetCacheTest {
         assertThat(MESH.lane()).isSameAs(AssetType.LOADING);
         assertThat(MESH).hasToString("asset type mesh");
         AssetLoader<Mesh> loader = input -> null;
-        loader.unload(new Mesh("x", 1)); // unloading does nothing by default
+        loader.unload(new Mesh("x", 1)); // unloading does nothing by default, but for AutoCloseable data
     }
 
     @Test

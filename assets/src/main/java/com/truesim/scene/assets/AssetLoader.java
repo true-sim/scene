@@ -22,7 +22,24 @@ public interface AssetLoader<T> {
     /** Reads the asset {@code input} stands for. Exceptions mark the asset failed. */
     T load(AssetInput input) throws Exception;
 
-    /** Releases what a loaded asset holds when the cache evicts it, e.g. native memory. Does nothing by default. */
+    /**
+     * Releases what a loaded asset holds when the cache evicts it, e.g. native memory: closes data that is
+     * {@link AutoCloseable} (such as {@code MeshData}) by default, and does nothing for other data.
+     */
     default void unload(T data) {
+        closeIfCloseable(data);
+    }
+
+    /** Closes {@code data} if it is {@link AutoCloseable}; what the cache does with generated assets it evicts. */
+    static void closeIfCloseable(Object data) {
+        if (data instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException("Could not close " + data, e);
+            }
+        }
     }
 }

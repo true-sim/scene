@@ -66,6 +66,19 @@ class MeshDataTest {
     }
 
     @Test
+    void closingFreesTheBuffers() {
+        MeshData mesh = twoMeshlets(grid()).build();
+        MemorySegment kept = mesh.positions();
+        assertThat(mesh.isClosed()).isFalse();
+        mesh.close();
+        mesh.close(); // twice is fine
+        assertThat(mesh.isClosed()).isTrue();
+        // Segments taken before throw instead of reading freed memory.
+        assertThatIllegalStateException().isThrownBy(() -> kept.get(ValueLayout.JAVA_BYTE, 0));
+        assertThatIllegalStateException().isThrownBy(() -> mesh.meshlets().get(ValueLayout.JAVA_BYTE, 0));
+    }
+
+    @Test
     void attributesDecodeAsTheGpuReadsThem() {
         MeshData mesh = twoMeshlets(grid()).build();
         assertThat(mesh.vertexCount()).isEqualTo(6);
@@ -130,7 +143,7 @@ class MeshDataTest {
         mesh.meshletCone(1, out);
         assertThat(out[3]).isEqualTo(1); // never culls
         // The fallback index buffer: the original triangles, meshlet after meshlet.
-        MemorySegment indices = mesh.expandIndices();
+        MemorySegment indices = mesh.expandIndices(java.lang.foreign.Arena.ofAuto());
         int[] expanded = new int[12];
         for (int k = 0; k < 12; k++) {
             expanded[k] = indices.get(U32, 4L * k);
