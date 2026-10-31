@@ -10,7 +10,10 @@ import com.truesim.common.math.spatial.RayHit;
 import com.truesim.common.state.ChangeCursor;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.ref.Cleaner;
 import java.util.Arrays;
+import java.util.IdentityHashMap;
+import java.util.Map;
 
 /**
  * Finds a {@link SceneGraph}'s nodes by their world bounds: boxes, spheres, frustums and rays, filtered by
@@ -37,8 +40,15 @@ import java.util.Arrays;
  *
  * <p>Updating and querying allocate nothing, except when a tree is built or rebuilt. Queries are not reentrant: do not
  * query from inside a query's visitor. One thread at a time.
+ *
+ * <p>The trees the index builds live in native memory of their own, freed as soon as a tree is replaced (a group
+ * rebuilt, the top level or the dynamic tree grown), and all of it by {@link #close()}; an index dropped without closing
+ * frees it once collected. Trees adopted from {@linkplain SceneBatch#prepare() prepared batches} are the batches' and
+ * stay theirs.
  */
-public final class SpatialIndex {
+public final class SpatialIndex implements AutoCloseable {
+
+    private static final Cleaner CLEANER = Cleaner.create();
 
     private static final byte NOWHERE = 0;
     private static final byte STATIC = 1;
@@ -106,6 +116,66 @@ public final class SpatialIndex {
     };
     private SceneGraph.Prepared[] adoptions = new SceneGraph.Prepared[0];
     private boolean[] adopting = new boolean[0];
+    // The native memory of the trees built here, and what frees the rest when the index is closed or collected.
+    private final Trees trees = new Trees();
+    private final Cleaner.Cleanable cleanable = CLEANER.register(this, trees);
+
+    /**
+     * The arenas of the trees an index built itself, one per tree, so each is freed when its tree is replaced. Group
+     * trees are built on job-system workers too: the arenas are shared, the bookkeeping synchronized. It must not refer
+     * to its index, so that the index can be collected and cleaned.
+     */
+    @AllowAllocation("building trees")
+    private static final class Trees implements Runnable {
+        private final Map<Bvh, Arena> arenas = new IdentityHashMap<>();
+
+        /** A tree over {@code bounds} in an arena of its own. */
+        Bvh build(AabbArray bounds) {
+            Arena arena = Arena.ofShared();
+            Bvh tree = Bvh.build(arena, bounds, LEAF_SIZE);
+            synchronized (this) {
+                arenas.put(tree, arena);
+            }
+            return tree;
+        }
+
+        /** Frees {@code tree}'s memory if it was built here: not an adopted tree, nor null. */
+        void free(Bvh tree) {
+            Arena arena;
+            synchronized (this) {
+                arena = tree == null ? null : arenas.remove(tree);
+            }
+            if (arena != null) {
+                arena.close();
+            }
+        }
+
+        synchronized int count() {
+            return arenas.size();
+        }
+
+        /** Frees every tree's memory: the index closed or collected. */
+        @Override
+        public synchronized void run() {
+            for (Arena arena : arenas.values()) {
+                arena.close();
+            }
+            arenas.clear();
+        }
+    }
+
+    /**
+     * Frees the native memory of the trees the index built: use it no more. Closing it twice does nothing.
+     */
+    @Override
+    public void close() {
+        cleanable.clean();
+    }
+
+    /** How many trees the index built that hold native memory now: for tests. */
+    int ownedTrees() {
+        return trees.count();
+    }
 
     /** An index of {@code scene}'s nodes; empty until the first {@link #update()}. */
     @AllowAllocation("set up once")
@@ -298,7 +368,8 @@ public final class SpatialIndex {
         }
         groupCount[group] = count;
         staticCount += count;
-        groupTree[group] = prepared.tree;
+        trees.free(groupTree[group]);
+        groupTree[group] = prepared.tree; // the batch's, not freed here
         System.arraycopy(prepared.box, 0, groupBox, group * 6, 6);
         joinTop(group);
         return true;
@@ -454,7 +525,9 @@ public final class SpatialIndex {
         groupBox[box + 3] = maxX;
         groupBox[box + 4] = maxY;
         groupBox[box + 5] = maxZ;
-        groupTree[group] = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
+        Bvh replaced = groupTree[group];
+        groupTree[group] = trees.build(bounds);
+        trees.free(replaced);
     }
 
     /** After its tree was built: a group with nodes joins the top level or updates its box there, an empty one leaves. */
@@ -464,6 +537,7 @@ public final class SpatialIndex {
             joinTop(group);
             return;
         }
+        trees.free(groupTree[group]);
         groupTree[group] = null;
         // It had a slot: a group gains nodes only in an update that then rebuilds it. Its slot is free now; its box
         // shrinks to its center, so the tree does not keep spanning areas left behind.
@@ -514,7 +588,9 @@ public final class SpatialIndex {
             topGroups[i] = -1;
             freeTop[freeTopCount++] = i;
         }
-        top = Bvh.build(Arena.ofAuto(), boxes, LEAF_SIZE);
+        Bvh replaced = top;
+        top = trees.build(boxes);
+        trees.free(replaced);
     }
 
     /** Refits the top level to its groups' boxes (it changed: groups were rebuilt); rebuilds it when degraded. */
@@ -563,7 +639,9 @@ public final class SpatialIndex {
             freeDynamic[freeCount++] = i;
         }
         dynamicBounds = bounds;
-        dynamicBvh = Bvh.build(Arena.ofAuto(), bounds, LEAF_SIZE);
+        Bvh replaced = dynamicBvh;
+        dynamicBvh = trees.build(bounds);
+        trees.free(replaced);
     }
 
     private void clear() {

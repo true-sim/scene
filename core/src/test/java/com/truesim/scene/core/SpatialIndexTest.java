@@ -217,6 +217,38 @@ class SpatialIndexTest {
         assertThat(found).containsExactly(nodes[3]);
     }
 
+    @Test
+    void replacedTreesFreeTheirMemoryAndClosingFreesTheRest() {
+        // Static boxes in group 1, moved each update: the group's tree is rebuilt each time, the old one freed.
+        long[] walls = new long[8];
+        for (int i = 0; i < walls.length; i++) {
+            walls[i] = box(i * 2, 0, 0, Mobility.STATIC);
+            scene.setGroup(walls[i], 1);
+        }
+        box(0, 5, 0, Mobility.DYNAMIC);
+        update();
+        int trees = index.ownedTrees();
+        assertThat(trees).as("the group's, the top level and the dynamic tree").isEqualTo(3);
+        for (int round = 0; round < 20; round++) {
+            for (long wall : walls) {
+                scene.setTranslation(wall, round, 0, 0);
+            }
+            update();
+            assertThat(index.ownedTrees()).as("round %d", round).isEqualTo(trees);
+        }
+        assertThat(inBox(18, -1, -1, 20, 1, 1, ALL)).hasSize(walls.length); // the latest tree answers
+        // A group emptied frees its tree.
+        for (long wall : walls) {
+            scene.remove(wall);
+        }
+        update();
+        assertThat(index.ownedTrees()).isEqualTo(trees - 1);
+        // Closed: all of it freed, once.
+        index.close();
+        assertThat(index.ownedTrees()).isZero();
+        index.close();
+    }
+
     private long sink;
 
     @Test
