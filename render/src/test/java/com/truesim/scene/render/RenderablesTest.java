@@ -3,6 +3,7 @@ package com.truesim.scene.render;
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
@@ -94,6 +95,47 @@ class RenderablesTest {
         List<Long> visited = new ArrayList<>();
         renderables.forEach(visited::add);
         assertThat(visited).containsExactly(bare);
+    }
+
+    @Test
+    void skinsDeformRenderablesUntilRemoved() {
+        ChangeCursor cursor = clock.cursor();
+        long body = scene.create();
+        long bone = scene.create(body);
+        float[] identity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        SkinBinding skin = new SkinBinding(new long[] {bone}, identity);
+        renderables.set(body, ROCK, List.of());
+        cursor.mark();
+        assertThat(renderables.skin(body)).isNull();
+        renderables.setSkin(body, skin);
+        renderables.setSkin(body, new SkinBinding(new long[] {bone}, identity.clone())); // equal: nothing
+        renderables.set(body, TREE, List.of()); // the skin stays
+        assertThat(renderables.skin(body)).isEqualTo(skin);
+        renderables.setSkin(body, null);
+        assertThat(changes(renderables, cursor.mark())).containsExactly(line(body, Renderables.SKIN),
+            line(body, Renderables.MESH), line(body, Renderables.SKIN));
+        renderables.setSkin(body, skin);
+        renderables.remove(body);
+        renderables.set(body, ROCK, List.of());
+        assertThat(renderables.skin(body)).as("gone with the renderable").isNull();
+        assertThatIllegalArgumentException().isThrownBy(() -> renderables.setSkin(bone, skin));
+        // Bindings: copied, equal by value.
+        long[] joints = {bone, body};
+        float[] matrices = new float[32];
+        matrices[17] = 3;
+        SkinBinding two = new SkinBinding(joints, matrices);
+        joints[0] = 0;
+        matrices[17] = 0;
+        assertThat(two.jointCount()).isEqualTo(2);
+        assertThat(two.joint(0)).isEqualTo(bone);
+        assertThat(two.inverseBind(1, 1)).isEqualTo(3);
+        assertThatThrownBy(() -> two.inverseBind(0, 16)).isInstanceOf(IndexOutOfBoundsException.class);
+        assertThat(skin).isEqualTo(new SkinBinding(new long[] {bone}, identity))
+            .hasSameHashCodeAs(new SkinBinding(new long[] {bone}, identity)).isNotEqualTo(two).isNotEqualTo("skin")
+            .isNotEqualTo(new SkinBinding(new long[] {body}, identity))
+            .isNotEqualTo(new SkinBinding(new long[] {bone}, new float[16]));
+        assertThatIllegalArgumentException().isThrownBy(() -> new SkinBinding(new long[0], new float[0]));
+        assertThatIllegalArgumentException().isThrownBy(() -> new SkinBinding(new long[1], new float[15]));
     }
 
     @Test

@@ -42,6 +42,8 @@ public final class Renderables {
     public static final int MATERIALS = 1 << 3;
     /** Whether the renderable casts shadows changed. */
     public static final int SHADOWS = 1 << 4;
+    /** The renderable's skin changed. */
+    public static final int SKIN = 1 << 5;
 
     /** Receives changed renderables. */
     @FunctionalInterface
@@ -58,6 +60,7 @@ public final class Renderables {
     private AssetRef<MeshData>[] meshes = newMeshes(64);
     private List<AssetRef<MaterialData>>[] materials = newMaterials(64);
     private boolean[] castsShadows = new boolean[64];
+    private SkinBinding[] skins = new SkinBinding[64];
     private int size;
     /** Scene changes seen by {@link #update()}: up to this stamp. */
     private long sceneSeen;
@@ -179,6 +182,24 @@ public final class Renderables {
             castsShadows[index] = casts;
             log(node, SHADOWS);
         }
+    }
+
+    /**
+     * Deforms {@code node}'s renderable by {@code skin}, its mesh's joint palette naming the skin's joints; null draws
+     * the mesh as it is.
+     */
+    public void setSkin(long node, SkinBinding skin) {
+        checkOwner();
+        int index = held(node);
+        if (!Objects.equals(skins[index], skin)) {
+            skins[index] = skin;
+            log(node, SKIN);
+        }
+    }
+
+    /** The skin deforming {@code node}'s renderable, or null. */
+    public SkinBinding skin(long node) {
+        return skins[held(node)];
     }
 
     /** Removes {@code node}'s renderable, if it has one. */
@@ -352,6 +373,7 @@ public final class Renderables {
         meshes[index] = null;
         materials[index] = null;
         castsShadows[index] = false;
+        skins[index] = null;
         size--;
     }
 
@@ -361,5 +383,6 @@ public final class Renderables {
         meshes = Arrays.copyOf(meshes, length);
         materials = Arrays.copyOf(materials, length);
         castsShadows = Arrays.copyOf(castsShadows, length);
+        skins = Arrays.copyOf(skins, length);
     }
 }
