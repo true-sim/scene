@@ -347,6 +347,23 @@ class GltfTest {
     }
 
     @Test
+    void camerasPerspectiveAndOrthographic() throws Exception {
+        String json = """
+            {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0, 1, 2]}],
+             "nodes": [{"name": "eye", "camera": 0}, {"name": "map", "camera": 1, "translation": [0, 10, 0]},
+               {"name": "none"}],
+             "cameras": [{"name": "wide", "type": "perspective",
+                 "perspective": {"yfov": 0.8, "aspectRatio": 1.5, "znear": 0.05, "zfar": 200}},
+               {"type": "orthographic", "orthographic": {"xmag": 4, "ymag": 3, "znear": 0.5, "zfar": 20}}]}
+            """;
+        Files.writeString(dir.resolve("eyes.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://eyes.gltf"));
+        assertThat(model.nodes()).extracting(ModelData.Node::camera).containsExactly(0, 1, -1);
+        assertThat(model.cameras()).containsExactly(ModelData.Camera.perspective("wide", 0.8, 1.5, 0.05, 200),
+            ModelData.Camera.orthographic("", 4, 3, 0.5, 20));
+    }
+
+    @Test
     void aMeshNamesAtMost256Joints() throws Exception {
         // 65 vertices of four joints each, all different: 260 joints.
         int vertices = 65;

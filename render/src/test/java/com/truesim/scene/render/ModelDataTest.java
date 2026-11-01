@@ -98,6 +98,35 @@ class ModelDataTest {
     }
 
     @Test
+    void camerasAreAsGltfAllowsAndNamedByNodes() {
+        ModelData.Camera wide = ModelData.Camera.perspective("wide", 1.2, 0, 0.1, 0);
+        ModelData.Camera map = ModelData.Camera.orthographic("map", 10, 5, 0, 100);
+        assertThat(wide.orthographic()).isFalse();
+        assertThat(map.orthographic()).isTrue();
+        assertThat(ModelData.Camera.perspective("far", 1, 1.5, 0.1, 50).zfar()).isEqualTo(50);
+        for (double[] bad : new double[][] {{0, 0, 0.1, 0}, {1, -1, 0.1, 0}, {1, 0, 0, 0}, {1, 0, 1, 0.5}}) {
+            assertThatIllegalArgumentException()
+                .isThrownBy(() -> ModelData.Camera.perspective("bad", bad[0], bad[1], bad[2], bad[3]));
+        }
+        for (double[] bad : new double[][] {{0, 1, 0, 1}, {1, 0, 0, 1}, {1, 1, -1, 1}, {1, 1, 1, 1}}) {
+            assertThatIllegalArgumentException()
+                .isThrownBy(() -> ModelData.Camera.orthographic("bad", bad[0], bad[1], bad[2], bad[3]));
+        }
+        ModelData.Node eye = new ModelData.Node("eye", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1,
+            List.of(), -1, List.of(), 1);
+        ModelData model = new ModelData(List.of(eye), List.of(), List.of(), List.of(wide, map));
+        assertThat(model.nodes().get(0).camera()).isOne();
+        assertThat(model.cameras()).containsExactly(wide, map);
+        assertThat(eye.withoutSkin().camera()).as("kept").isOne();
+        assertThat(ModelData.Node.of("plain", -1, null, List.of()).camera()).isEqualTo(-1);
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(eye), List.of(), List.of(),
+            List.of(wide))).withMessageContaining("camera 1 is not one of the model's");
+        ModelData.Node minus = new ModelData.Node("x", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1,
+            List.of(), -1, List.of(), -2);
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(minus)));
+    }
+
+    @Test
     void parentsComeBeforeTheirChildren() {
         assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
             ModelData.Node.of("child", 1, null, List.of()), ModelData.Node.of("parent", -1, null, List.of()))))
