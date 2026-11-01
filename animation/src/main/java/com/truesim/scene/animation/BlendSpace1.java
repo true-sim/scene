@@ -72,8 +72,34 @@ public final class BlendSpace1 implements Motion {
     }
 
     /** The sync group it joins by default, or null. */
+    @Override
     public SyncGroup group() {
         return group;
+    }
+
+    /** Its two clips around the parameter's place, their durations blended by how near each is. */
+    @Override
+    public double duration(Animator animator) {
+        double parameter = animator.parameter(this);
+        int first = first(parameter);
+        double a = weight(parameter, first);
+        double d = a * clips[first].duration();
+        if (a < 1) {
+            d += (1 - a) * clips[first + 1].duration();
+        }
+        return d;
+    }
+
+    /** The two clips around the animator's parameter, at the same phase, by how near each is. */
+    @Override
+    public void contents(Animator animator, double phase, Contents out) {
+        double parameter = animator.parameter(this);
+        int first = first(parameter);
+        double a = weight(parameter, first);
+        out.add(clips[first], phase * clips[first].duration(), a);
+        if (a < 1) {
+            out.add(clips[first + 1], phase * clips[first + 1].duration(), 1 - a);
+        }
     }
 
     /** How many clips it blends. */
@@ -89,26 +115,28 @@ public final class BlendSpace1 implements Motion {
         return at[i];
     }
 
-    /**
-     * The clips {@code parameter} blends: the index of the first in {@code out[0]}, its weight in {@code weights[0]}
-     * (the second, the next clip, weighs the rest); clamped to the ends.
-     */
-    int blend(double parameter, double[] weights) {
+    /** The first of the clips {@code parameter} blends (the next, if any, is the other); clamped to the ends. */
+    private int first(double parameter) {
         int last = at.length - 1;
         if (last == 0 || parameter <= at[0]) {
-            weights[0] = 1;
             return 0;
         }
         if (parameter >= at[last]) {
-            weights[0] = 1;
             return last;
         }
         int i = 0;
         while (at[i + 1] <= parameter) {
             i++;
         }
-        weights[0] = (at[i + 1] - parameter) / (at[i + 1] - at[i]);
         return i;
+    }
+
+    /** The weight of clip {@code first} at {@code parameter}: the next weighs the rest. */
+    private double weight(double parameter, int first) {
+        if (first == at.length - 1 || parameter <= at[first]) {
+            return 1;
+        }
+        return (at[first + 1] - parameter) / (at[first + 1] - at[first]);
     }
 
     @Override

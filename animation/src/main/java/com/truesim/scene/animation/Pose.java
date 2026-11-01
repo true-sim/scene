@@ -41,6 +41,35 @@ public final class Pose {
         animator.reach(ik, x, y, z, weight);
     }
 
+    /** Brings {@code chain}'s tip to world (x, y, z), by {@code weight}. */
+    public void reach(FabrikChain chain, double x, double y, double z, double weight) {
+        animator.rig().checkOwn(chain, chain.rig());
+        animator.reach(chain, x, y, z, weight);
+    }
+
+    /** {@code joint}'s world rotation (x, y, z, w) into {@code out[0..4)}. */
+    public void worldRotation(Joint joint, double[] out) {
+        animator.worldRotation(animator.rig().jointIndex(joint), out);
+    }
+
+    /** Turns {@code joint} to world rotation (x, y, z, w); what hangs from it turns with it. */
+    public void setWorldRotation(Joint joint, double x, double y, double z, double w) {
+        animator.setWorldRotation(animator.rig().jointIndex(joint), x, y, z, w);
+    }
+
+    /**
+     * {@code joint}'s transform relative to its parent into {@code out[0..10)}: translation, rotation (x, y, z, w),
+     * scale.
+     */
+    public void local(Joint joint, double[] out) {
+        animator.local(animator.rig().jointIndex(joint), out);
+    }
+
+    /** Sets {@code joint}'s transform relative to its parent to {@code in[0..10)} (as {@link #local}). */
+    public void setLocal(Joint joint, double[] in) {
+        animator.setLocal(animator.rig().jointIndex(joint), in);
+    }
+
     /** The world height of the flat ground the animation assumes: the instance's. */
     public double groundHeight() {
         return animator.groundHeight();

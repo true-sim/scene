@@ -45,7 +45,9 @@ public final class Animator {
     private final long[] nodes;
     private final Playback[] layers;
     private final double[] parameters;
-    private final double[] blendWeight = new double[1];
+    // What motions play: at their phase now, and before the update (for events and root motion).
+    private final Motion.Contents now = new Motion.Contents();
+    private final Motion.Contents then = new Motion.Contents();
     private long starts; // motions started, to tell a layer's newest
     // The pose and its scratch: 10 values per node; morph weights and curves after the rig's layout.
     private final double[] pose;
@@ -75,6 +77,9 @@ public final class Animator {
     // which joints they moved this update and which the game took over.
     private final IkTarget[] iks;
     private final AimTarget[] aims;
+    private final FabrikTarget[] chains;
+    private double[] points = new double[0]; // a FABRIK chain's joint positions as it is solved
+    private double[] lengths = new double[0];
     private final JointOverride[] overrides;
     private final double[] modifierWeights;
     private final Pose view = new Pose(this);
@@ -126,6 +131,14 @@ public final class Animator {
         for (int i = 0; i < iks.length; i++) {
             iks[i] = new IkTarget(rig.ik(i));
         }
+        this.chains = new FabrikTarget[rig.chainCount()];
+        int longest = 0;
+        for (int i = 0; i < chains.length; i++) {
+            chains[i] = new FabrikTarget(rig.chain(i));
+            longest = Math.max(longest, rig.chain(i).size());
+        }
+        this.points = new double[3 * longest];
+        this.lengths = new double[longest];
         this.aims = new AimTarget[rig.lookCount()];
         for (int i = 0; i < aims.length; i++) {
             aims[i] = new AimTarget(rig.look(i));
@@ -195,6 +208,12 @@ public final class Animator {
     public IkTarget ik(TwoBoneIk ik) {
         rig.checkOwn(ik, ik.rig());
         return iks[ik.index];
+    }
+
+    /** The target of {@code chain}, a FABRIK chain of its rig: off (weight 0) until given one. */
+    public FabrikTarget fabrik(FabrikChain chain) {
+        rig.checkOwn(chain, chain.rig());
+        return chains[chain.index];
     }
 
     /** The target of {@code look}, a look-at of its rig: off (weight 0) until given one. */
@@ -373,9 +392,9 @@ public final class Animator {
             Objects.requireNonNull(motion, "motion");
             rig.checkOwn(motion, motion.rig());
             checkFade(fade);
-            if (motion instanceof Clip clip && clip.additive() != layer.isAdditive()) {
-                throw new IllegalArgumentException((clip.additive() ? "An additive clip plays on additive layers: "
-                    : "An additive layer plays additive clips: ") + clip);
+            if (motion.additive() != layer.isAdditive()) {
+                throw new IllegalArgumentException((motion.additive() ? "An additive motion plays on additive layers: "
+                    : "An additive layer plays additive motions: ") + motion);
             }
             fit();
             for (int i = 0; i < count; i++) {
@@ -449,24 +468,23 @@ public final class Animator {
 
     /** Queues the events {@code state} passed from phase {@code before} to its phase now, across a loop's end too. */
     private void events(ClipState state, double before, double weight, boolean fresh) {
-        if (state.motion instanceof Clip clip) {
-            events(clip, before, state.phase, state.speed(), weight, fresh);
-            return;
-        }
-        BlendSpace1 space = (BlendSpace1) state.motion;
-        int first = space.blend(parameters[space.index], blendWeight);
-        double a = blendWeight[0];
-        events(space.clip(first), before, state.phase, state.speed(), weight * a, fresh);
-        if (a < 1) {
-            events(space.clip(first + 1), before, state.phase, state.speed(), weight * (1 - a), fresh);
+        contents(state, before, then);
+        contents(state, state.phase, now);
+        for (int i = 0; i < Math.min(then.size(), now.size()); i++) {
+            if (then.clip(i) == now.clip(i)) {
+                events(now.clip(i), then.time(i), now.time(i), state.speed(), weight * now.weight(i), fresh);
+            }
         }
     }
 
-    private void events(Clip clip, double from, double to, double speed, double weight, boolean fresh) {
-        double duration = clip.duration();
-        double t0 = from * duration;
-        double t1 = to * duration;
-        boolean wrapped = speed >= 0 ? to < from : to > from;
+    /** {@code state}'s motion's contents at {@code phase}, into {@code out}. */
+    private void contents(ClipState state, double phase, Motion.Contents out) {
+        out.clear();
+        state.motion.contents(this, phase, out);
+    }
+
+    private void events(Clip clip, double t0, double t1, double speed, double weight, boolean fresh) {
+        boolean wrapped = speed >= 0 ? t1 < t0 : t1 > t0;
         for (int e = 0; e < clip.eventCount(); e++) {
             double t = clip.eventTime(e);
             boolean passed = fresh && t == t0; // where it starts
@@ -553,13 +571,15 @@ public final class Animator {
      */
     private void follow(ClipState follower, ClipState leader) {
         double phase = leader.phase;
-        Clip lead = markerClip(leader);
-        Clip clip = markerClip(follower);
+        contents(leader, leader.phase, then);
+        contents(follower, follower.phase, now);
+        Clip lead = then.clip(then.heaviest());
+        Clip clip = now.clip(now.heaviest());
         int markers = lead.markerCount();
         int own = clip.markerCount();
         if (markers > 0 && own > 0) {
             double duration = lead.duration();
-            double time = leader.phase * duration;
+            double time = then.time(then.heaviest());
             int p = markers - 1; // the last marker at or before its time; before the first: the last, a loop ago
             for (int m = 0; m < markers; m++) {
                 if (lead.markerTime(m) <= time) {
@@ -583,16 +603,6 @@ public final class Animator {
         }
         follower.phase = follower.looping() ? phase : Math.min(Math.max(phase, 0), 1);
         follower.moved(leader.backwards);
-    }
-
-    /** The clip whose markers {@code state} goes by: its clip, or its blend space's heavier one. */
-    private Clip markerClip(ClipState state) {
-        if (state.motion instanceof Clip clip) {
-            return clip;
-        }
-        BlendSpace1 space = (BlendSpace1) state.motion;
-        int first = space.blend(parameters[space.index], blendWeight);
-        return blendWeight[0] >= 0.5 ? space.clip(first) : space.clip(first + 1);
     }
 
     /** Samples and blends the layers into the pose; touches nothing shared, so animators sample in parallel. */
@@ -655,15 +665,11 @@ public final class Animator {
                 if (w == 0) {
                     continue;
                 }
-                if (state.motion instanceof Clip clip) {
-                    moveOf(clip, state, root, mode, w);
-                } else {
-                    BlendSpace1 space = (BlendSpace1) state.motion;
-                    int first = space.blend(parameters[space.index], blendWeight);
-                    double a = blendWeight[0];
-                    moveOf(space.clip(first), state, root, mode, w * a);
-                    if (a < 1) {
-                        moveOf(space.clip(first + 1), state, root, mode, w * (1 - a));
+                contents(state, state.before, then);
+                contents(state, state.phase, now);
+                for (int c = 0; c < Math.min(then.size(), now.size()); c++) {
+                    if (then.clip(c) == now.clip(c)) {
+                        moveOf(now.clip(c), then.time(c), now.time(c), state.backwards, root, mode, w * now.weight(c));
                     }
                 }
             }
@@ -724,18 +730,16 @@ public final class Animator {
     }
 
     /**
-     * Adds to {@link #layerDelta}, weighing {@code w}, how far {@code clip} moved the root over {@code state}'s last
-     * update: from its phase before to its phase now, across its end (its start, backwards) if it passed it.
+     * Adds to {@link #layerDelta}, weighing {@code w}, how far {@code clip} moved the root from {@code t0} to {@code t1}
+     * seconds into it, across its end (its start, {@code backwards}) if it passed it.
      */
-    private void moveOf(Clip clip, ClipState state, int root, RootMotion mode, double w) {
+    private void moveOf(Clip clip, double t0, double t1, boolean backwards, int root, RootMotion mode, double w) {
         double duration = clip.duration();
-        double t0 = state.before * duration;
-        double t1 = state.phase * duration;
-        if (!state.wrapped) {
+        if (backwards ? t1 <= t0 : t1 >= t0) {
             move(clip, root, mode, t0, t1, stateDelta);
         } else {
-            move(clip, root, mode, t0, state.backwards ? 0 : duration, stateDelta);
-            move(clip, root, mode, state.backwards ? duration : 0, t1, segment);
+            move(clip, root, mode, t0, backwards ? 0 : duration, stateDelta);
+            move(clip, root, mode, backwards ? duration : 0, t1, segment);
             // The second part as the first left the root facing
             double c = Maths.cos(stateDelta[3]);
             double s = Maths.sin(stateDelta[3]);
@@ -800,18 +804,9 @@ public final class Animator {
             if (w == 0) {
                 continue;
             }
-            if (state.motion instanceof Clip clip) {
-                accumulate(clip, state.phase * clip.duration(), w);
-            } else {
-                BlendSpace1 space = (BlendSpace1) state.motion;
-                int first = space.blend(parameters[space.index], blendWeight);
-                double a = blendWeight[0];
-                Clip one = space.clip(first);
-                accumulate(one, state.phase * one.duration(), w * a);
-                if (a < 1) {
-                    Clip two = space.clip(first + 1);
-                    accumulate(two, state.phase * two.duration(), w * (1 - a));
-                }
+            contents(state, state.phase, now);
+            for (int c = 0; c < now.size(); c++) {
+                accumulate(now.clip(c), now.time(c), w * now.weight(c));
             }
         }
         if (total == 0) {
@@ -925,6 +920,11 @@ public final class Animator {
                 return true;
             }
         }
+        for (FabrikTarget chain : chains) {
+            if (chain.weight > 0) {
+                return true;
+            }
+        }
         for (AimTarget aim : aims) {
             if (aim.weight > 0) {
                 return true;
@@ -964,6 +964,12 @@ public final class Animator {
             if (ik.weight > 0) {
                 toModel(ik.target, v3);
                 solve(ik.ik, v3, ik.hasPole ? ik.pole : null, ik.hasRotation ? ik.rotation : null, ik.weight);
+            }
+        }
+        for (FabrikTarget chain : chains) {
+            if (chain.weight > 0) {
+                toModel(chain.target, v3);
+                fabrik(chain.chain, v3, chain.weight);
             }
         }
         for (AimTarget aim : aims) {
@@ -1060,6 +1066,49 @@ public final class Animator {
         v2[2] = z;
         toModel(v2, v3);
         solve(ik, v3, null, null, weight);
+    }
+
+    /** Brings {@code chain}'s tip to world (x, y, z) by {@code weight}. */
+    void reach(FabrikChain chain, double x, double y, double z, double weight) {
+        v2[0] = x;
+        v2[1] = y;
+        v2[2] = z;
+        toModel(v2, v3);
+        fabrik(chain, v3, weight);
+    }
+
+    /** Joint {@code j}'s world rotation, into {@code out[0..4)}. */
+    void worldRotation(int j, double[] out) {
+        System.arraycopy(world, 3, out, 0, 4);
+        int b = Skeleton.TRANSFORM * j;
+        Kinematics.multiply(out, 0, model[b + 3], model[b + 4], model[b + 5], model[b + 6]);
+    }
+
+    /** Sets joint {@code j}'s world rotation to (x, y, z, w). */
+    void setWorldRotation(int j, double x, double y, double z, double w) {
+        q1[0] = x;
+        q1[1] = y;
+        q1[2] = z;
+        q1[3] = w;
+        Kinematics.normalizeQuaternion(q1, 0);
+        toModelRotation(q1, q0);
+        setModelRotation(j, q0, 0);
+        touch(j);
+        Kinematics.forward(skeleton, pose, model);
+    }
+
+    /** Joint {@code j}'s transform relative to its parent (10 values), into {@code out}. */
+    void local(int j, double[] out) {
+        System.arraycopy(pose, Skeleton.TRANSFORM * j, out, 0, Skeleton.TRANSFORM);
+    }
+
+    /** Sets joint {@code j}'s transform relative to its parent to {@code in}'s 10 values, the rotation normalized. */
+    void setLocal(int j, double[] in) {
+        int b = Skeleton.TRANSFORM * j;
+        System.arraycopy(in, 0, pose, b, Skeleton.TRANSFORM);
+        Kinematics.normalizeQuaternion(pose, b + 3);
+        touch(j);
+        Kinematics.forward(skeleton, pose, model);
     }
 
     private void touch(int j) {
@@ -1192,6 +1241,117 @@ public final class Animator {
             touch(ik.end);
             Kinematics.forward(skeleton, pose, model);
         }
+    }
+
+    /**
+     * FABRIK in the model pose: the joints' positions pulled to {@code target} from the tip and back from the root,
+     * bones keeping their lengths and bending within their limits, until the tip is near enough or the passes run out;
+     * then each joint turned to point its bone along the solution, by {@code weight} from where it was.
+     */
+    private void fabrik(FabrikChain chain, double[] point, double weight) {
+        double[] target = goal;
+        System.arraycopy(point, 0, target, 0, 3);
+        int[] joints = chain.joints;
+        int n = joints.length - 1; // bones
+        double[] p = points;
+        for (int i = 0; i <= n; i++) {
+            System.arraycopy(model, Skeleton.TRANSFORM * joints[i], p, 3 * i, 3);
+        }
+        for (int i = 0; i < n; i++) {
+            lengths[i] = Maths.sqrt(square(p[3 * i + 3] - p[3 * i]) + square(p[3 * i + 4] - p[3 * i + 1])
+                + square(p[3 * i + 5] - p[3 * i + 2]));
+        }
+        // The root's bone as the animation points it, the first bone's limit's reference
+        double ox = p[0];
+        double oy = p[1];
+        double oz = p[2];
+        v2[0] = p[3] - ox;
+        v2[1] = p[4] - oy;
+        v2[2] = p[5] - oz;
+        Kinematics.normalize(v2);
+        double rx = v2[0];
+        double ry = v2[1];
+        double rz = v2[2];
+        for (int pass = 0; pass < chain.iterations(); pass++) {
+            // Backward: the tip at the target, each joint along its bone from the one after
+            System.arraycopy(target, 0, p, 3 * n, 3);
+            for (int i = n - 1; i >= 0; i--) {
+                place(p, i, i + 1, lengths[i]);
+            }
+            // Forward: the root back at its place, each bone within its limit of the one before
+            p[0] = ox;
+            p[1] = oy;
+            p[2] = oz;
+            for (int i = 0; i < n; i++) {
+                v0[0] = p[3 * i + 3] - p[3 * i];
+                v0[1] = p[3 * i + 4] - p[3 * i + 1];
+                v0[2] = p[3 * i + 5] - p[3 * i + 2];
+                Kinematics.normalize(v0);
+                if (i == 0) {
+                    v1[0] = rx;
+                    v1[1] = ry;
+                    v1[2] = rz;
+                } else {
+                    v1[0] = p[3 * i] - p[3 * i - 3];
+                    v1[1] = p[3 * i + 1] - p[3 * i - 2];
+                    v1[2] = p[3 * i + 2] - p[3 * i - 1];
+                    Kinematics.normalize(v1);
+                }
+                limitTo(v1, v0, chain.limits[i]);
+                for (int k = 0; k < 3; k++) {
+                    p[3 * i + 3 + k] = p[3 * i + k] + lengths[i] * v0[k];
+                }
+            }
+            double miss = Maths.sqrt(square(p[3 * n] - target[0]) + square(p[3 * n + 1] - target[1])
+                + square(p[3 * n + 2] - target[2]));
+            if (miss <= chain.tolerance()) {
+                break;
+            }
+        }
+        // Each joint turned to point its bone where the solution has it, from the root down
+        for (int i = 0; i < n; i++) {
+            int b = Skeleton.TRANSFORM * joints[i];
+            System.arraycopy(pose, b + 3, saved, 0, 4);
+            difference(model, Skeleton.TRANSFORM * joints[i + 1], b, v0);
+            Kinematics.normalize(v0);
+            v1[0] = p[3 * i + 3] - p[3 * i];
+            v1[1] = p[3 * i + 4] - p[3 * i + 1];
+            v1[2] = p[3 * i + 5] - p[3 * i + 2];
+            Kinematics.normalize(v1);
+            Kinematics.across(v0, v2);
+            turn(joints[i], v0, v1, v2);
+            Kinematics.nlerp(saved, 0, pose, b + 3, weight);
+            touch(joints[i]);
+            Kinematics.forward(skeleton, pose, model);
+        }
+    }
+
+    /** Point {@code to} put {@code length} from point {@code from}, toward where it was. */
+    private void place(double[] p, int to, int from, double length) {
+        v0[0] = p[3 * to] - p[3 * from];
+        v0[1] = p[3 * to + 1] - p[3 * from + 1];
+        v0[2] = p[3 * to + 2] - p[3 * from + 2];
+        if (!(Kinematics.normalize(v0) > 0)) {
+            Kinematics.across(v2, v0); // on top of each other: any way out, across the root's bone (v2)
+        }
+        for (int k = 0; k < 3; k++) {
+            p[3 * to + k] = p[3 * from + k] + length * v0[k];
+        }
+    }
+
+    /** Unit {@code dir} turned back toward unit {@code reference} until no more than {@code limit} from it. */
+    private void limitTo(double[] reference, double[] dir, double limit) {
+        double angle = Kinematics.angle(reference, dir);
+        if (angle <= limit) {
+            return;
+        }
+        Kinematics.cross(reference, dir, v3);
+        if (!(Kinematics.normalize(v3) > 1e-12)) {
+            Kinematics.across(reference, v3); // right behind: any way round
+        }
+        Kinematics.axisAngle(v3, limit, q0);
+        System.arraycopy(reference, 0, dir, 0, 3);
+        Kinematics.rotate(q0, 0, dir);
     }
 
     /**
@@ -1354,6 +1514,34 @@ public final class Animator {
 
         /** How far toward the solution, 0 (off) to 1. */
         public IkTarget weight(double weight) {
+            this.weight = checkWeight(weight);
+            return this;
+        }
+
+        public double weight() {
+            return weight;
+        }
+    }
+
+    /** A FABRIK chain's target on this animator: a point and a weight. */
+    public final class FabrikTarget {
+
+        private final FabrikChain chain;
+        private final double[] target = new double[3];
+        private double weight;
+
+        private FabrikTarget(FabrikChain chain) {
+            this.chain = chain;
+        }
+
+        /** Reaches the chain's tip for world (x, y, z). */
+        public FabrikTarget target(double x, double y, double z) {
+            set(target, x, y, z);
+            return this;
+        }
+
+        /** How far toward the solution, 0 (off) to 1. */
+        public FabrikTarget weight(double weight) {
             this.weight = checkWeight(weight);
             return this;
         }

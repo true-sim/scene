@@ -83,7 +83,19 @@ public final class Clip implements Motion {
         return clip;
     }
 
+    @Override
+    public double duration(Animator animator) {
+        return duration;
+    }
+
+    /** Itself at {@code phase} of its duration, weighing 1. */
+    @Override
+    public void contents(Animator animator, double phase, Contents out) {
+        out.add(this, phase * duration, 1);
+    }
+
     /** Whether it is additive. */
+    @Override
     public boolean additive() {
         return reference != null;
     }
@@ -178,6 +190,7 @@ public final class Clip implements Motion {
     }
 
     /** The sync group it joins by default, or null. */
+    @Override
     public SyncGroup group() {
         return group;
     }
