@@ -5,9 +5,20 @@ plugins {
 
 description = "Scene glTF importer for true-sim: glTF 2.0 and GLB files into models, meshes, materials and textures."
 
+val lwjglVersion = "3.4.3"
+val lwjglNatives = listOf(
+    "natives-windows", "natives-windows-arm64", "natives-linux", "natives-linux-arm64", "natives-macos",
+    "natives-macos-arm64",
+)
+
 dependencies {
     api(project(":scene-render"))
     implementation(project(":scene-meshbuild"))
+    implementation(platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
+    implementation("org.lwjgl:lwjgl-meshoptimizer") // meshopt-compressed buffers
+    for (natives in lwjglNatives) {
+        runtimeOnly("org.lwjgl:lwjgl-meshoptimizer::$natives")
+    }
 }
 
 coverage {

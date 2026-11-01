@@ -197,8 +197,9 @@ class GltfDocumentTest {
             .isThrownBy(() -> GltfDocument.read(input("{\"asset\": {\"version\": \"1.0\"}}", Map.of())))
             .withMessageContaining("Only glTF 2");
         assertThatExceptionOfType(IOException.class).isThrownBy(() -> GltfDocument.read(input(
-            "{\"asset\": {\"version\": \"2.0\"}, \"extensionsRequired\": [\"KHR_materials_sheen\", \"EXT_meshopt_compression\"]}", Map.of())))
-            .withMessageContaining("does not read yet: [EXT_meshopt_compression]");
+            "{\"asset\": {\"version\": \"2.0\"}, \"extensionsRequired\": [\"KHR_materials_sheen\", "
+                + "\"KHR_draco_mesh_compression\"]}", Map.of())))
+            .withMessageContaining("does not read yet: [KHR_draco_mesh_compression]");
         assertThat(GltfDocument.read(input("{\"asset\": {\"version\": \"2.0\"}, \"extensionsRequired\": []}",
             Map.of())).list("meshes")).isEmpty();
         assertThatIllegalArgumentException().isThrownBy(() -> GltfDocument.read(input("[1]", Map.of())))

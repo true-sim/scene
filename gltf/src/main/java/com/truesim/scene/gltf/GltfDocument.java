@@ -26,10 +26,12 @@ final class GltfDocument {
     private static final String DATA = "data:";
     /** The extensions read, besides every {@code KHR_materials_*}: a file requiring others fails. */
     static final java.util.Set<String> READ = java.util.Set.of("KHR_texture_transform", "KHR_lights_punctual",
-        "KHR_node_visibility", "KHR_mesh_quantization", "KHR_xmp_json_ld");
+        "KHR_node_visibility", "KHR_mesh_quantization", "KHR_xmp_json_ld", Meshopt.KHR, Meshopt.EXT,
+        "EXT_texture_webp");
 
     private final Map<String, Object> json;
     private final List<byte[]> buffers = new ArrayList<>();
+    private final Map<Integer, byte[]> decoded = new java.util.concurrent.ConcurrentHashMap<>(); // meshopt views
 
     @SuppressWarnings("unchecked")
     private GltfDocument(Object json) {
@@ -91,10 +93,13 @@ final class GltfDocument {
             Object uri = buffer.get("uri");
             byte[] data;
             if (uri == null) {
-                if (bin == null) {
+                if (bin != null) {
+                    data = bin;
+                } else if (Boolean.TRUE.equals(Meshopt.compression(buffer).get("fallback"))) {
+                    data = new byte[0]; // only meshopt-compressed views name it: they are decoded, not read from it
+                } else {
                     throw new IOException("A buffer without a URI in a file without a binary chunk");
                 }
-                data = bin;
             } else {
                 data = document.bytes((String) uri, input);
             }
@@ -194,12 +199,22 @@ final class GltfDocument {
     /** The bytes of buffer view {@code index}. */
     ByteBuffer view(int index) {
         Map<String, Object> view = get("bufferViews", index);
-        int buffer = integer(view, "buffer", 0);
+        Map<String, Object> compression = Meshopt.compression(view);
+        if (!compression.isEmpty()) {
+            byte[] decoded = this.decoded.computeIfAbsent(index, i -> Meshopt.decode(compression,
+                bytes(integer(compression, "buffer", 0), integer(compression, "byteOffset", 0),
+                    integer(compression, "byteLength", 0), index)));
+            return ByteBuffer.wrap(decoded).order(ByteOrder.LITTLE_ENDIAN);
+        }
+        return bytes(integer(view, "buffer", 0), integer(view, "byteOffset", 0), integer(view, "byteLength", 0), index);
+    }
+
+    /** {@code length} bytes of buffer {@code buffer} from {@code offset}, for buffer view {@code index}. */
+    private ByteBuffer bytes(int buffer, int offset, int length, int index) {
         if (buffer < 0 || buffer >= buffers.size()) {
             throw new IllegalArgumentException("Buffer view " + index + " reads buffer " + buffer + ", which is not");
         }
-        return ByteBuffer.wrap(buffers.get(buffer), integer(view, "byteOffset", 0), integer(view, "byteLength", 0))
-            .slice().order(ByteOrder.LITTLE_ENDIAN);
+        return ByteBuffer.wrap(buffers.get(buffer), offset, length).slice().order(ByteOrder.LITTLE_ENDIAN);
     }
 
     /** How many components a value of accessor type {@code type} has. */
