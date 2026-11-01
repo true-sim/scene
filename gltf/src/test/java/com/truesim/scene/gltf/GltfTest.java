@@ -284,4 +284,107 @@ class GltfTest {
         float[] normals = Gltf.smoothNormals(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 5, 5}, new int[] {0, 1, 2});
         assertThat(normals).containsExactly(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0);
     }
+    @Test
+    void extensionsBecomeEngineData() throws Exception {
+        Files.write(dir.resolve("ext.bin"), geometry());
+        Files.write(dir.resolve("albedo.png"), png(0xFFFFFFFF));
+        String json = """
+            {"asset": {"version": "2.0"},
+             "extensionsUsed": ["KHR_lights_punctual", "KHR_node_visibility", "KHR_materials_sheen", "EXT_texture_webp"],
+             "extensionsRequired": ["KHR_texture_transform", "KHR_materials_sheen", "KHR_mesh_quantization"],
+             "extensions": {"KHR_lights_punctual": {"lights": [
+               {"type": "spot", "name": "lamp", "color": [1, 0.5, 0], "intensity": 20, "range": 10,
+                "spot": {"innerConeAngle": 0.1, "outerConeAngle": 0.5}},
+               {"type": "directional"}]}},
+             "scenes": [{"nodes": [0]}],
+             "nodes": [{"name": "root", "children": [1, 2], "extensions": {"KHR_node_visibility": {"visible": false}}},
+               {"name": "lamp", "extensions": {"KHR_lights_punctual": {"light": 0}}},
+               {"name": "seen", "extensions": {"KHR_node_visibility": {"visible": true}}}],
+             "buffers": [{"uri": "ext.bin", "byteLength": 256}],
+            """ + VIEWS + """
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 3}]}],
+             "materials": [
+               {"emissiveFactor": [0.5, 0.25, 1],
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0, "texCoord": 1}},
+                "extensions": {
+                  "KHR_materials_emissive_strength": {"emissiveStrength": 4},
+                  "KHR_materials_clearcoat": {"clearcoatFactor": 0.8, "clearcoatRoughnessFactor": 0.2,
+                    "clearcoatTexture": {"index": 0}, "clearcoatRoughnessTexture": {"index": 0},
+                    "clearcoatNormalTexture": {"index": 0, "scale": 0.5}},
+                  "KHR_materials_sheen": {"sheenColorFactor": [1, 0, 0], "sheenRoughnessFactor": 0.3,
+                    "sheenColorTexture": {"index": 0, "extensions": {"KHR_texture_transform":
+                      {"offset": [0.5, 0], "rotation": 1.5, "scale": [2, 2], "texCoord": 1}}},
+                    "sheenRoughnessTexture": {"index": 1}},
+                  "KHR_materials_transmission": {"transmissionFactor": 1, "thin": true, "thick": false, "uv": [1, 2],
+                    "tint": [1, 2, 3, 4], "one": [1], "five": [1, 2, 3, 4, 5], "label": "x", "other": {"a": 1}},
+                  "KHR_materials_unlit": {},
+                  "EXT_other_vendor": {"x": 1}}},
+               {"extensions": {"KHR_materials_pbrSpecularGlossiness": {"diffuseFactor": [0.5, 0.5, 0.5, 1],
+                  "glossinessFactor": 0.75, "diffuseTexture": {"index": 0},
+                  "specularGlossinessTexture": {"index": 0}}}},
+               {"extensions": {"KHR_materials_pbrSpecularGlossiness": {"glossinessFactor": 0.5}}},
+               {"pbrMetallicRoughness": {"roughnessFactor": 0.4},
+                "extensions": {"KHR_materials_pbrSpecularGlossiness": {"glossinessFactor": 0},
+                  "KHR_materials_clearcoat": {}}},
+               {"pbrMetallicRoughness": {"baseColorTexture": {"index": 2}}},
+               {"pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}}],
+             "textures": [{"source": 0}, {"source": 1, "extensions": {"EXT_texture_webp": {"source": 2}}},
+               {"extensions": {"EXT_texture_webp": {"source": 2}}}, {"extensions": {"VENDOR": {}}}],
+             "images": [{"uri": "albedo.png"}, {"uri": "albedo.png"}, {"uri": "albedo.webp"}]}
+            """;
+        Files.writeString(dir.resolve("ext.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://ext.gltf"));
+        assertThat(model.lights()).containsExactly(
+            new ModelData.Light("lamp", ModelData.LightKind.SPOT, 1, 0.5, 0, 20, 10, 0.1, 0.5),
+            new ModelData.Light("", ModelData.LightKind.DIRECTIONAL, 1, 1, 1, 1, 0, 0, Math.PI / 4));
+        assertThat(model.nodes()).extracting(ModelData.Node::visible).containsExactly(false, true, true);
+        assertThat(model.nodes()).extracting(ModelData.Node::light).containsExactly(-1, 0, -1);
+
+        MaterialData rich = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/0"));
+        assertThat(rich.values().floats("emissive")).as("times the strength").containsExactly(2, 1, 4);
+        assertThat(rich.values().i32("baseColorTextureTexCoord", -1)).isEqualTo(1);
+        assertThat(rich.features()).containsExactly("clearcoat", "sheen", "transmission", "unlit");
+        MaterialData.Values coat = rich.feature("clearcoat");
+        assertThat(coat.f32("strength", -1)).isEqualTo(0.8f);
+        assertThat(coat.f32("roughness", -1)).isEqualTo(0.2f);
+        assertThat(coat.f32("normalScale", -1)).isEqualTo(0.5f);
+        assertThat(coat.texture("strengthTexture")).isEqualTo(paths.ref(RenderAssets.TEXTURE,
+            "game://albedo.png#linear"));
+        MaterialData.Values sheen = rich.feature("sheen");
+        assertThat(sheen.floats("sheenColorFactor")).containsExactly(1, 0, 0);
+        assertThat(sheen.texture("sheenColorTexture")).as("a color: sRGB")
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://albedo.png"));
+        assertThat(sheen.floats("sheenColorTextureOffset")).containsExactly(0.5f, 0);
+        assertThat(sheen.f32("sheenColorTextureRotation", -1)).isEqualTo(1.5f);
+        assertThat(sheen.floats("sheenColorTextureScale")).containsExactly(2, 2);
+        assertThat(sheen.i32("sheenColorTextureTexCoord", -1)).isEqualTo(1);
+        assertThat(sheen.texture("sheenRoughnessTexture")).as("the core source over the extension's")
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://albedo.png#linear"));
+        MaterialData.Values transmission = rich.feature("transmission");
+        assertThat(transmission.f32("transmissionFactor", -1)).isEqualTo(1);
+        assertThat(transmission.i32("thin", -1)).isEqualTo(1);
+        assertThat(transmission.i32("thick", -1)).isZero();
+        assertThat(transmission.floats("uv")).containsExactly(1, 2);
+        assertThat(transmission.floats("tint")).containsExactly(1, 2, 3, 4);
+        assertThat(transmission.names()).doesNotContain("one", "five", "label", "other");
+
+        MaterialData specGloss = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/1"));
+        assertThat(specGloss.values().floats("baseColor")).containsExactly(0.5f, 0.5f, 0.5f, 1);
+        assertThat(specGloss.values().f32("roughness", -1)).isEqualTo(0.25f);
+        assertThat(specGloss.values().f32("metallic", -1)).isZero();
+        assertThat(specGloss.values().texture("baseColorTexture")).isNotNull();
+        assertThat(specGloss.feature("specularGlossiness").texture("specularGlossinessTexture"))
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://albedo.png"));
+        MaterialData plainGloss = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/2"));
+        assertThat(plainGloss.values().floats("baseColor")).containsExactly(1, 1, 1, 1);
+        assertThat(plainGloss.values().f32("roughness", -1)).isEqualTo(0.5f);
+        MaterialData both = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/3"));
+        assertThat(both.values().f32("roughness", -1)).as("metallic-roughness given: kept").isEqualTo(0.4f);
+        assertThat(both.feature("clearcoat").has("normalScale")).isFalse();
+        MaterialData webp = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/4"));
+        assertThat(webp.values().texture("baseColorTexture")).as("an extension's image")
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://albedo.webp"));
+        MaterialData vendor = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/5"));
+        assertThat(vendor.values().has("baseColorTexture")).as("a vendor's image, not required").isFalse();
+    }
 }

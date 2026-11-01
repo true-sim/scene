@@ -38,8 +38,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * }</pre>
  *
  * <p>Meshes are built into cluster hierarchies; a mesh without normals gets smooth ones. Triangles, strips and fans are
- * read, sparse accessors too; points and lines, skins and animations are not yet. A file requiring an extension
- * ({@code extensionsRequired}) this importer does not read yet fails, as glTF asks. A file is read once while its parts load
+ * read, sparse accessors too; points and lines, skins and animations are not yet. Extensions: every
+ * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
+ * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
+ * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
+ * {@code KHR_mesh_quantization}. A file requiring another extension fails, as glTF asks. A file is read once while its parts load
  * close together (a soft cache). Imports run in the background and are thread-safe.
  */
 @AllowAllocation("importing when assets load")
@@ -129,7 +132,18 @@ public final class Gltf {
         for (int root : roots) {
             add(document, file, root, -1, out, 0);
         }
-        return new ModelData(out);
+        List<ModelData.Light> lights = new ArrayList<>();
+        for (Map<String, Object> light : GltfDocument.list(extension(document.json(), "KHR_lights_punctual"),
+            "lights")) {
+            double[] color = GltfDocument.numbers(light, "color", 1, 1, 1);
+            Map<String, Object> spot = GltfDocument.object(light, "spot");
+            lights.add(new ModelData.Light(String.valueOf(light.getOrDefault("name", "")),
+                ModelData.LightKind.valueOf(String.valueOf(light.get("type")).toUpperCase(java.util.Locale.ROOT)),
+                color[0], color[1], color[2], GltfDocument.number(light, "intensity", 1),
+                GltfDocument.number(light, "range", 0), GltfDocument.number(spot, "innerConeAngle", 0),
+                GltfDocument.number(spot, "outerConeAngle", Math.PI / 4)));
+        }
+        return new ModelData(out, lights);
     }
 
     private void add(GltfDocument document, AssetPath file, int index, int parent, List<ModelData.Node> out,
@@ -161,11 +175,18 @@ public final class Gltf {
         }
         String name = String.valueOf(node.getOrDefault("name", ""));
         int at = out.size();
+        boolean visible = !Boolean.FALSE.equals(extension(node, "KHR_node_visibility").get("visible"));
+        int light = GltfDocument.integer(extension(node, "KHR_lights_punctual"), "light", -1);
         out.add(new ModelData.Node(name, parent, t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], mesh,
-            materials));
+            materials, visible, light));
         for (double child : GltfDocument.numbers(node, "children")) {
             add(document, file, (int) child, at, out, depth + 1);
         }
+    }
+
+    /** {@code owner}'s extension {@code name}'s object; empty if it has none. */
+    static Map<String, Object> extension(Map<String, Object> owner, String name) {
+        return GltfDocument.object(GltfDocument.object(owner, "extensions"), name);
     }
 
     /** A column-major 4x4 matrix as translation, rotation (a unit quaternion) and scale; no shear. */
@@ -400,8 +421,24 @@ public final class Gltf {
         AssetPath file = path(input).file();
         Map<String, Object> material = document.get("materials", index(path(input), "material"));
         Map<String, Object> pbr = GltfDocument.object(material, "pbrMetallicRoughness");
+        Map<String, Object> specularGlossiness = extension(material, SPECULAR_GLOSSINESS);
+        if (!specularGlossiness.isEmpty() && pbr.isEmpty()) {
+            // Spec-gloss: its diffuse as the base color, rough where not glossy, not metallic; kept whole as a feature
+            pbr = Map.of("baseColorFactor", specularGlossiness.getOrDefault("diffuseFactor", List.of(1.0, 1.0, 1.0,
+                1.0)), "metallicFactor", 0.0, "roughnessFactor", 1 - GltfDocument.number(specularGlossiness,
+                "glossinessFactor", 1));
+            if (specularGlossiness.containsKey("diffuseTexture")) {
+                pbr = new java.util.HashMap<>(pbr);
+                pbr.put("baseColorTexture", specularGlossiness.get("diffuseTexture"));
+            }
+        }
         double[] base = GltfDocument.numbers(pbr, "baseColorFactor", 1, 1, 1, 1);
         double[] emissive = GltfDocument.numbers(material, "emissiveFactor", 0, 0, 0);
+        double emissiveStrength = GltfDocument.number(extension(material, "KHR_materials_emissive_strength"),
+            "emissiveStrength", 1);
+        for (int i = 0; i < 3; i++) {
+            emissive[i] *= emissiveStrength;
+        }
         MaterialData.Builder builder = MaterialData.builder(MaterialData.METALLIC_ROUGHNESS)
             .set("baseColor", (float) base[0], (float) base[1], (float) base[2], (float) base[3])
             .set("metallic", (float) GltfDocument.number(pbr, "metallicFactor", 1))
@@ -421,6 +458,20 @@ public final class Gltf {
             boolean packed = GltfDocument.integer(occlusion, "index", -2) == metallicRoughness;
             builder.set("occlusion", packed ? (float) GltfDocument.number(occlusion, "strength", 1) : 0);
         }
+        Map<String, Object> extensions = GltfDocument.object(material, "extensions");
+        for (Map.Entry<String, Object> entry : extensions.entrySet()) {
+            String name = entry.getKey();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> values = (Map<String, Object>) entry.getValue();
+            if (name.equals("KHR_materials_clearcoat")) {
+                builder.feature("clearcoat", coat -> clearcoat(document, file, values, coat));
+            } else if (name.equals(SPECULAR_GLOSSINESS)) {
+                builder.feature("specularGlossiness", feature -> feature(document, file, values, feature));
+            } else if (name.startsWith("KHR_materials_") && !name.equals("KHR_materials_emissive_strength")) {
+                builder.feature(name.substring("KHR_materials_".length()),
+                    feature -> feature(document, file, values, feature));
+            }
+        }
         MaterialData.AlphaMode alpha = MaterialData.AlphaMode.valueOf(String.valueOf(material.getOrDefault(
             "alphaMode", "OPAQUE")));
         return builder.alpha(alpha, (float) GltfDocument.number(material, "alphaCutoff", 0.5))
@@ -428,20 +479,83 @@ public final class Gltf {
             .build();
     }
 
+    /** The engine's clearcoat feature from glTF's {@code KHR_materials_clearcoat} {@code values}. */
+    private void clearcoat(GltfDocument document, AssetPath file, Map<String, Object> values,
+        MaterialData.FeatureBuilder coat) {
+        coat.set("strength", (float) GltfDocument.number(values, "clearcoatFactor", 0))
+            .set("roughness", (float) GltfDocument.number(values, "clearcoatRoughnessFactor", 0));
+        texture(document, file, values, "clearcoatTexture", true, coat, "strengthTexture");
+        texture(document, file, values, "clearcoatRoughnessTexture", true, coat, "roughnessTexture");
+        if (texture(document, file, values, "clearcoatNormalTexture", true, coat, "normalTexture")) {
+            coat.set("normalScale", (float) GltfDocument.number(GltfDocument.object(values, "clearcoatNormalTexture"),
+                "scale", 1));
+        }
+    }
+
     /**
-     * Sets {@code field} to the texture {@code owner}'s texture info {@code name} names, if it has one; whether it did.
+     * A material extension's {@code values} as a feature's, by glTF's names: numbers, vectors, booleans (1 or 0), and
+     * texture infos as textures (colors sRGB, the rest linear), with their transforms.
      */
-    private boolean texture(GltfDocument document, AssetPath file, Map<String, Object> owner, String name,
-        boolean linear, MaterialData.Builder builder, String field) {
+    @SuppressWarnings("unchecked")
+    private void feature(GltfDocument document, AssetPath file, Map<String, Object> values,
+        MaterialData.FeatureBuilder feature) {
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            String name = entry.getKey();
+            Object value = entry.getValue();
+            if (value instanceof Double number) {
+                feature.set(name, number.floatValue());
+            } else if (value instanceof Boolean flag) {
+                feature.set(name, flag ? 1 : 0);
+            } else if (value instanceof List<?> list && list.size() >= 2 && list.size() <= 4) {
+                float[] v = new float[list.size()];
+                for (int i = 0; i < v.length; i++) {
+                    v[i] = ((Double) list.get(i)).floatValue();
+                }
+                feature.set(name, v[0], v[1], java.util.Arrays.copyOfRange(v, 2, v.length));
+            } else if (value instanceof Map<?, ?> info && info.containsKey("index")) {
+                texture(document, file, values, name, !SRGB_TEXTURES.contains(name), feature, name);
+            }
+        }
+    }
+
+    /** The feature textures holding colors: read as sRGB; every other is data. */
+    private static final java.util.Set<String> SRGB_TEXTURES = java.util.Set.of("sheenColorTexture",
+        "specularColorTexture", "diffuseTransmissionColorTexture", "diffuseTexture", "specularGlossinessTexture");
+    private static final String SPECULAR_GLOSSINESS = "KHR_materials_pbrSpecularGlossiness";
+
+    /**
+     * Sets {@code field} to the texture {@code owner}'s texture info {@code name} names, if it has one, with its
+     * texture coordinate set ({@code fieldTexCoord}) where not 0 and its {@code KHR_texture_transform} where given
+     * ({@code fieldOffset}, {@code fieldRotation} in radians, {@code fieldScale}); whether it did.
+     */
+    private <B extends MaterialData.ValuesBuilder<B>> boolean texture(GltfDocument document, AssetPath file,
+        Map<String, Object> owner, String name, boolean linear, B builder, String field) {
         if (!owner.containsKey(name)) {
             return false;
         }
         Map<String, Object> info = GltfDocument.object(owner, name);
         Map<String, Object> texture = document.get("textures", GltfDocument.integer(info, "index", 0));
-        if (!texture.containsKey("source")) {
-            return false; // an extension's image (WebP, KTX2) only: not read
+        int image = GltfDocument.integer(texture, "source", -1);
+        for (String source : List.of("EXT_texture_webp", "KHR_texture_basisu")) {
+            if (image < 0) {
+                image = GltfDocument.integer(extension(texture, source), "source", -1);
+            }
         }
-        int image = GltfDocument.integer(texture, "source", 0);
+        if (image < 0) {
+            return false; // only a vendor extension's image, not required by the file: glTF lets it be left out
+        }
+        Map<String, Object> transform = extension(info, "KHR_texture_transform");
+        int texCoord = GltfDocument.integer(transform, "texCoord", GltfDocument.integer(info, "texCoord", 0));
+        if (texCoord != 0) {
+            builder.set(field + "TexCoord", texCoord);
+        }
+        if (!transform.isEmpty()) {
+            double[] offset = GltfDocument.numbers(transform, "offset", 0, 0);
+            double[] scale = GltfDocument.numbers(transform, "scale", 1, 1);
+            builder.set(field + "Offset", (float) offset[0], (float) offset[1])
+                .set(field + "Rotation", (float) GltfDocument.number(transform, "rotation", 0))
+                .set(field + "Scale", (float) scale[0], (float) scale[1]);
+        }
         Object uri = document.get("images", image).get("uri");
         AssetPath path = uri != null && !((String) uri).startsWith("data:")
             ? file.resolve(GltfDocument.decode((String) uri) + (linear ? "#" + ImageImporter.LINEAR : ""))
