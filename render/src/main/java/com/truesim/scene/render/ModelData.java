@@ -145,15 +145,26 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
      * @param light the index of its light in {@link #lights()}, or -1
      * @param lines its points and lines, beside its mesh; drawn once the renderer draws them
      * @param skin the index in {@link #skins()} of the skin its mesh is deformed by, or -1
+     * @param morphWeights its mesh's morph target weights at rest ({@link MeshData#morphTargetCount()}); empty for none
      */
     public record Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
         double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials,
-        boolean visible, int light, List<AssetRef<LineData>> lines, int skin) {
+        boolean visible, int light, List<AssetRef<LineData>> lines, int skin, List<Double> morphWeights) {
 
         public Node {
             Objects.requireNonNull(name, "name");
             materials = List.copyOf(materials);
             lines = List.copyOf(lines);
+            morphWeights = List.copyOf(morphWeights);
+        }
+
+        /** A node of no morph weights. */
+        public Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
+            double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh,
+            List<AssetRef<MaterialData>> materials, boolean visible, int light, List<AssetRef<LineData>> lines,
+            int skin) {
+            this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines, skin,
+                List.of());
         }
 
         /** A node of no skin. */
@@ -180,7 +191,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
         /** This node, of no skin: its mesh drawn as it is. */
         public Node withoutSkin() {
             return new Node(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines,
-                -1);
+                -1, morphWeights);
         }
 
         /** A node at the origin, unrotated and unscaled. */

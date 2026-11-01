@@ -41,8 +41,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Meshes are built into cluster hierarchies; a mesh without normals gets smooth ones. Triangles, strips and fans are
  * read, sparse accessors too; points and lines are {@code #lines/M/P} assets of their own ({@link LineData}), named by
  * the model's nodes beside their meshes. Skins are read (their joints the model's nodes, a skinned mesh's vertices
- * naming the four joints weighing most, of up to eight, through a palette of the joints it uses); animations are not
- * read yet. Extensions: every
+ * naming the four joints weighing most, of up to eight, through a palette of the joints it uses), and morph targets
+ * (named by the mesh's {@code extras.targetNames}, nodes taking their own weights, else their mesh's); animations are
+ * not read yet. Extensions: every
  * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
  * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
  * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
@@ -227,9 +228,17 @@ public final class Gltf {
         boolean visible = !Boolean.FALSE.equals(extension(node, "KHR_node_visibility").get("visible"));
         int light = GltfDocument.integer(extension(node, "KHR_lights_punctual"), "light", -1);
         int skin = mesh != null ? GltfDocument.integer(node, "skin", -1) : -1;
+        List<Double> weights = new ArrayList<>();
+        if (mesh != null) {
+            double[] w = node.containsKey("weights") ? GltfDocument.numbers(node, "weights")
+                : GltfDocument.numbers(document.get("meshes", GltfDocument.integer(node, "mesh", 0)), "weights");
+            for (double weight : w) {
+                weights.add(weight);
+            }
+        }
         modelIndex[index] = at;
         out.add(new ModelData.Node(name, parent, t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], mesh,
-            materials, visible, light, lines, skin));
+            materials, visible, light, lines, skin, weights));
         for (double child : GltfDocument.numbers(node, "children")) {
             add(document, file, (int) child, at, out, depth + 1, modelIndex);
         }
@@ -336,6 +345,21 @@ public final class Gltf {
         float[] positions = new float[3 * vertices];
         float[][] values = new float[format.size()][];
         int[] joints = skinned ? new int[4 * vertices] : null;
+        // Morph targets: as many in every primitive, glTF says; a primitive's deltas at its vertices.
+        int targets = GltfDocument.list(primitives.get(0), "targets").size();
+        for (Map<String, Object> primitive : primitives) {
+            if (GltfDocument.list(primitive, "targets").size() != targets) {
+                throw new IllegalArgumentException("Primitives of one mesh with different numbers of morph targets: "
+                    + path(input));
+            }
+        }
+        float[][][] morphs = new float[targets][3][];
+        for (int t = 0; t < targets; t++) {
+            for (int kind = 0; kind < 3; kind++) {
+                morphs[t][kind] = new float[3 * vertices];
+            }
+        }
+        boolean[][] given = new boolean[targets][3];
         float[] weights = skinned ? new float[4 * vertices] : null;
         for (int a = 0; a < values.length; a++) {
             values[a] = new float[width(format.get(a)) * vertices];
@@ -359,6 +383,17 @@ public final class Gltf {
             if (skinned) {
                 influences(document, names, count, base, joints, weights);
             }
+            List<Map<String, Object>> primitiveTargets = GltfDocument.list(primitive, "targets");
+            for (int t = 0; t < targets; t++) {
+                String[] kinds = {"POSITION", "NORMAL", "TANGENT"};
+                for (int kind = 0; kind < 3; kind++) {
+                    if (primitiveTargets.get(t).containsKey(kinds[kind])) {
+                        float[] deltas = document.floats(GltfDocument.integer(primitiveTargets.get(t), kinds[kind], 0));
+                        System.arraycopy(deltas, 0, morphs[t][kind], 3 * base, 3 * count);
+                        given[t][kind] = true;
+                    }
+                }
+            }
             int[] offset = new int[triangles.length];
             for (int i = 0; i < offset.length; i++) {
                 offset[i] = triangles[i] + base;
@@ -379,6 +414,12 @@ public final class Gltf {
         if (skinned) {
             builder.joints(palette(joints, weights, path(input))).attribute(VertexAttribute.WEIGHTS, weights)
                 .jointPalette(usedJoints(joints, weights));
+        }
+        Object named = GltfDocument.object(document.get("meshes", meshIndex), "extras").get("targetNames");
+        List<?> targetNames = named instanceof List<?> list ? list : List.of();
+        for (int t = 0; t < targets; t++) {
+            builder.morphTarget(t < targetNames.size() ? String.valueOf(targetNames.get(t)) : "", morphs[t][0],
+                given[t][1] ? morphs[t][1] : null, given[t][2] ? morphs[t][2] : null);
         }
         for (int[] submesh : submeshes) {
             builder.submesh(submesh);

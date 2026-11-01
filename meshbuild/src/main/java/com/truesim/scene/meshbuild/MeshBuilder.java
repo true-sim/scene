@@ -69,6 +69,8 @@ public final class MeshBuilder {
     private float[] positions;
     private final float[][] attributes = new float[VertexAttribute.values().length][];
     private int[] jointPalette;
+    private final List<String> morphNames = new ArrayList<>();
+    private final List<float[][]> morphDeltas = new ArrayList<>(); // per target: positions, normals, tangents
     private int[] joints;
     private final List<int[]> submeshes = new ArrayList<>();
     private int maxVertices = 64;
@@ -113,6 +115,18 @@ public final class MeshBuilder {
     /** Skinning joints: four indices from 0 to 255 per vertex. */
     public MeshBuilder joints(int[] indices) {
         this.joints = indices.clone();
+        return this;
+    }
+
+    /**
+     * Adds a morph target ({@link MeshData.Builder#morphTarget}): position deltas per vertex, and normal and tangent
+     * deltas where given (else null); they follow the vertices as the builder reorders and drops them.
+     */
+    public MeshBuilder morphTarget(String name, float[] positions, float[] normals, float[] tangents) {
+        Objects.requireNonNull(name, "name");
+        morphNames.add(name);
+        morphDeltas.add(new float[][] {positions.clone(), normals == null ? null : normals.clone(),
+            tangents == null ? null : tangents.clone()});
         return this;
     }
 
@@ -346,6 +360,12 @@ public final class MeshBuilder {
         }
         if (jointPalette != null) {
             builder.jointPalette(jointPalette);
+        }
+        for (int t = 0; t < morphNames.size(); t++) {
+            float[][] deltas = morphDeltas.get(t);
+            builder.morphTarget(morphNames.get(t), remapped(deltas[0], 3, remap, used),
+                deltas[1] == null ? null : remapped(deltas[1], 3, remap, used),
+                deltas[2] == null ? null : remapped(deltas[2], 3, remap, used));
         }
         for (int level = finestFirst.size() - 1; level >= 0; level--) {
             for (Cluster cluster : finestFirst.get(level)) {
