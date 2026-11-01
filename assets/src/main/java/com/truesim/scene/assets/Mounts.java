@@ -58,8 +58,8 @@ public final class Mounts {
      * for {@code from}'s: after a rename, so saved references keep working. Throws if it would make a cycle.
      */
     public Mounts redirect(String from, String to) {
-        AssetPath source = AssetPath.parse(from);
-        AssetPath target = AssetPath.parse(to);
+        AssetPath source = AssetPath.parse(from).file();
+        AssetPath target = AssetPath.parse(to).file();
         if (redirected(target).equals(source)) {
             throw new IllegalArgumentException("A redirect cycle: " + source + " -> " + target);
         }
@@ -67,13 +67,17 @@ public final class Mounts {
         return this;
     }
 
-    /** Where {@code path} leads after every redirect: itself if none applies. */
+    /**
+     * Where {@code path} leads after every redirect: itself if none applies. Redirects are of files: a fragment stays
+     * with the file it names an asset in.
+     */
     public AssetPath redirected(AssetPath path) {
-        AssetPath at = path;
+        AssetPath file = path.file();
+        AssetPath at = file;
         for (AssetPath next = redirects.get(at); next != null; next = redirects.get(at)) {
             at = next;
         }
-        return at;
+        return at == file ? path : at.fragment(path.fragment());
     }
 
     /**
