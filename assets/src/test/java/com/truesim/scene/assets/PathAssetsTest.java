@@ -97,6 +97,11 @@ class PathAssetsTest {
             assets.importers().add(MODEL, "gltf", GLTF);
             AssetRef<Model> old = assets.ref(MODEL, "game://models/rock.gltf");
             assertThat(load(tasks, cache, old).side()).as("side resources next to where it is now").isEqualTo("moved");
+            // A fragment stays with its file through redirects.
+            assertThat(assets.mounts().redirected(AssetPath.parse("game://models/rock.gltf#mesh/0")))
+                .hasToString("game://models/rocks/granite.gltf#mesh/0");
+            AssetPath unmoved = AssetPath.parse("game://models/tree.gltf#mesh/0");
+            assertThat(assets.mounts().redirected(unmoved)).isSameAs(unmoved);
             AssetId now = assets.canonical(old.id());
             assertThat(now).isEqualTo(AssetPath.parse("game://models/rocks/granite.gltf").id());
             assertThat(assets.pathOf(now)).hasToString("game://models/rocks/granite.gltf");

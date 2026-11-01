@@ -352,6 +352,10 @@ assets.acquire(rock);
   (`AssetInput.path()` tells the importer where it is).
 - **Ids from paths:** a name-based UUID of the path, the same on every run; stable while the path is. `canonical(id)`
   maps a saved id through redirects to the new path's.
+- **Fragments name assets in a file:** `game://models/car.gltf#mesh/0` is one mesh of the file, its own asset and id;
+  `rock.png#linear` reads the image as data rather than colors. Redirects move the file, fragments stay with it.
+- **Models and images:** `RenderAssets.MODEL` is a `ModelData`, a node tree naming meshes and materials, placed with
+  `spawn(scene, renderables, parent)`; `ImageImporter` reads PNG and JPEG into textures through the JDK.
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 

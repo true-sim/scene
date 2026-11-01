@@ -4,8 +4,9 @@ import com.truesim.scene.assets.AssetType;
 import com.truesim.scene.assets.mesh.MeshData;
 
 /**
- * The asset types render data refers to: {@link Renderables} name meshes and materials, materials name textures. Use
- * these, so references from any loader or tool are equal, and register loaders for them with the asset cache.
+ * The asset types render data refers to: {@link Renderables} name meshes and materials, materials name textures,
+ * models name meshes and materials. Use these, so references from any loader or tool are equal, and register loaders
+ * for them with the asset cache.
  *
  * <pre>{@code
  * assets.register(RenderAssets.MESH, gltfMeshes);
@@ -18,6 +19,8 @@ public final class RenderAssets {
     public static final AssetType<MaterialData> MATERIAL = AssetType.of("material", MaterialData.class,
         MaterialData::bytes);
     public static final AssetType<TextureData> TEXTURE = AssetType.of("texture", TextureData.class, TextureData::bytes);
+    /** Models: node trees naming meshes and materials, as glTF scenes and prefabs are. */
+    public static final AssetType<ModelData> MODEL = AssetType.of("model", ModelData.class, ModelData::bytes);
 
     private RenderAssets() {
     }

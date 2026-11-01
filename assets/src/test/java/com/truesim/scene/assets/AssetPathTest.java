@@ -50,4 +50,24 @@ class AssetPathTest {
         assertThat(id).hasToString("19e5b8db6ee637d0a3f73afa97e04125");
         assertThat(AssetPath.parse("mod://models/rock.gltf").id()).isNotEqualTo(id);
     }
+
+    @Test
+    void fragmentsNameAssetsInAFile() {
+        AssetPath body = AssetPath.parse("game://models/./car.gltf#mesh/0");
+        assertThat(body.path()).isEqualTo("models/car.gltf");
+        assertThat(body.fragment()).isEqualTo("mesh/0");
+        assertThat(body).hasToString("game://models/car.gltf#mesh/0");
+        assertThat(body.file()).isEqualTo(AssetPath.parse("game://models/car.gltf"));
+        AssetPath file = body.file();
+        assertThat(file.file()).as("no fragment: itself").isSameAs(file);
+        assertThat(body.file().fragment("mesh/0")).isEqualTo(body);
+        assertThat(body.id()).as("another asset than the file").isNotEqualTo(body.file().id());
+        assertThat(body.extension()).isEqualTo("gltf");
+        assertThat(body.resolve("textures/paint.png#linear")).hasToString("game://models/textures/paint.png#linear");
+        assertThat(body.resolve("/paint.png")).hasToString("game://paint.png");
+        assertThat(body.resolve("/paint.png#linear").fragment()).isEqualTo("linear");
+        assertThat(new AssetPath("game", "car.gltf").fragment()).isEmpty();
+        assertThatIllegalArgumentException().isThrownBy(() -> AssetPath.parse("game://car.gltf#a#b"))
+            .withMessageContaining("holds no #");
+    }
 }
