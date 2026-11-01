@@ -25,9 +25,10 @@ example, takes core, world and collision without any render data.
 | `scene-collision` | each cell's colliders and terrain heights, on common-collision shapes                    | milestone 3 |
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
-| `scene-render`    | renderables on nodes, materials and textures; next: cameras, lights, environment          | milestone 5 |
+| `scene-render`    | renderables on nodes, materials, textures and models; a PNG/JPEG importer                 | milestone 5 |
+| `scene-gltf`      | glTF 2.0 and GLB import: models, meshes, materials, embedded images                        | milestone 5 |
 
-Importers (glTF and others), a serialization format and networking come later, in their own repositories.
+A serialization format and networking come later, in their own repositories.
 
 ## Design
 
@@ -356,6 +357,11 @@ assets.acquire(rock);
   `rock.png#linear` reads the image as data rather than colors. Redirects move the file, fragments stay with it.
 - **Models and images:** `RenderAssets.MODEL` is a `ModelData`, a node tree naming meshes and materials, placed with
   `spawn(scene, renderables, parent)`; `ImageImporter` reads PNG and JPEG into textures through the JDK.
+- **glTF** (`scene-gltf`): `new Gltf(paths).register()` imports `.gltf` and `.glb` one part per asset: the file is
+  its default scene as a model, `#mesh/N` a mesh (a submesh per primitive, built into a cluster hierarchy; smooth
+  normals where missing), `#material/N` a metallic-roughness material, `#image/N` an embedded image. External images
+  are textures at their own paths (`#linear` for data textures). Triangles, strips and fans; no skins, animations,
+  sparse accessors or image extensions yet.
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
