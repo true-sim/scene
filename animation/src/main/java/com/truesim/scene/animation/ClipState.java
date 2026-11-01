@@ -11,7 +11,6 @@ package com.truesim.scene.animation;
  */
 public final class ClipState {
 
-    private final double[] blendWeight = new double[1];
     private final Animator animator;
     Motion motion;
     double phase;          // 0 to 1 through the motion
@@ -25,8 +24,7 @@ public final class ClipState {
     double fadeOut;        // played once: seconds before its end to fade out over; -1 none
     boolean fresh;         // not advanced yet: events at its start fire
     long started;          // when it started, for the layer's newest
-    double before;         // its phase before the last update, and whether it passed its end (its start, backwards)
-    boolean wrapped;
+    double before;         // its phase before the last update, and whether it played backwards
     boolean backwards;
     private SyncGroup group;
     private boolean lead;
@@ -50,9 +48,8 @@ public final class ClipState {
         this.fresh = true;
         this.started = started;
         this.before = 0;
-        this.wrapped = false;
         this.backwards = false;
-        this.group = motion instanceof Clip clip ? clip.group() : ((BlendSpace1) motion).group();
+        this.group = motion.group();
         this.lead = false;
         this.leader = null;
     }
@@ -85,17 +82,7 @@ public final class ClipState {
 
     /** Seconds it lasts at the animator's parameters (a blend space's depend on where its parameter is). */
     public double duration() {
-        if (motion instanceof Clip clip) {
-            return clip.duration();
-        }
-        BlendSpace1 space = (BlendSpace1) motion;
-        int first = space.blend(animator.parameter(space), blendWeight);
-        double a = blendWeight[0];
-        double d = a * space.clip(first).duration();
-        if (a < 1) {
-            d += (1 - a) * space.clip(first + 1).duration();
-        }
-        return d;
+        return motion.duration(animator);
     }
 
     /** Seconds into it, from 0 to its duration. */
@@ -203,7 +190,6 @@ public final class ClipState {
      */
     double advance(double seconds, boolean follow) {
         before = phase;
-        wrapped = false; // until it moves
         if (fade != fadeTarget) {
             double step = fadeRate * seconds;
             fade = fade < fadeTarget ? Math.min(fadeTarget, fade + step) : Math.max(fadeTarget, fade - step);
@@ -219,7 +205,6 @@ public final class ClipState {
     /** Notes how its phase moved from {@link #before}, and fades it out near its end if it plays once. */
     void moved(boolean back) {
         backwards = back;
-        wrapped = back ? phase > before : phase < before;
         double duration = duration();
         if (fadeOut >= 0 && fadeTarget != 0
             && (speed >= 0 ? 1 - phase : phase) * duration <= fadeOut * Math.abs(speed)) { // instant: at once

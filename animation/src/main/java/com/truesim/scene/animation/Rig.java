@@ -38,6 +38,7 @@ public final class Rig {
     private int rootJoint = -1;
     private final List<TwoBoneIk> iks = new ArrayList<>();
     private final List<LookAt> looks = new ArrayList<>();
+    private final List<FabrikChain> chains = new ArrayList<>();
     private final List<PoseModifier> modifiers = new ArrayList<>();
     private RootMotion rootMotion;
     // The layout of an animator's values: per joint whether a clip moves it, its morph weights' offset and count;
@@ -104,6 +105,14 @@ public final class Rig {
 
     TwoBoneIk ik(int i) {
         return iks.get(i);
+    }
+
+    int chainCount() {
+        return chains.size();
+    }
+
+    FabrikChain chain(int i) {
+        return chains.get(i);
     }
 
     int lookCount() {
@@ -443,6 +452,32 @@ public final class Rig {
             TwoBoneIk ik = new TwoBoneIk(rig, rig.iks.size(), u, m, e);
             rig.iks.add(ik);
             return ik;
+        }
+
+        /**
+         * A chain from {@code root} down to {@code tip} (every joint between included), solved by FABRIK to reach a
+         * target each animator gives ({@link Animator#fabrik}).
+         */
+        @AllowAllocation("setting up a rig")
+        public FabrikChain fabrik(Joint root, Joint tip) {
+            rig.checkSettingUp();
+            int r = rig.jointIndex(root);
+            int t = rig.jointIndex(tip);
+            if (!rig.isAbove(r, t)) {
+                throw new IllegalArgumentException(root + " is not above " + tip);
+            }
+            int length = 1;
+            for (int j = t; j != r; j = rig.skeleton.parent(j)) {
+                length++;
+            }
+            int[] joints = new int[length];
+            int i = length - 1;
+            for (int j = t; i >= 0; j = rig.skeleton.parent(j)) {
+                joints[i--] = j;
+            }
+            FabrikChain chain = new FabrikChain(rig, rig.chains.size(), joints);
+            rig.chains.add(chain);
+            return chain;
         }
 
         /**

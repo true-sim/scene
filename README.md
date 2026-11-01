@@ -416,7 +416,14 @@ assets.acquire(rock);
   look-ats shared down a chain within a limit (`r.lookAt(head, 0, 0, 1).chain(neck, 0.4).limit(1.2)`), and pose
   modifiers (`r.modifier(new FootPlacement(leftLeg, rightLeg, pelvis, terrain::height))`, or the game's own on a
   `Pose`); targets in world coordinates. `a.release(joint)` leaves a joint to the game (physics, a held prop).
-  FABRIK chains follow ([docs/animation.md](docs/animation.md)).
+  FABRIK chains of any length with cone limits per joint (`r.fabrik(tailRoot, tailTip).limit(joint, 0.3)`, then
+  `a.fabrik(tail).target(x, y, z).weight(1)`) solve after two-bone chains; modifiers read and set world rotations and
+  local transforms on the `Pose` too.
+
+  `Motion` is open: a game's own motion (a 2D blend space, motion matching, a procedural source) says how long it lasts
+  and which of its rig's clips it plays at which times and weights for a phase (`contents`); the animator does the
+  sampling, blending, events, root motion and sync from that, as it does for clips and blend spaces
+  ([docs/animation.md](docs/animation.md)).
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
@@ -517,7 +524,7 @@ dependencies {
     implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
-    implementation("com.truesim.scene:scene-animation:0.40.0") // clips, rigs and animators (from 0.35.0)
+    implementation("com.truesim.scene:scene-animation:0.41.0") // clips, rigs and animators (from 0.35.0)
 }
 ```
 
