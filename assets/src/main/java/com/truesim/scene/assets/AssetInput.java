@@ -15,6 +15,14 @@ public interface AssetInput {
     /** The part to load: an LOD level or mip range of an asset that streams in parts; 0 for the whole or the first. */
     int part();
 
+    /**
+     * Where the asset is, for a path-addressed one ({@link PathAssets}): an importer reads its extension or names side
+     * resources from it. {@code null} for assets addressed by id alone.
+     */
+    default AssetPath path() {
+        return null;
+    }
+
     /** Opens the asset's main resource; the caller closes it. */
     default InputStream open() throws IOException {
         return open(AssetSource.MAIN);

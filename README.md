@@ -294,8 +294,8 @@ int material = ground.materialAt(x, z);                                   // the
 
 ### Assets: references, sources and the cache
 
-Nodes, cells and other assets point at assets with typed references, by stable id (assigned at import, kept when an
-asset is renamed or moved) or by procedural recipe. One `AssetCache` per process owns the loaded data, so every asset
+Nodes, cells and other assets point at assets with typed references, by id (derived from the asset's path, or
+assigned by whatever made it) or by procedural recipe. One `AssetCache` per process owns the loaded data, so every asset
 loads once however many use it:
 
 ```java
@@ -332,6 +332,28 @@ assets.release(barrier);                         // in CellLoader.detach
 - **At the frame boundary:** loads finish only there, those done by the same boundary in the order they started.
   Failed assets stay failed while held and load again when acquired after their last release.
 - Identical content under two ids is caught at import time, by content hashes, not at runtime.
+
+**By path.** `PathAssets` addresses assets as `mount://folder/file.ext` on top of a cache: mounts say where files are,
+importers turn formats into asset data by extension, and the id is derived from the normalised path, so references
+are ordinary `AssetRef`s:
+
+```java
+PathAssets paths = new PathAssets(assets);                       // becomes the cache's source
+paths.mounts().add("game", PathSource.folder(gameDir))
+    .addFirst("game", PathSource.folder(modDir))                 // the mod's files win, path by path
+    .redirect("game://models/rock.gltf", "game://models/rocks/granite.gltf"); // renamed: old references still load
+paths.importers().add(MODEL, "gltf", GLTF).add(MODEL, "glb", GLTF);
+AssetRef<Model> rock = paths.ref(MODEL, "game://models/rock.gltf");
+assets.acquire(rock);
+```
+
+- **Normalised, case-sensitive:** `\` becomes `/`, empty and `.` segments go, `..` never climbs above the mount; the
+  path as written is the identity on every file system. Side resources a format names resolve from the asset's folder
+  (`AssetInput.path()` tells the importer where it is).
+- **Ids from paths:** a name-based UUID of the path, the same on every run; stable while the path is. `canonical(id)`
+  maps a saved id through redirects to the new path's.
+- **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
+  registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
 ### Meshes: meshlets for a GPU-driven renderer
 
