@@ -35,6 +35,8 @@ public final class Rig {
     private final List<Layer> layers = new ArrayList<>();
     private final List<AnimationCurve> curves = new ArrayList<>();
     private int blendSpaces;
+    private int rootJoint = -1;
+    private RootMotion rootMotion;
     // The layout of an animator's values: per joint whether a clip moves it, its morph weights' offset and count;
     // then the curves.
     private boolean[] animated;
@@ -81,6 +83,16 @@ public final class Rig {
 
     Layer layer(int i) {
         return layers.get(i);
+    }
+
+    /** The joint whose motion is taken out of the pose, or -1. */
+    int rootJoint() {
+        return rootJoint;
+    }
+
+    /** What of the root joint's motion is taken, or null. */
+    public RootMotion rootMotion() {
+        return rootMotion;
     }
 
     int blendSpaceCount() {
@@ -342,12 +354,33 @@ public final class Rig {
             return layer;
         }
 
+        /**
+         * Takes {@code motion}'s part of {@code root}'s motion out of the pose: the clips play in place on those axes,
+         * and each update's move is the animator's {@link Animator#rootDelta}.
+         */
+        public Builder rootMotion(Joint root, RootMotion motion) {
+            rig.checkSettingUp();
+            Objects.requireNonNull(motion, "motion");
+            int index = rig.skeleton.find(root.name());
+            if (index != root.index()) {
+                throw new IllegalArgumentException("Not a joint of the rig: " + root);
+            }
+            rig.rootJoint = index;
+            rig.rootMotion = motion;
+            return this;
+        }
+
         /** The rig, its setup final: a base layer of its own if none was made. */
         @AllowAllocation("setting up a rig")
         public Rig build() {
             rig.checkSettingUp();
             if (rig.layers.isEmpty()) {
                 layer();
+            }
+            if (rig.rootJoint >= 0) {
+                for (Clip clip : rig.clips) {
+                    clip.bindRoot(rig.rootJoint);
+                }
             }
             rig.layout();
             rig.settingUp = false;

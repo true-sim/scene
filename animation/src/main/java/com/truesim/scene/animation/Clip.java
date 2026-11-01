@@ -36,6 +36,11 @@ public final class Clip implements Motion {
     private float[][] curveTimes = new float[0][];
     private float[][] curveValues = new float[0][];
     private double duration;
+    private float[] markerTimes = new float[0];
+    private SyncMarker[] markers = new SyncMarker[0];
+    private SyncGroup group;
+    private int rootTranslation = -1; // the tracks of the rig's root motion joint, or -1
+    private int rootRotation = -1;
 
     @AllowAllocation("set up with its rig")
     Clip(Rig rig, AnimationClip clip, Reference reference, int[] trackJoint) {
@@ -138,6 +143,92 @@ public final class Clip implements Motion {
         duration = Math.max(duration, times[times.length - 1]);
         rig.addCurve(curve);
         return this;
+    }
+
+    /** Marks {@code time} (seconds into it) with {@code marker}, for its sync group to line up by; while setting up. */
+    @AllowAllocation("setting up a rig")
+    public Clip marker(double time, SyncMarker marker) {
+        rig.checkSettingUp();
+        Objects.requireNonNull(marker, "marker");
+        if (!(time >= 0) || time == Double.POSITIVE_INFINITY) {
+            throw new IllegalArgumentException("Not a time: " + time);
+        }
+        int at = 0;
+        while (at < markerTimes.length && markerTimes[at] <= time) {
+            at++;
+        }
+        float[] times = new float[markerTimes.length + 1];
+        SyncMarker[] named = new SyncMarker[markers.length + 1];
+        System.arraycopy(markerTimes, 0, times, 0, at);
+        System.arraycopy(markers, 0, named, 0, at);
+        times[at] = (float) time;
+        named[at] = marker;
+        System.arraycopy(markerTimes, at, times, at + 1, markerTimes.length - at);
+        System.arraycopy(markers, at, named, at + 1, markers.length - at);
+        markerTimes = times;
+        markers = named;
+        return this;
+    }
+
+    /** Has it join {@code group} whenever it plays (null: none); while the rig is set up. */
+    public Clip sync(SyncGroup group) {
+        rig.checkSettingUp();
+        this.group = group;
+        return this;
+    }
+
+    /** The sync group it joins by default, or null. */
+    public SyncGroup group() {
+        return group;
+    }
+
+    int markerCount() {
+        return markerTimes.length;
+    }
+
+    double markerTime(int i) {
+        return markerTimes[i];
+    }
+
+    SyncMarker marker(int i) {
+        return markers[i];
+    }
+
+    /** Finds its tracks of {@code joint}'s translation and rotation, for root motion. */
+    void bindRoot(int joint) {
+        var tracks = clip.tracks();
+        for (int t = 0; t < trackJoint.length; t++) {
+            if (trackJoint[t] == joint) {
+                switch (tracks.get(t).property()) {
+                    case TRANSLATION -> rootTranslation = t;
+                    case ROTATION -> rootRotation = t;
+                    default -> { }
+                }
+            }
+        }
+    }
+
+    /**
+     * Joint {@code joint}'s translation and rotation at {@code time} into {@code out[0..7)}: its tracks', or its rest
+     * transform's where it has none. {@code cursor[0]} serves both tracks.
+     */
+    void root(int joint, double time, int[] cursor, double[] out, double[] scratch) {
+        if (rootTranslation >= 0) {
+            clip.tracks().get(rootTranslation).sample(time, cursor, 0, scratch);
+            System.arraycopy(scratch, 0, out, 0, 3);
+        } else {
+            for (int i = 0; i < 3; i++) {
+                out[i] = rig.skeleton().rest(joint, i);
+            }
+        }
+        if (rootRotation >= 0) {
+            clip.tracks().get(rootRotation).sample(time, cursor, 0, scratch);
+            System.arraycopy(scratch, 0, out, 3, 4);
+        } else {
+            for (int i = 0; i < 4; i++) {
+                out[3 + i] = rig.skeleton().rest(joint, 3 + i);
+            }
+        }
     }
 
     int eventCount() {

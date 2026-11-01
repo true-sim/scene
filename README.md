@@ -406,7 +406,12 @@ assets.acquire(rock);
   double blink = a.curve(BLINK);
   ```
 
-  Sync groups, root motion and inverse kinematics follow ([docs/animation.md](docs/animation.md)).
+  Sync groups keep motions in step: the heaviest (or one made to lead) moves on, the others follow marker by marker
+  (`clip.marker(0.5, RIGHT_DOWN)`, `clip.sync(LOCOMOTION)`), else by phase. Root motion takes the root joint's moves
+  out of the pose (`r.rootMotion(root, RootMotion.XZ_YAW)`) and hands them over each update (`a.rootDelta()`:
+  dx, dy, dz in the frame the root faced, and the turn), blended as the clips are, across loop ends too.
+
+  Inverse kinematics follows ([docs/animation.md](docs/animation.md)).
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
@@ -507,7 +512,7 @@ dependencies {
     implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
-    implementation("com.truesim.scene:scene-animation:0.38.0") // clips, rigs and animators (from 0.35.0)
+    implementation("com.truesim.scene:scene-animation:0.39.0") // clips, rigs and animators (from 0.35.0)
 }
 ```
 
