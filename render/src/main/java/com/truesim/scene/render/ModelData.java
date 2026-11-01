@@ -22,9 +22,45 @@ import java.util.Set;
  * @param nodes the nodes, each parent before its children
  * @param lights the lights nodes name ({@link Node#light()})
  * @param skins the skins nodes' meshes are deformed by ({@link Node#skin()})
+ * @param cameras the cameras nodes name ({@link Node#camera()}), looking along their node's -Z
  */
 @AllowAllocation("models are made when assets load and spawned when placed")
-public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) {
+public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, List<Camera> cameras) {
+
+    /**
+     * A camera of the model, as glTF's: it looks along its node's -Z, +Y up. Perspective with a vertical field of view,
+     * or orthographic with half extents.
+     *
+     * @param name its name in the source; may be empty
+     * @param orthographic orthographic rather than perspective
+     * @param yfov a perspective camera's vertical field of view, radians
+     * @param aspectRatio a perspective camera's width over height, or 0 to follow the view's
+     * @param xmag an orthographic camera's half width
+     * @param ymag an orthographic camera's half height
+     * @param znear the near plane's distance
+     * @param zfar the far plane's distance, or 0 for none (a perspective camera's infinite projection)
+     */
+    public record Camera(String name, boolean orthographic, double yfov, double aspectRatio, double xmag, double ymag,
+        double znear, double zfar) {
+
+        public Camera {
+            Objects.requireNonNull(name, "name");
+            if (orthographic ? !(xmag != 0 && ymag != 0 && znear >= 0 && zfar > znear)
+                : !(yfov > 0 && aspectRatio >= 0 && znear > 0 && (zfar == 0 || zfar > znear))) {
+                throw new IllegalArgumentException("Not a camera glTF allows: " + this);
+            }
+        }
+
+        /** A perspective camera. */
+        public static Camera perspective(String name, double yfov, double aspectRatio, double znear, double zfar) {
+            return new Camera(name, false, yfov, aspectRatio, 0, 0, znear, zfar);
+        }
+
+        /** An orthographic camera. */
+        public static Camera orthographic(String name, double xmag, double ymag, double znear, double zfar) {
+            return new Camera(name, true, 0, 0, xmag, ymag, znear, zfar);
+        }
+    }
 
     /**
      * How a skinned mesh follows its joints, as glTF's skins: its vertices name joints (through their mesh's
@@ -146,16 +182,27 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
      * @param lines its points and lines, beside its mesh; drawn once the renderer draws them
      * @param skin the index in {@link #skins()} of the skin its mesh is deformed by, or -1
      * @param morphWeights its mesh's morph target weights at rest ({@link MeshData#morphTargetCount()}); empty for none
+     * @param camera the index of its camera in {@link #cameras()}, or -1
      */
     public record Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
         double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials,
-        boolean visible, int light, List<AssetRef<LineData>> lines, int skin, List<Double> morphWeights) {
+        boolean visible, int light, List<AssetRef<LineData>> lines, int skin, List<Double> morphWeights,
+        int camera) {
 
         public Node {
             Objects.requireNonNull(name, "name");
             materials = List.copyOf(materials);
             lines = List.copyOf(lines);
             morphWeights = List.copyOf(morphWeights);
+        }
+
+        /** A node of no camera. */
+        public Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
+            double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh,
+            List<AssetRef<MaterialData>> materials, boolean visible, int light, List<AssetRef<LineData>> lines,
+            int skin, List<Double> morphWeights) {
+            this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines, skin,
+                morphWeights, -1);
         }
 
         /** A node of no morph weights. */
@@ -191,7 +238,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
         /** This node, of no skin: its mesh drawn as it is. */
         public Node withoutSkin() {
             return new Node(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines,
-                -1, morphWeights);
+                -1, morphWeights, camera);
         }
 
         /** A node at the origin, unrotated and unscaled. */
@@ -205,6 +252,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
         nodes = List.copyOf(nodes);
         lights = List.copyOf(lights);
         skins = List.copyOf(skins);
+        cameras = List.copyOf(cameras);
         for (int i = 0; i < nodes.size(); i++) {
             int parent = nodes.get(i).parent();
             if (parent < -1 || parent >= i) {
@@ -213,6 +261,10 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
             int light = nodes.get(i).light();
             if (light < -1 || light >= lights.size()) {
                 throw new IllegalArgumentException("Node " + i + "'s light " + light + " is not one of the model's");
+            }
+            int camera = nodes.get(i).camera();
+            if (camera < -1 || camera >= cameras.size()) {
+                throw new IllegalArgumentException("Node " + i + "'s camera " + camera + " is not one of the model's");
             }
             int skin = nodes.get(i).skin();
             if (skin < -1 || skin >= skins.size()) {
@@ -231,6 +283,11 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) 
                     + " is not a node");
             }
         }
+    }
+
+    /** A model of no cameras. */
+    public ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) {
+        this(nodes, lights, skins, List.of());
     }
 
     /** A model of no skins. */

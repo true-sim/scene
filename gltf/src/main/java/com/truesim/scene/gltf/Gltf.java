@@ -43,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * the model's nodes beside their meshes. Skins are read (their joints the model's nodes, a skinned mesh's vertices
  * naming the four joints weighing most, of up to eight, through a palette of the joints it uses), and morph targets
  * (named by the mesh's {@code extras.targetNames}, nodes taking their own weights, else their mesh's); animations are
- * not read yet. Extensions: every
+ * not read yet. Cameras are read, perspective and orthographic. Extensions: every
  * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
  * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
  * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
@@ -140,6 +140,21 @@ public final class Gltf {
         for (int root : roots) {
             add(document, file, root, -1, out, 0, modelIndex);
         }
+        List<ModelData.Camera> cameras = new ArrayList<>();
+        for (Map<String, Object> camera : document.list("cameras")) {
+            String cameraName = String.valueOf(camera.getOrDefault("name", ""));
+            if ("orthographic".equals(camera.get("type"))) {
+                Map<String, Object> o = GltfDocument.object(camera, "orthographic");
+                cameras.add(ModelData.Camera.orthographic(cameraName, GltfDocument.number(o, "xmag", 0),
+                    GltfDocument.number(o, "ymag", 0), GltfDocument.number(o, "znear", 0),
+                    GltfDocument.number(o, "zfar", 0)));
+            } else {
+                Map<String, Object> p = GltfDocument.object(camera, "perspective");
+                cameras.add(ModelData.Camera.perspective(cameraName, GltfDocument.number(p, "yfov", 0),
+                    GltfDocument.number(p, "aspectRatio", 0), GltfDocument.number(p, "znear", 0),
+                    GltfDocument.number(p, "zfar", 0)));
+            }
+        }
         List<ModelData.Skin> skins = new ArrayList<>();
         for (Map<String, Object> skin : document.list("skins")) {
             skins.add(skin(document, skin, modelIndex, path(input)));
@@ -155,7 +170,7 @@ public final class Gltf {
                 GltfDocument.number(light, "range", 0), GltfDocument.number(spot, "innerConeAngle", 0),
                 GltfDocument.number(spot, "outerConeAngle", Math.PI / 4)));
         }
-        return new ModelData(out, lights, skins);
+        return new ModelData(out, lights, skins, cameras);
     }
 
     /** Skin {@code skin}, its joints as the model's node indices ({@code modelIndex}). */
@@ -238,7 +253,7 @@ public final class Gltf {
         }
         modelIndex[index] = at;
         out.add(new ModelData.Node(name, parent, t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], mesh,
-            materials, visible, light, lines, skin, weights));
+            materials, visible, light, lines, skin, weights, GltfDocument.integer(node, "camera", -1)));
         for (double child : GltfDocument.numbers(node, "children")) {
             add(document, file, (int) child, at, out, depth + 1, modelIndex);
         }
