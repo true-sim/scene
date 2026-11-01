@@ -42,6 +42,7 @@ class SampleModelsSweep {
         TreeMap<String, String> failures = new TreeMap<>();
         int parts = 0;
         int skinned = 0;
+        int morphed = 0;
         for (Path file : files) {
             try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
                 PathAssets paths = new PathAssets(cache);
@@ -72,6 +73,14 @@ class SampleModelsSweep {
                 // Each skinned node's mesh names joints of its skin.
                 ModelData m = (ModelData) model;
                 for (ModelData.Node node : m.nodes()) {
+                    if (node.mesh() != null && cache.get(node.mesh()) instanceof MeshData morphing
+                        && morphing.morphTargetCount() > 0) {
+                        morphed++;
+                        if (!node.morphWeights().isEmpty() && node.morphWeights().size() != morphing.morphTargetCount()) {
+                            failures.put(name + " node " + node.name(), node.morphWeights().size() + " weights for "
+                                + morphing.morphTargetCount() + " morph targets");
+                        }
+                    }
                     if (node.skin() >= 0 && cache.get(node.mesh()) instanceof MeshData mesh) {
                         skinned++;
                         int joints = m.skins().get(node.skin()).jointCount();
@@ -88,7 +97,7 @@ class SampleModelsSweep {
             }
         }
         System.out.println("glTF samples: " + files.size() + " files, " + parts + " parts, " + skinned
-            + " skinned nodes, " + failures.size() + " failures");
+            + " skinned nodes, " + morphed + " morphing nodes, " + failures.size() + " failures");
         failures.forEach((what, why) -> System.out.println("  FAIL " + what + ": " + why));
         assertThat(files).isNotEmpty();
     }

@@ -45,6 +45,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class MeshData implements AutoCloseable {
 
+    /**
+     * Bytes per record of {@link #morphRecords()}: the target (uint16), then its position, normal and tangent deltas (x,
+     * y, z each) as 9 float16.
+     */
+    public static final int MORPH_RECORD_BYTES = 20;
+
     /** Bytes per vertex in {@link #positions()}. */
     public static final int POSITION_BYTES = 8;
     /** Bytes per meshlet in {@link #meshlets()}. */
@@ -74,6 +80,10 @@ public final class MeshData implements AutoCloseable {
     private final MemorySegment clusterLod;
     private final int[] jointPalette; // skinned: mesh joint i is skin joint jointPalette[i]; else empty
     private final float[] jointBoxes; // skinned: per mesh joint, the rest-pose box of the vertices it moves
+    private final List<String> morphNames; // per morph target: its name, or empty
+    private final float[] morphMaxDisplacement; // per morph target: the largest position delta's length
+    private final MemorySegment morphOffsets; // per vertex and one more: its first record in morphRecords
+    private final MemorySegment morphRecords; // MORPH_RECORD_BYTES each, a vertex's in a run
     private final Arena arena; // owns the buffers
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -96,6 +106,10 @@ public final class MeshData implements AutoCloseable {
         this.clusterLod = segments[5].asReadOnly();
         this.jointPalette = b.jointPalette;
         this.jointBoxes = b.jointBoxes;
+        this.morphNames = List.copyOf(b.morphNames);
+        this.morphMaxDisplacement = b.morphMaxDisplacement;
+        this.morphOffsets = segments[6].asReadOnly();
+        this.morphRecords = segments[7].asReadOnly();
     }
 
     /**
@@ -166,7 +180,58 @@ public final class MeshData implements AutoCloseable {
     /** Bytes of all buffers: what the mesh takes in memory and on the GPU. */
     public long bytes() {
         return positions.byteSize() + attributes.byteSize() + meshletVertices.byteSize() + meshletTriangles.byteSize()
-            + meshlets.byteSize() + clusterLod.byteSize();
+            + meshlets.byteSize() + clusterLod.byteSize() + morphOffsets.byteSize() + morphRecords.byteSize();
+    }
+
+    /** How many morph targets it has: shapes its vertices blend towards by their weights; 0 for none. */
+    public int morphTargetCount() {
+        return morphNames.size();
+    }
+
+    /** Morph target {@code target}'s name, as the source names it (glTF's {@code extras.targetNames}), or empty. */
+    public String morphTargetName(int target) {
+        return morphNames.get(target);
+    }
+
+    /**
+     * The longest position delta of morph target {@code target}: how far it can move a vertex at weight 1, for the
+     * bounds of a morphing mesh.
+     */
+    public float morphMaxDisplacement(int target) {
+        return morphMaxDisplacement[Objects.checkIndex(target, morphMaxDisplacement.length)];
+    }
+
+    /**
+     * The morph targets' deltas by vertex: {@link #morphOffsets()} holds a uint32 per vertex and one more, vertex v's
+     * records lying from offset v to offset v + 1 in {@link #morphRecords()} (a target moving it, its deltas); a
+     * target not moving a vertex has no record. Empty without morph targets.
+     */
+    public MemorySegment morphOffsets() {
+        return morphOffsets;
+    }
+
+    /** The morph records, {@link #MORPH_RECORD_BYTES} each ({@link #morphOffsets()}). */
+    public MemorySegment morphRecords() {
+        return morphRecords;
+    }
+
+    /**
+     * Morph target {@code target}'s deltas of vertex {@code vertex} into {@code out[0..8]}: position, normal, tangent
+     * (x, y, z each); zeros where it does not move it.
+     */
+    public void morphDelta(int vertex, int target, double[] out) {
+        Objects.checkIndex(target, morphNames.size());
+        Objects.checkIndex(vertex, vertexCount);
+        java.util.Arrays.fill(out, 0, 9, 0);
+        int end = morphOffsets.get(U32, 4L * (vertex + 1));
+        for (int r = morphOffsets.get(U32, 4L * vertex); r < end; r++) {
+            long o = (long) MORPH_RECORD_BYTES * r;
+            if ((morphRecords.get(U16, o) & 0xffff) == target) {
+                for (int i = 0; i < 9; i++) {
+                    out[i] = Float.float16ToFloat(morphRecords.get(U16, o + 2 + 2L * i));
+                }
+            }
+        }
     }
 
     /** How many joints a skinned mesh's vertices name (its {@link VertexAttribute#JOINTS}); 0 unskinned. */
@@ -375,6 +440,9 @@ public final class MeshData implements AutoCloseable {
         private int[] joints;
         private int[] jointPalette = new int[0];
         private float[] jointBoxes = new float[0];
+        private final List<String> morphNames = new ArrayList<>();
+        private final List<float[][]> morphDeltas = new ArrayList<>(); // per target: positions, normals, tangents
+        private float[] morphMaxDisplacement = new float[0];
         private int materialSlots = 1;
         private final List<Meshlet> meshlets = new ArrayList<>();
         private final List<MeshLevel> levels = new ArrayList<>();
@@ -455,6 +523,23 @@ public final class MeshData implements AutoCloseable {
                 }
             }
             this.jointPalette = skinJoints.clone();
+            return this;
+        }
+
+        /**
+         * Adds a morph target called {@code name} (may be empty): per vertex, the position delta (x, y, z) and,
+         * where given (else null), the normal's and the tangent's (x, y, z each). At most 65,535.
+         */
+        public Builder morphTarget(String name, float[] positions, float[] normals, float[] tangents) {
+            Objects.requireNonNull(name, "name");
+            if (morphNames.size() == 0xffff) {
+                throw new IllegalStateException("At most 65,535 morph targets");
+            }
+            float[][] deltas = {check(positions, 3, "morph positions"),
+                normals == null ? null : check(normals, 3, "morph normals"),
+                tangents == null ? null : check(tangents, 3, "morph tangents")};
+            morphNames.add(name);
+            morphDeltas.add(deltas);
             return this;
         }
 
@@ -599,8 +684,11 @@ public final class MeshData implements AutoCloseable {
                 arena.allocate(4L * meshletVertexTotal, 4),
                 arena.allocate(3L * triangleTotal, 4),
                 arena.allocate((long) MESHLET_BYTES * meshlets.size(), 16),
-                arena.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 8)
+                arena.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 8),
+                null,
+                null
             };
+            encodeMorphs(arena, segments);
             encodeMeshlets(segments, bounds);
             return new MeshData(this, box, bounds, List.copyOf(levels), arena, segments);
         }
@@ -733,6 +821,58 @@ public final class MeshData implements AutoCloseable {
                     }
                 }
             }
+        }
+
+        /** The morph targets, sparse by vertex ({@link #morphOffsets()}), and each target's longest move. */
+        private void encodeMorphs(Arena arena, MemorySegment[] segments) {
+            morphMaxDisplacement = new float[morphDeltas.size()];
+            if (morphDeltas.isEmpty()) {
+                segments[6] = arena.allocate(0, 4);
+                segments[7] = arena.allocate(0, 4);
+                return;
+            }
+            int records = 0;
+            for (int v = 0; v < vertexCount; v++) {
+                for (float[][] deltas : morphDeltas) {
+                    records += moves(deltas, v) ? 1 : 0;
+                }
+            }
+            MemorySegment offsets = arena.allocate(4L * (vertexCount + 1), 4);
+            MemorySegment out = arena.allocate((long) MORPH_RECORD_BYTES * records, 4);
+            int r = 0;
+            for (int v = 0; v < vertexCount; v++) {
+                offsets.set(U32, 4L * v, r);
+                for (int t = 0; t < morphDeltas.size(); t++) {
+                    float[][] deltas = morphDeltas.get(t);
+                    if (!moves(deltas, v)) {
+                        continue;
+                    }
+                    long o = (long) MORPH_RECORD_BYTES * r++;
+                    out.set(U16, o, (short) t);
+                    for (int kind = 0; kind < 3; kind++) {
+                        for (int axis = 0; axis < 3; axis++) {
+                            float d = deltas[kind] == null ? 0 : deltas[kind][3 * v + axis];
+                            out.set(U16, o + 2 + 6L * kind + 2L * axis, Float.floatToFloat16(d));
+                        }
+                    }
+                    float[] p = deltas[0];
+                    morphMaxDisplacement[t] = (float) Math.max(morphMaxDisplacement[t],
+                        Math.sqrt(p[3 * v] * p[3 * v] + p[3 * v + 1] * p[3 * v + 1] + p[3 * v + 2] * p[3 * v + 2]));
+                }
+            }
+            offsets.set(U32, 4L * vertexCount, r);
+            segments[6] = offsets;
+            segments[7] = out;
+        }
+
+        /** Whether morph target {@code deltas} moves vertex {@code v}: a delta not 0. */
+        private static boolean moves(float[][] deltas, int v) {
+            for (float[] kind : deltas) {
+                if (kind != null && (kind[3 * v] != 0 || kind[3 * v + 1] != 0 || kind[3 * v + 2] != 0)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**

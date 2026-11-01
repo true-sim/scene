@@ -96,6 +96,34 @@ class MeshBuilderTest {
     }
 
     @Test
+    void morphTargetsFollowTheVertices() {
+        // A quad of four vertices and a fifth unused one: the builder reorders the four and drops the fifth.
+        float[] positions = {0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 5, 5, 5};
+        float[] lift = new float[15];
+        for (int v = 0; v < 5; v++) {
+            lift[3 * v + 1] = v; // vertex v rises by v
+        }
+        float[] normals = lift.clone();
+        MeshData mesh = new MeshBuilder(VertexFormat.of(), 5).positions(positions)
+            .morphTarget("lift", lift, normals, null).morphTarget("none", new float[15], null, lift)
+            .submesh(new int[] {0, 3, 1, 1, 3, 2}).buildFlat();
+        assertThat(mesh.vertexCount()).isEqualTo(4);
+        assertThat(mesh.morphTargetName(0)).isEqualTo("lift");
+        double[] p = new double[3];
+        double[] delta = new double[9];
+        for (int v = 0; v < 4; v++) {
+            mesh.position(v, p);
+            int original = p[0] < 0.5 ? (p[2] < 0.5 ? 0 : 3) : p[2] < 0.5 ? 1 : 2;
+            mesh.morphDelta(v, 0, delta);
+            assertThat(delta[1]).isEqualTo(original);
+            assertThat(delta[4]).as("its normal's too").isEqualTo(original);
+            mesh.morphDelta(v, 1, delta);
+            assertThat(delta[7]).as("tangents only").isEqualTo(original);
+        }
+        assertThat(mesh.morphMaxDisplacement(0)).as("not the dropped fifth's 4").isEqualTo(3);
+    }
+
+    @Test
     void flatMeshesKeepEveryTriangleInMeshletsWithinLimits() {
         MeshData mesh = new MeshBuilder(VertexFormat.POSITIONS_ONLY, vertices())
             .positions(grid())

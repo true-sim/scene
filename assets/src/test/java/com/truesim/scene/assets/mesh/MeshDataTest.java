@@ -126,6 +126,53 @@ class MeshDataTest {
     }
 
     @Test
+    void morphTargetsAreSparseByVertex() {
+        // Target "smile" lifts vertex 4 by 0.5 and turns its normal; "wide" moves vertices 0 and 2 along x.
+        float[] smile = new float[18];
+        smile[13] = 0.5f;
+        float[] smileNormals = new float[18];
+        smileNormals[14] = 0.25f;
+        float[] wide = new float[18];
+        wide[0] = -0.25f;
+        wide[6] = 0.25f;
+        float[] tangents = new float[18];
+        tangents[6] = 0.125f;
+        tangents[5] = 0.5f; // vertex 1, its tangent along z alone
+        MeshData mesh = twoMeshlets(grid().morphTarget("smile", smile, smileNormals, null)
+            .morphTarget("", wide, null, tangents)).build();
+        assertThat(mesh.morphTargetCount()).isEqualTo(2);
+        assertThat(mesh.morphTargetName(0)).isEqualTo("smile");
+        assertThat(mesh.morphTargetName(1)).isEmpty();
+        assertThat(mesh.morphMaxDisplacement(0)).isEqualTo(0.5f);
+        assertThat(mesh.morphMaxDisplacement(1)).isEqualTo(0.25f);
+        assertThat(mesh.morphOffsets().byteSize()).isEqualTo(4L * 7);
+        assertThat(mesh.morphRecords().byteSize()).as("four moved: no records for the rest")
+            .isEqualTo(4L * MeshData.MORPH_RECORD_BYTES);
+        double[] delta = new double[9];
+        mesh.morphDelta(4, 0, delta);
+        assertThat(delta).containsExactly(0, 0.5, 0, 0, 0, 0.25, 0, 0, 0);
+        mesh.morphDelta(2, 1, delta);
+        assertThat(delta).containsExactly(0.25, 0, 0, 0, 0, 0, 0.125, 0, 0);
+        mesh.morphDelta(4, 1, delta);
+        assertThat(delta).as("not moved by it").containsOnly(0.0);
+        assertThat(mesh.bytes()).isEqualTo(twoMeshlets(grid()).build().bytes() + 4L * 7 + 4L * 20);
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> mesh.morphDelta(6, 0, delta));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> mesh.morphDelta(0, 2, delta));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> mesh.morphMaxDisplacement(2));
+        assertThatIllegalArgumentException().isThrownBy(() -> grid().morphTarget("x", new float[3], null, null));
+        assertThatIllegalArgumentException().isThrownBy(() -> grid().morphTarget("x", smile, new float[3], null));
+        assertThatIllegalArgumentException().isThrownBy(() -> grid().morphTarget("x", smile, null, new float[3]));
+        assertThatNullPointerException().isThrownBy(() -> grid().morphTarget(null, smile, null, null));
+        MeshData.Builder many = grid();
+        for (int t = 0; t < 0xffff; t++) {
+            many.morphTarget("", smile, null, null);
+        }
+        assertThatIllegalStateException().isThrownBy(() -> many.morphTarget("", smile, null, null))
+            .withMessageContaining("65,535");
+        assertThat(twoMeshlets(grid()).build().morphTargetCount()).isZero();
+    }
+
+    @Test
     void closingFreesTheBuffers() {
         MeshData mesh = twoMeshlets(grid()).build();
         MemorySegment kept = mesh.positions();

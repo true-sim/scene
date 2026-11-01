@@ -274,6 +274,79 @@ class GltfTest {
     }
 
     @Test
+    void morphTargetsTheirNamesAndWeights() throws Exception {
+        // A quad (0..48) and its indices (48..60); target 0: positions 64..112, normals 112..160; target 1: positions
+        // 160..208, tangents 208..256. Target 0 lifts vertex 2 by 1; target 1 moves vertex 1 along x by 0.5.
+        ByteBuffer b = ByteBuffer.allocate(256).order(ByteOrder.LITTLE_ENDIAN);
+        for (float f : new float[] {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0}) {
+            b.putFloat(f);
+        }
+        for (short i : new short[] {0, 1, 2, 0, 2, 3}) {
+            b.putShort(i);
+        }
+        b.position(64);
+        float[][] blocks = {
+            {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0},
+            {0, 0, 0, 0.5f, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0.25f, 0, 0, 0, 0, 0, 0, 0}};
+        for (float[] block : blocks) {
+            for (float f : block) {
+                b.putFloat(f);
+            }
+        }
+        Files.write(dir.resolve("face.bin"), b.array());
+        String json = """
+            {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0, 1, 2]}],
+             "nodes": [{"name": "rest", "mesh": 0}, {"name": "smiling", "mesh": 0, "weights": [1, 0]},
+               {"name": "plain", "mesh": 1}],
+             "buffers": [{"uri": "face.bin", "byteLength": 256}],
+             "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48},
+               {"buffer": 0, "byteOffset": 48, "byteLength": 12}, {"buffer": 0, "byteOffset": 64, "byteLength": 48},
+               {"buffer": 0, "byteOffset": 112, "byteLength": 48}, {"buffer": 0, "byteOffset": 160, "byteLength": 48},
+               {"buffer": 0, "byteOffset": 208, "byteLength": 48}],
+             "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+               {"bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR"},
+               {"bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC3"},
+               {"bufferView": 3, "componentType": 5126, "count": 4, "type": "VEC3"},
+               {"bufferView": 4, "componentType": 5126, "count": 4, "type": "VEC3"},
+               {"bufferView": 5, "componentType": 5126, "count": 4, "type": "VEC3"}],
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1,
+                 "targets": [{"POSITION": 2, "NORMAL": 3}, {"POSITION": 4, "TANGENT": 5}]}],
+                 "weights": [0.25, 0.5], "extras": {"targetNames": ["smile", "wide"]}},
+               {"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "targets": [{"POSITION": 4}]}]},
+               {"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "targets": [{"POSITION": 4}]},
+                 {"attributes": {"POSITION": 0}, "indices": 1}]}]}
+            """;
+        Files.writeString(dir.resolve("face.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://face.gltf"));
+        assertThat(model.nodes().get(0).morphWeights()).as("the mesh's").containsExactly(0.25, 0.5);
+        assertThat(model.nodes().get(1).morphWeights()).as("its own").containsExactly(1.0, 0.0);
+        assertThat(model.nodes().get(2).morphWeights()).as("none given").isEmpty();
+        MeshData face = load(paths.ref(RenderAssets.MESH, "game://face.gltf#mesh/0"));
+        assertThat(face.morphTargetCount()).isEqualTo(2);
+        assertThat(face.morphTargetName(0)).isEqualTo("smile");
+        assertThat(face.morphTargetName(1)).isEqualTo("wide");
+        assertThat(face.morphMaxDisplacement(0)).isEqualTo(1);
+        double[] p = new double[3];
+        double[] delta = new double[9];
+        for (int v = 0; v < face.vertexCount(); v++) {
+            face.position(v, p);
+            int source = p[0] < 0.5 ? (p[1] < 0.5 ? 0 : 3) : p[1] < 0.5 ? 1 : 2;
+            face.morphDelta(v, 0, delta);
+            assertThat(delta[1]).isEqualTo(source == 2 ? 1 : 0);
+            assertThat(delta[4]).as("its normal").isEqualTo(source == 2 ? 0.5 : 0);
+            face.morphDelta(v, 1, delta);
+            assertThat(delta[0]).isEqualTo(source == 1 ? 0.5 : 0);
+            assertThat(delta[7]).as("its tangent").isEqualTo(source == 1 ? 0.25 : 0);
+        }
+        MeshData plain = load(paths.ref(RenderAssets.MESH, "game://face.gltf#mesh/1"));
+        assertThat(plain.morphTargetName(0)).as("no names").isEmpty();
+        expectFailure = true;
+        AssetRef<MeshData> uneven = paths.ref(RenderAssets.MESH, "game://face.gltf#mesh/2");
+        load(uneven);
+        assertThat(cache.failure(uneven)).hasMessageContaining("different numbers of morph targets");
+    }
+
+    @Test
     void aMeshNamesAtMost256Joints() throws Exception {
         // 65 vertices of four joints each, all different: 260 joints.
         int vertices = 65;
