@@ -72,6 +72,8 @@ public final class MeshData implements AutoCloseable {
     private final MemorySegment meshletTriangles;
     private final MemorySegment meshlets;
     private final MemorySegment clusterLod;
+    private final int[] jointPalette; // skinned: mesh joint i is skin joint jointPalette[i]; else empty
+    private final float[] jointBoxes; // skinned: per mesh joint, the rest-pose box of the vertices it moves
     private final Arena arena; // owns the buffers
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -92,6 +94,8 @@ public final class MeshData implements AutoCloseable {
         this.meshletTriangles = segments[3].asReadOnly();
         this.meshlets = segments[4].asReadOnly();
         this.clusterLod = segments[5].asReadOnly();
+        this.jointPalette = b.jointPalette;
+        this.jointBoxes = b.jointBoxes;
     }
 
     /**
@@ -163,6 +167,31 @@ public final class MeshData implements AutoCloseable {
     public long bytes() {
         return positions.byteSize() + attributes.byteSize() + meshletVertices.byteSize() + meshletTriangles.byteSize()
             + meshlets.byteSize() + clusterLod.byteSize();
+    }
+
+    /** How many joints a skinned mesh's vertices name (its {@link VertexAttribute#JOINTS}); 0 unskinned. */
+    public int jointCount() {
+        return jointPalette.length;
+    }
+
+    /**
+     * The skin joint mesh joint {@code joint} is: an index into the joints of the skin the mesh is drawn with. A mesh
+     * names at most 256, so 8-bit joints serve skins of any size.
+     */
+    public int paletteJoint(int joint) {
+        return jointPalette[java.util.Objects.checkIndex(joint, jointPalette.length)];
+    }
+
+    /**
+     * The rest-pose box of the vertices mesh joint {@code joint} moves (weight above 0), into {@code out}: min x, y, z,
+     * max x, y, z; inverted (min above max) for a joint moving none. A skinned vertex is a weighted mix of its joints'
+     * moves, so the boxes moved by their joints hold the skinned mesh.
+     */
+    public void jointBox(int joint, double[] out) {
+        java.util.Objects.checkIndex(joint, jointPalette.length);
+        for (int i = 0; i < 6; i++) {
+            out[i] = jointBoxes[6 * joint + i];
+        }
     }
 
     // ---------------------------------------------------------------- buffers
@@ -344,6 +373,8 @@ public final class MeshData implements AutoCloseable {
         private float[] positions;
         private final float[][] attributeData = new float[VertexAttribute.ALL.length][];
         private int[] joints;
+        private int[] jointPalette = new int[0];
+        private float[] jointBoxes = new float[0];
         private int materialSlots = 1;
         private final List<Meshlet> meshlets = new ArrayList<>();
         private final List<MeshLevel> levels = new ArrayList<>();
@@ -406,6 +437,24 @@ public final class MeshData implements AutoCloseable {
                 }
             }
             this.joints = indices.clone();
+            return this;
+        }
+
+        /**
+         * Which skin joint each mesh joint is (the {@link #joints} values index it), for skins of more than 256 joints;
+         * without one, mesh joint i is skin joint i.
+         */
+        public Builder jointPalette(int[] skinJoints) {
+            requireFormat(VertexAttribute.JOINTS);
+            if (skinJoints.length < 1 || skinJoints.length > 256) {
+                throw new IllegalArgumentException("A palette of 1 to 256 joints: " + skinJoints.length);
+            }
+            for (int joint : skinJoints) {
+                if (joint < 0) {
+                    throw new IllegalArgumentException("Skin joints are 0 or more: " + joint);
+                }
+            }
+            this.jointPalette = skinJoints.clone();
             return this;
         }
 
@@ -538,6 +587,9 @@ public final class MeshData implements AutoCloseable {
                     throw new IllegalStateException("Meshlets after the last level: end it with level()");
                 }
             }
+            if (joints != null) {
+                skinning();
+            }
             double[] box = box();
             Sphere bounds = sphere(box);
             Arena arena = Arena.ofShared(); // read from any thread, freed by close()
@@ -551,6 +603,43 @@ public final class MeshData implements AutoCloseable {
             };
             encodeMeshlets(segments, bounds);
             return new MeshData(this, box, bounds, List.copyOf(levels), arena, segments);
+        }
+
+        /** The palette (given, or the joints up to the highest named) and each joint's rest box. */
+        private void skinning() {
+            int highest = 0;
+            for (int joint : joints) {
+                highest = Math.max(highest, joint);
+            }
+            if (jointPalette.length == 0) {
+                jointPalette = new int[highest + 1];
+                for (int i = 0; i < jointPalette.length; i++) {
+                    jointPalette[i] = i;
+                }
+            } else if (highest >= jointPalette.length) {
+                throw new IllegalStateException("Joint " + highest + " is past the palette's " + jointPalette.length);
+            }
+            float[] weights = attributeData[VertexAttribute.WEIGHTS.ordinal()];
+            jointBoxes = new float[6 * jointPalette.length];
+            for (int j = 0; j < jointPalette.length; j++) {
+                for (int axis = 0; axis < 3; axis++) {
+                    jointBoxes[6 * j + axis] = Float.POSITIVE_INFINITY;
+                    jointBoxes[6 * j + 3 + axis] = Float.NEGATIVE_INFINITY;
+                }
+            }
+            for (int v = 0; v < vertexCount; v++) {
+                for (int i = 0; i < 4; i++) {
+                    // Without weights, the first joint moves the vertex alone.
+                    if (weights == null ? i == 0 : weights[4 * v + i] > 0) {
+                        int j = joints[4 * v + i];
+                        for (int axis = 0; axis < 3; axis++) {
+                            jointBoxes[6 * j + axis] = Math.min(jointBoxes[6 * j + axis], positions[3 * v + axis]);
+                            jointBoxes[6 * j + 3 + axis] = Math.max(jointBoxes[6 * j + 3 + axis],
+                                positions[3 * v + axis]);
+                        }
+                    }
+                }
+            }
         }
 
         private double[] box() {
@@ -632,12 +721,42 @@ public final class MeshData implements AutoCloseable {
                         out.set(ValueLayout.JAVA_BYTE, o + i, (byte) joints[4 * v + i]);
                     }
                 }
-                default -> { // COLOR, WEIGHTS
+                case WEIGHTS -> {
+                    int[] bytes = weightBytes(a, v);
+                    for (int i = 0; i < 4; i++) {
+                        out.set(ValueLayout.JAVA_BYTE, o + i, (byte) bytes[i]);
+                    }
+                }
+                default -> { // COLOR
                     for (int i = 0; i < 4; i++) {
                         out.set(ValueLayout.JAVA_BYTE, o + i, (byte) Encoding.unorm(a[4 * v + i], 8));
                     }
                 }
             }
+        }
+
+        /**
+         * Vertex {@code v}'s four weights as bytes summing to exactly 255 (glTF's rule for unorm8 weights), the rounding
+         * error given to the largest; all zero stays zero.
+         */
+        private static int[] weightBytes(float[] a, int v) {
+            double sum = 0;
+            for (int i = 0; i < 4; i++) {
+                sum += Math.max(0, a[4 * v + i]);
+            }
+            int[] bytes = new int[4];
+            if (sum <= 0) {
+                return bytes;
+            }
+            int total = 0;
+            int largest = 0;
+            for (int i = 0; i < 4; i++) {
+                bytes[i] = (int) Math.round(Math.max(0, a[4 * v + i]) / sum * 255);
+                total += bytes[i];
+                largest = bytes[i] > bytes[largest] ? i : largest;
+            }
+            bytes[largest] += 255 - total;
+            return bytes;
         }
 
         private void encodeMeshlets(MemorySegment[] segments, Sphere meshBounds) {

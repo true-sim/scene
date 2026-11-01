@@ -11,7 +11,7 @@ import java.util.Set;
 
 /**
  * A model as data: a tree of nodes, each with a name, a local transform, whether it shows, and optionally a mesh with
- * its materials and a light, as a glTF scene or a prefab is. The meshes and materials are references, loaded as assets
+ * its materials (skinned by one of its skins) and a light, as a glTF scene or a prefab is. The meshes and materials are references, loaded as assets
  * of their own, so two models sharing a mesh share its upload. {@link #spawn} places the model's nodes in a scene.
  *
  * <pre>{@code
@@ -21,9 +21,76 @@ import java.util.Set;
  *
  * @param nodes the nodes, each parent before its children
  * @param lights the lights nodes name ({@link Node#light()})
+ * @param skins the skins nodes' meshes are deformed by ({@link Node#skin()})
  */
 @AllowAllocation("models are made when assets load and spawned when placed")
-public record ModelData(List<Node> nodes, List<Light> lights) {
+public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) {
+
+    /**
+     * How a skinned mesh follows its joints, as glTF's skins: its vertices name joints (through their mesh's
+     * {@link MeshData#paletteJoint palette}), each a node of the model, and each joint's inverse bind matrix takes a
+     * vertex from the mesh's space into the joint's at rest.
+     *
+     * @param name its name in the source; may be empty
+     * @param joints the joints' node indices in {@link ModelData#nodes()}
+     * @param inverseBindMatrices 16 floats per joint, column-major (identity where the source gives none)
+     * @param skeleton the node all joints descend from, or -1 where the source names none
+     */
+    public record Skin(String name, int[] joints, float[] inverseBindMatrices, int skeleton) {
+
+        public Skin {
+            Objects.requireNonNull(name, "name");
+            joints = joints.clone();
+            inverseBindMatrices = inverseBindMatrices.clone();
+            if (joints.length < 1 || inverseBindMatrices.length != 16 * joints.length) {
+                throw new IllegalArgumentException("A skin has joints and 16 floats of inverse bind matrix for each: "
+                    + joints.length + " joints, " + inverseBindMatrices.length + " floats");
+            }
+        }
+
+        /** The joints' node indices: a copy. */
+        @Override
+        public int[] joints() {
+            return joints.clone();
+        }
+
+        /** The inverse bind matrices: a copy. */
+        @Override
+        public float[] inverseBindMatrices() {
+            return inverseBindMatrices.clone();
+        }
+
+        public int jointCount() {
+            return joints.length;
+        }
+
+        /** Joint {@code i}'s node index. */
+        public int joint(int i) {
+            return joints[i];
+        }
+
+        /** Element {@code element} (0 to 15, column-major) of joint {@code i}'s inverse bind matrix. */
+        public float inverseBind(int i, int element) {
+            return inverseBindMatrices[16 * i + Objects.checkIndex(element, 16)];
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Skin s && name.equals(s.name) && java.util.Arrays.equals(joints, s.joints)
+                && java.util.Arrays.equals(inverseBindMatrices, s.inverseBindMatrices) && skeleton == s.skeleton;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(name, java.util.Arrays.hashCode(joints), java.util.Arrays.hashCode(inverseBindMatrices),
+                skeleton);
+        }
+
+        @Override
+        public String toString() {
+            return "Skin[" + name + ", " + joints.length + " joints, skeleton " + skeleton + "]";
+        }
+    }
 
     /** What kind of light a {@link Light} is, as glTF's punctual lights. */
     public enum LightKind {
@@ -77,15 +144,23 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
      * @param visible whether it shows, with its children; hidden nodes are spawned but drawn on no layer
      * @param light the index of its light in {@link #lights()}, or -1
      * @param lines its points and lines, beside its mesh; drawn once the renderer draws them
+     * @param skin the index in {@link #skins()} of the skin its mesh is deformed by, or -1
      */
     public record Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
         double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials,
-        boolean visible, int light, List<AssetRef<LineData>> lines) {
+        boolean visible, int light, List<AssetRef<LineData>> lines, int skin) {
 
         public Node {
             Objects.requireNonNull(name, "name");
             materials = List.copyOf(materials);
             lines = List.copyOf(lines);
+        }
+
+        /** A node of no skin. */
+        public Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
+            double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh,
+            List<AssetRef<MaterialData>> materials, boolean visible, int light, List<AssetRef<LineData>> lines) {
+            this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines, -1);
         }
 
         /** A node without points or lines. */
@@ -102,6 +177,12 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
             this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, true, -1);
         }
 
+        /** This node, of no skin: its mesh drawn as it is. */
+        public Node withoutSkin() {
+            return new Node(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines,
+                -1);
+        }
+
         /** A node at the origin, unrotated and unscaled. */
         public static Node of(String name, int parent, AssetRef<MeshData> mesh,
             List<AssetRef<MaterialData>> materials) {
@@ -112,6 +193,7 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
     public ModelData {
         nodes = List.copyOf(nodes);
         lights = List.copyOf(lights);
+        skins = List.copyOf(skins);
         for (int i = 0; i < nodes.size(); i++) {
             int parent = nodes.get(i).parent();
             if (parent < -1 || parent >= i) {
@@ -121,7 +203,28 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
             if (light < -1 || light >= lights.size()) {
                 throw new IllegalArgumentException("Node " + i + "'s light " + light + " is not one of the model's");
             }
+            int skin = nodes.get(i).skin();
+            if (skin < -1 || skin >= skins.size()) {
+                throw new IllegalArgumentException("Node " + i + "'s skin " + skin + " is not one of the model's");
+            }
         }
+        for (Skin skin : skins) {
+            for (int j = 0; j < skin.jointCount(); j++) {
+                if (skin.joint(j) < 0 || skin.joint(j) >= nodes.size()) {
+                    throw new IllegalArgumentException("Skin " + skin.name() + "'s joint " + skin.joint(j)
+                        + " is not a node");
+                }
+            }
+            if (skin.skeleton() < -1 || skin.skeleton() >= nodes.size()) {
+                throw new IllegalArgumentException("Skin " + skin.name() + "'s skeleton " + skin.skeleton()
+                    + " is not a node");
+            }
+        }
+    }
+
+    /** A model of no skins. */
+    public ModelData(List<Node> nodes, List<Light> lights) {
+        this(nodes, lights, List.of());
     }
 
     /** A model without lights. */
@@ -179,8 +282,12 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
         return -1;
     }
 
-    /** About what it takes in memory, for the asset cache's budget: its nodes, not their meshes. */
+    /** About what it takes in memory, for the asset cache's budget: its nodes and skins, not their meshes. */
     public long bytes() {
-        return 64L + 160L * nodes.size();
+        long skinBytes = 0;
+        for (Skin skin : skins) {
+            skinBytes += 64L + 68L * skin.jointCount();
+        }
+        return 64L + 160L * nodes.size() + skinBytes;
     }
 }

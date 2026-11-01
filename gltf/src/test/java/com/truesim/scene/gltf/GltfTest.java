@@ -129,6 +129,190 @@ class GltfTest {
           {"bufferView": 4, "componentType": 5126, "count": 4, "type": "VEC3"}],
         """;
 
+    /**
+     * A skinned quad's buffer: positions 0..48, indices 48..60, JOINTS_0 (bytes) 64..80, WEIGHTS_0 80..144, JOINTS_1
+     * 144..160, WEIGHTS_1 160..224, one inverse bind matrix 224..288.
+     */
+    private static byte[] skinned() {
+        ByteBuffer b = ByteBuffer.allocate(288).order(ByteOrder.LITTLE_ENDIAN);
+        for (float f : new float[] {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0}) {
+            b.putFloat(f);
+        }
+        for (short i : new short[] {0, 1, 2, 0, 2, 3}) {
+            b.putShort(i);
+        }
+        b.position(64);
+        // Vertex 0: eight influences, the four heaviest kept (a tie: the earlier); 1: joint 1; 2: joint 6; 3: no weight.
+        b.put(new byte[] {0, 1, 2, 3, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0});
+        for (float f : new float[] {0.5f, 0.1f, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}) {
+            b.putFloat(f);
+        }
+        b.put(new byte[] {4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+        for (float f : new float[] {0.3f, 0.1f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}) {
+            b.putFloat(f);
+        }
+        for (float f : new float[] {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -2, 0, 0, 1}) {
+            b.putFloat(f); // a translation by -2: the joint rests at x = 2
+        }
+        return b.array();
+    }
+
+    @Test
+    void skinsTheirJointsAndTheVerticesWeights() throws Exception {
+        Files.write(dir.resolve("skin.bin"), skinned());
+        String joints = """
+            {"name": "j0"}, {"name": "j1"}, {"name": "j2"}, {"name": "j3"}, {"name": "j4"}, {"name": "j5"},
+            {"name": "j6"}""";
+        String json = """
+            {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0, 9]}],
+             "nodes": [{"name": "body", "mesh": 0, "skin": 0, "children": [1, 2, 3, 4, 5, 6, 7]}, %s,
+               {"name": "unplaced"}, {"name": "arm", "mesh": 0, "skin": 1, "children": [10]}, {"name": "bone"},
+               {"name": "rigid", "skin": 0}],
+             "skins": [{"name": "body", "joints": [1, 2, 3, 4, 5, 6, 7], "skeleton": 0},
+               {"joints": [10], "inverseBindMatrices": 6}],
+             "buffers": [{"uri": "skin.bin", "byteLength": 288}],
+             "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48},
+               {"buffer": 0, "byteOffset": 48, "byteLength": 12}, {"buffer": 0, "byteOffset": 64, "byteLength": 16},
+               {"buffer": 0, "byteOffset": 80, "byteLength": 64}, {"buffer": 0, "byteOffset": 144, "byteLength": 16},
+               {"buffer": 0, "byteOffset": 160, "byteLength": 64}, {"buffer": 0, "byteOffset": 224, "byteLength": 64}],
+             "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+               {"bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR"},
+               {"bufferView": 2, "componentType": 5121, "count": 4, "type": "VEC4"},
+               {"bufferView": 3, "componentType": 5126, "count": 4, "type": "VEC4"},
+               {"bufferView": 4, "componentType": 5121, "count": 4, "type": "VEC4"},
+               {"bufferView": 5, "componentType": 5126, "count": 4, "type": "VEC4"},
+               {"bufferView": 6, "componentType": 5126, "count": 1, "type": "MAT4"}],
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 2, "WEIGHTS_0": 3, "JOINTS_1": 4,
+               "WEIGHTS_1": 5}, "indices": 1}]}]}
+            """.formatted(joints);
+        Files.writeString(dir.resolve("skin.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://skin.gltf"));
+        assertThat(model.nodes()).extracting(ModelData.Node::name)
+            .containsExactly("body", "j0", "j1", "j2", "j3", "j4", "j5", "j6", "arm", "bone");
+        assertThat(model.nodes()).extracting(ModelData.Node::skin).containsExactly(0, -1, -1, -1, -1, -1, -1, -1, 1,
+            -1);
+        assertThat(model.skins()).hasSize(2);
+        ModelData.Skin body = model.skins().get(0);
+        assertThat(body.name()).isEqualTo("body");
+        assertThat(body.joints()).as("the model's node indices").containsExactly(1, 2, 3, 4, 5, 6, 7);
+        assertThat(body.skeleton()).isZero();
+        assertThat(body.inverseBind(3, 0)).as("identity, none given").isEqualTo(1);
+        assertThat(body.inverseBind(3, 12)).isZero();
+        ModelData.Skin arm = model.skins().get(1);
+        assertThat(arm.joints()).containsExactly(9);
+        assertThat(arm.skeleton()).isEqualTo(-1);
+        assertThat(arm.inverseBind(0, 12)).isEqualTo(-2);
+        MeshData mesh = load(paths.ref(RenderAssets.MESH, "game://skin.gltf#mesh/0"));
+        assertThat(mesh.format().has(VertexAttribute.JOINTS)).isTrue();
+        // The joints the vertices weigh: 0 (vertex 3 too, its whole weight the first's), 1, 4, 5, 6.
+        assertThat(mesh.jointCount()).isEqualTo(5);
+        int[] palette = new int[5];
+        for (int j = 0; j < 5; j++) {
+            palette[j] = mesh.paletteJoint(j);
+        }
+        assertThat(palette).containsExactly(0, 1, 4, 5, 6);
+        // The builder reorders vertices: find each by its position.
+        double[] position = new double[3];
+        int[] named = new int[4];
+        double[] weights = new double[4];
+        for (int v = 0; v < mesh.vertexCount(); v++) {
+            mesh.position(v, position);
+            mesh.joints(v, named);
+            mesh.unorm4(VertexAttribute.WEIGHTS, v, weights);
+            int source = position[0] < 0.5 ? (position[1] < 0.5 ? 0 : 3) : position[1] < 0.5 ? 1 : 2;
+            switch (source) {
+                case 0 -> { // 0.5 of joint 0, 0.3 of joint 4, then 0.1 each of joints 1 and 5 (a tie: the earlier)
+                    assertThat(new int[] {palette[named[0]], palette[named[1]], palette[named[2]], palette[named[3]]})
+                        .containsExactly(0, 4, 1, 5);
+                    assertThat(weights[0]).isCloseTo(0.5, within(2 / 255.0)); // the sum's rounding: the largest's
+                    assertThat(weights[1]).isCloseTo(0.3, within(1 / 255.0));
+                }
+                case 1 -> assertThat(palette[named[0]]).isEqualTo(1);
+                case 2 -> assertThat(palette[named[0]]).isEqualTo(6);
+                default -> {
+                    assertThat(palette[named[0]]).as("no weight: all of it the first").isZero();
+                    assertThat(weights[0]).isEqualTo(1);
+                }
+            }
+        }
+        double[] box = new double[6];
+        mesh.jointBox(4, box); // skin joint 6: vertex 2 alone, at (1, 1)
+        assertThat(box[0]).isCloseTo(1, within(1e-4));
+        assertThat(box[1]).isCloseTo(1, within(1e-4));
+        // A skin naming a node outside the scene; inverse bind matrices of the wrong count.
+        expectFailure = true;
+        Files.writeString(dir.resolve("loose.gltf"), json.replace("\"joints\": [10]", "\"joints\": [8]"));
+        AssetRef<ModelData> loose = paths.ref(RenderAssets.MODEL, "game://loose.gltf");
+        load(loose);
+        assertThat(cache.failure(loose)).hasMessageContaining("joint 8 is not a node of the scene");
+        Files.writeString(dir.resolve("count.gltf"), json.replace("\"joints\": [10]", "\"joints\": [10, 1]"));
+        AssetRef<ModelData> count = paths.ref(RenderAssets.MODEL, "game://count.gltf");
+        load(count);
+        assertThat(cache.failure(count)).hasMessageContaining("2 joints has 1 inverse bind matrices");
+        String[] bad = {"[99]", "[-1]"};
+        for (int i = 0; i < bad.length; i++) {
+            Files.writeString(dir.resolve("bad" + i + ".gltf"), json.replace("\"joints\": [10]", "\"joints\": "
+                + bad[i]));
+            AssetRef<ModelData> broken = paths.ref(RenderAssets.MODEL, "game://bad" + i + ".gltf");
+            load(broken);
+            assertThat(cache.failure(broken)).hasMessageContaining("is not a node of the scene");
+        }
+        expectFailure = false;
+        // A skeleton past the nodes: none.
+        Files.writeString(dir.resolve("rootless.gltf"), json.replace("\"skeleton\": 0", "\"skeleton\": 99"));
+        assertThat(load(paths.ref(RenderAssets.MODEL, "game://rootless.gltf")).skins().get(0).skeleton()).isEqualTo(-1);
+        // Joints without weights: not skinned. A second set without its weights: the first alone.
+        Files.writeString(dir.resolve("unweighted.gltf"), json.replace("\"WEIGHTS_0\": 3, ", ""));
+        assertThat(load(paths.ref(RenderAssets.MESH, "game://unweighted.gltf#mesh/0")).format()
+            .has(VertexAttribute.JOINTS)).isFalse();
+        Files.writeString(dir.resolve("half.gltf"), json.replace("\"WEIGHTS_1\"", "\"_WEIGHTS_1\""));
+        Files.writeString(dir.resolve("first.gltf"), json.replace("\"JOINTS_1\": 4,", ""));
+        for (String name : new String[] {"half", "first"}) {
+            MeshData first = load(paths.ref(RenderAssets.MESH, "game://" + name + ".gltf#mesh/0"));
+            assertThat(first.jointCount()).as(name + ": joints 4 and 5 not read").isEqualTo(3);
+        }
+    }
+
+    @Test
+    void aMeshNamesAtMost256Joints() throws Exception {
+        // 65 vertices of four joints each, all different: 260 joints.
+        int vertices = 65;
+        ByteBuffer b = ByteBuffer.allocate(12 * vertices + 8 * vertices + 16 * vertices + 8).order(ByteOrder.LITTLE_ENDIAN);
+        for (int v = 0; v < vertices; v++) {
+            b.putFloat(v).putFloat(v % 2).putFloat(0);
+        }
+        for (int v = 0; v < 4 * vertices; v++) {
+            b.putShort((short) v);
+        }
+        for (int v = 0; v < 4 * vertices; v++) {
+            b.putFloat(0.25f);
+        }
+        b.putShort((short) 0).putShort((short) 1).putShort((short) 2);
+        Files.write(dir.resolve("many.bin"), b.array());
+        int jointsAt = 12 * vertices;
+        int weightsAt = jointsAt + 8 * vertices;
+        int indicesAt = weightsAt + 16 * vertices;
+        String json = """
+            {"asset": {"version": "2.0"}, "nodes": [{"mesh": 0}],
+             "buffers": [{"uri": "many.bin", "byteLength": %d}],
+             "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": %d},
+               {"buffer": 0, "byteOffset": %d, "byteLength": %d}, {"buffer": 0, "byteOffset": %d, "byteLength": %d},
+               {"buffer": 0, "byteOffset": %d, "byteLength": 6}],
+             "accessors": [{"bufferView": 0, "componentType": 5126, "count": %d, "type": "VEC3"},
+               {"bufferView": 1, "componentType": 5123, "count": %d, "type": "VEC4"},
+               {"bufferView": 2, "componentType": 5126, "count": %d, "type": "VEC4"},
+               {"bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR"}],
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2},
+               "indices": 3}]}]}
+            """.formatted(b.capacity(), jointsAt, jointsAt, 8 * vertices, weightsAt, 16 * vertices, indicesAt,
+            vertices, vertices, vertices);
+        Files.writeString(dir.resolve("many.gltf"), json);
+        expectFailure = true;
+        AssetRef<MeshData> many = paths.ref(RenderAssets.MESH, "game://many.gltf#mesh/0");
+        load(many);
+        assertThat(cache.failure(many)).hasMessageContaining("260 joints, at most 256");
+    }
+
     @Test
     void aTextFileWithItsBufferAndImages() throws Exception {
         Files.createDirectories(dir.resolve("models"));

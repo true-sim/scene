@@ -40,7 +40,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Meshes are built into cluster hierarchies; a mesh without normals gets smooth ones. Triangles, strips and fans are
  * read, sparse accessors too; points and lines are {@code #lines/M/P} assets of their own ({@link LineData}), named by
- * the model's nodes beside their meshes; skins and animations are not read yet. Extensions: every
+ * the model's nodes beside their meshes. Skins are read (their joints the model's nodes, a skinned mesh's vertices
+ * naming the four joints weighing most, of up to eight, through a palette of the joints it uses); animations are not
+ * read yet. Extensions: every
  * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
  * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
  * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
@@ -132,8 +134,14 @@ public final class Gltf {
             }
         }
         List<ModelData.Node> out = new ArrayList<>();
+        int[] modelIndex = new int[nodes.size()]; // a glTF node's index in the model's nodes, -1 for one not placed
+        java.util.Arrays.fill(modelIndex, -1);
         for (int root : roots) {
-            add(document, file, root, -1, out, 0);
+            add(document, file, root, -1, out, 0, modelIndex);
+        }
+        List<ModelData.Skin> skins = new ArrayList<>();
+        for (Map<String, Object> skin : document.list("skins")) {
+            skins.add(skin(document, skin, modelIndex, path(input)));
         }
         List<ModelData.Light> lights = new ArrayList<>();
         for (Map<String, Object> light : GltfDocument.list(extension(document.json(), "KHR_lights_punctual"),
@@ -146,11 +154,43 @@ public final class Gltf {
                 GltfDocument.number(light, "range", 0), GltfDocument.number(spot, "innerConeAngle", 0),
                 GltfDocument.number(spot, "outerConeAngle", Math.PI / 4)));
         }
-        return new ModelData(out, lights);
+        return new ModelData(out, lights, skins);
+    }
+
+    /** Skin {@code skin}, its joints as the model's node indices ({@code modelIndex}). */
+    private static ModelData.Skin skin(GltfDocument document, Map<String, Object> skin, int[] modelIndex,
+        AssetPath path) {
+        double[] gltfJoints = GltfDocument.numbers(skin, "joints");
+        int[] joints = new int[gltfJoints.length];
+        for (int j = 0; j < joints.length; j++) {
+            int node = (int) gltfJoints[j];
+            joints[j] = node >= 0 && node < modelIndex.length ? modelIndex[node] : -1;
+            if (joints[j] < 0) {
+                throw new IllegalArgumentException("A skin's joint " + node + " is not a node of the scene: " + path);
+            }
+        }
+        float[] matrices;
+        if (skin.containsKey("inverseBindMatrices")) {
+            matrices = document.floats(GltfDocument.integer(skin, "inverseBindMatrices", 0));
+            if (matrices.length != 16 * joints.length) {
+                throw new IllegalArgumentException("A skin of " + joints.length + " joints has " + matrices.length
+                    / 16 + " inverse bind matrices: " + path);
+            }
+        } else {
+            matrices = new float[16 * joints.length];
+            for (int j = 0; j < joints.length; j++) {
+                for (int d = 0; d < 4; d++) {
+                    matrices[16 * j + 5 * d] = 1;
+                }
+            }
+        }
+        int skeleton = GltfDocument.integer(skin, "skeleton", -1);
+        return new ModelData.Skin(String.valueOf(skin.getOrDefault("name", "")), joints, matrices,
+            skeleton >= 0 && skeleton < modelIndex.length ? modelIndex[skeleton] : -1);
     }
 
     private void add(GltfDocument document, AssetPath file, int index, int parent, List<ModelData.Node> out,
-        int depth) {
+        int depth, int[] modelIndex) {
         if (depth > 256) {
             throw new IllegalArgumentException("The node tree is deeper than 256 or has a cycle: node " + index);
         }
@@ -186,10 +226,12 @@ public final class Gltf {
         int at = out.size();
         boolean visible = !Boolean.FALSE.equals(extension(node, "KHR_node_visibility").get("visible"));
         int light = GltfDocument.integer(extension(node, "KHR_lights_punctual"), "light", -1);
+        int skin = mesh != null ? GltfDocument.integer(node, "skin", -1) : -1;
+        modelIndex[index] = at;
         out.add(new ModelData.Node(name, parent, t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], mesh,
-            materials, visible, light, lines));
+            materials, visible, light, lines, skin));
         for (double child : GltfDocument.numbers(node, "children")) {
-            add(document, file, (int) child, at, out, depth + 1);
+            add(document, file, (int) child, at, out, depth + 1, modelIndex);
         }
     }
 
@@ -283,6 +325,9 @@ public final class Gltf {
         }
         attributes.add(0, VertexAttribute.NORMAL); // made smooth where missing
         List<VertexAttribute> format = attributes.stream().distinct().toList();
+        // Skinned where every primitive names joints and weights.
+        boolean skinned = primitives.stream().allMatch(primitive -> GltfDocument.object(primitive, "attributes")
+            .containsKey("JOINTS_0") && GltfDocument.object(primitive, "attributes").containsKey("WEIGHTS_0"));
         int vertices = 0;
         for (Map<String, Object> primitive : primitives) {
             vertices += document.count(GltfDocument.integer(GltfDocument.object(primitive, "attributes"), "POSITION",
@@ -290,6 +335,8 @@ public final class Gltf {
         }
         float[] positions = new float[3 * vertices];
         float[][] values = new float[format.size()][];
+        int[] joints = skinned ? new int[4 * vertices] : null;
+        float[] weights = skinned ? new float[4 * vertices] : null;
         for (int a = 0; a < values.length; a++) {
             values[a] = new float[width(format.get(a)) * vertices];
         }
@@ -309,6 +356,9 @@ public final class Gltf {
                     : smoothNormals(p, triangles);
                 System.arraycopy(read, 0, values[a], width * base, width * count);
             }
+            if (skinned) {
+                influences(document, names, count, base, joints, weights);
+            }
             int[] offset = new int[triangles.length];
             for (int i = 0; i < offset.length; i++) {
                 offset[i] = triangles[i] + base;
@@ -316,15 +366,94 @@ public final class Gltf {
             submeshes.add(offset);
             base += count;
         }
-        MeshBuilder builder = new MeshBuilder(VertexFormat.of(format.toArray(new VertexAttribute[0])), vertices)
+        List<VertexAttribute> all = new ArrayList<>(format);
+        if (skinned) {
+            all.add(VertexAttribute.JOINTS);
+            all.add(VertexAttribute.WEIGHTS);
+        }
+        MeshBuilder builder = new MeshBuilder(VertexFormat.of(all.toArray(new VertexAttribute[0])), vertices)
             .positions(positions);
         for (int a = 0; a < values.length; a++) {
             builder.attribute(format.get(a), values[a]);
+        }
+        if (skinned) {
+            builder.joints(palette(joints, weights, path(input))).attribute(VertexAttribute.WEIGHTS, weights)
+                .jointPalette(usedJoints(joints, weights));
         }
         for (int[] submesh : submeshes) {
             builder.submesh(submesh);
         }
         return builder.buildHierarchy();
+    }
+
+    /**
+     * A primitive's joints and weights, {@code count} vertices from {@code base}: of up to eight per vertex
+     * ({@code JOINTS_0}, {@code JOINTS_1}), the four weighing most, the weights renormalized to sum to 1.
+     */
+    private static void influences(GltfDocument document, Map<String, Object> names, int count, int base,
+        int[] joints, float[] weights) {
+        int sets = names.containsKey("JOINTS_1") && names.containsKey("WEIGHTS_1") ? 2 : 1;
+        float[][] js = new float[sets][];
+        float[][] ws = new float[sets][];
+        for (int set = 0; set < sets; set++) {
+            js[set] = widen(document.floats(GltfDocument.integer(names, "JOINTS_" + set, 0)), count, 4);
+            ws[set] = widen(document.floats(GltfDocument.integer(names, "WEIGHTS_" + set, 0)), count, 4);
+        }
+        int[] joint = new int[4 * sets];
+        float[] weight = new float[4 * sets];
+        for (int v = 0; v < count; v++) {
+            for (int i = 0; i < 4 * sets; i++) {
+                joint[i] = Math.round(js[i / 4][4 * v + i % 4]);
+                weight[i] = Math.max(0, ws[i / 4][4 * v + i % 4]);
+            }
+            float sum = 0;
+            for (int k = 0; k < 4; k++) {
+                // The heaviest remaining, the earliest on a tie
+                int best = k;
+                for (int i = k + 1; i < 4 * sets; i++) {
+                    best = weight[i] > weight[best] ? i : best;
+                }
+                int j = joint[k];
+                float w = weight[k];
+                joint[k] = joint[best];
+                weight[k] = weight[best];
+                joint[best] = j;
+                weight[best] = w;
+                sum += weight[k];
+            }
+            for (int k = 0; k < 4; k++) {
+                joints[4 * (base + v) + k] = joint[k];
+                weights[4 * (base + v) + k] = sum > 0 ? weight[k] / sum : k == 0 ? 1 : 0;
+            }
+        }
+    }
+
+    /**
+     * The skin joints the vertices use (weight above 0), in order: a mesh's palette; at most 256, as vertices name them
+     * in a byte.
+     */
+    private static int[] usedJoints(int[] joints, float[] weights) {
+        java.util.TreeSet<Integer> used = new java.util.TreeSet<>();
+        for (int i = 0; i < joints.length; i++) {
+            if (weights[i] > 0) {
+                used.add(joints[i]);
+            }
+        }
+        return used.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** {@code joints} as indices into their palette ({@link #lastPalette}); joints of weight 0 the first. */
+    private static int[] palette(int[] joints, float[] weights, AssetPath path) {
+        int[] palette = usedJoints(joints, weights);
+        if (palette.length > 256) {
+            throw new IllegalArgumentException("A mesh's vertices name " + palette.length + " joints, at most 256: "
+                + path);
+        }
+        int[] local = new int[joints.length];
+        for (int i = 0; i < joints.length; i++) {
+            local[i] = weights[i] > 0 ? java.util.Arrays.binarySearch(palette, joints[i]) : 0;
+        }
+        return local;
     }
 
     /** glTF's attribute name for {@code attribute}. */
