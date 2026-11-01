@@ -53,6 +53,22 @@ class ModelDataTest {
     }
 
     @Test
+    void spawningBindsSkinsToTheJointsNodes() {
+        float[] identity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        // A skinned mesh before its joints, a rigid mesh, a group.
+        ModelData.Node body = new ModelData.Node("body", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(), true, -1,
+            List.of(), 0);
+        ModelData model = new ModelData(List.of(body, ModelData.Node.of("bone", -1, null, List.of()),
+            ModelData.Node.of("wheel", 1, WHEEL, List.of())), List.of(),
+            List.of(new ModelData.Skin("arm", new int[] {1}, identity, -1)));
+        SceneGraph scene = new SceneGraph(new ChangeClock());
+        Renderables renderables = new Renderables(scene);
+        long[] nodes = model.spawn(scene, renderables, scene.create());
+        assertThat(renderables.skin(nodes[0])).isEqualTo(new SkinBinding(new long[] {nodes[1]}, identity));
+        assertThat(renderables.skin(nodes[2])).isNull();
+    }
+
+    @Test
     void skinsNameTheirJointsAmongTheNodes() {
         float[] identity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         ModelData.Skin skin = new ModelData.Skin("arm", new int[] {1}, identity, 0);

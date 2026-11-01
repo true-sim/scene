@@ -390,6 +390,18 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
             }
             placed[i] = created;
         }
+        // Skins last: their joints may come after the nodes they deform.
+        for (int i = 0; i < placed.length; i++) {
+            Node node = nodes.get(i);
+            if (node.mesh() != null && node.skin() >= 0) {
+                Skin skin = skins.get(node.skin());
+                long[] joints = new long[skin.jointCount()];
+                for (int j = 0; j < joints.length; j++) {
+                    joints[j] = placed[skin.joint(j)];
+                }
+                renderables.setSkin(placed[i], new SkinBinding(joints, skin.inverseBindMatrices()));
+            }
+        }
         return placed;
     }
 
