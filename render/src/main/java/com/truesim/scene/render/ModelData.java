@@ -10,9 +10,9 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * A model as data: a tree of nodes, each with a name, a local transform and optionally a mesh with its materials, as a
- * glTF scene or a prefab is. The meshes and materials are references, loaded as assets of their own, so two models
- * sharing a mesh share its upload. {@link #spawn} places the model's nodes in a scene.
+ * A model as data: a tree of nodes, each with a name, a local transform, whether it shows, and optionally a mesh with
+ * its materials and a light, as a glTF scene or a prefab is. The meshes and materials are references, loaded as assets
+ * of their own, so two models sharing a mesh share its upload. {@link #spawn} places the model's nodes in a scene.
  *
  * <pre>{@code
  * ModelData car = cache.get(paths.ref(RenderAssets.MODEL, "game://models/car.gltf"));
@@ -20,9 +20,42 @@ import java.util.Set;
  * }</pre>
  *
  * @param nodes the nodes, each parent before its children
+ * @param lights the lights nodes name ({@link Node#light()})
  */
 @AllowAllocation("models are made when assets load and spawned when placed")
-public record ModelData(List<Node> nodes) {
+public record ModelData(List<Node> nodes, List<Light> lights) {
+
+    /** What kind of light a {@link Light} is, as glTF's punctual lights. */
+    public enum LightKind {
+        /** Parallel rays along the node's -Z: the sun. Intensity in lux. */
+        DIRECTIONAL,
+        /** From the node's origin in every direction. Intensity in candela. */
+        POINT,
+        /** From the node's origin along its -Z, within a cone. Intensity in candela. */
+        SPOT
+    }
+
+    /**
+     * A light a node carries.
+     *
+     * @param name its name in the source; may be empty
+     * @param kind directional, point or spot
+     * @param r color red, linear
+     * @param g color green
+     * @param b color blue
+     * @param intensity lux for directional lights, candela for the others
+     * @param range how far it reaches, in meters; 0 for no limit (falling off with the square of the distance)
+     * @param innerCone a spot's angle from its axis where it starts to fade, in radians
+     * @param outerCone a spot's angle from its axis where it has faded out, in radians
+     */
+    public record Light(String name, LightKind kind, double r, double g, double b, double intensity, double range,
+        double innerCone, double outerCone) {
+
+        public Light {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(kind, "kind");
+        }
+    }
 
     /**
      * One node of a model.
@@ -41,13 +74,23 @@ public record ModelData(List<Node> nodes) {
      * @param sz scale z
      * @param mesh its mesh, or null for a node that only groups
      * @param materials the materials of its mesh's submeshes ({@link Renderables#set}); empty without a mesh
+     * @param visible whether it shows, with its children; hidden nodes are spawned but drawn on no layer
+     * @param light the index of its light in {@link #lights()}, or -1
      */
     public record Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
-        double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials) {
+        double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials,
+        boolean visible, int light) {
 
         public Node {
             Objects.requireNonNull(name, "name");
             materials = List.copyOf(materials);
+        }
+
+        /** A visible node without a light. */
+        public Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
+            double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh,
+            List<AssetRef<MaterialData>> materials) {
+            this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, true, -1);
         }
 
         /** A node at the origin, unrotated and unscaled. */
@@ -59,12 +102,22 @@ public record ModelData(List<Node> nodes) {
 
     public ModelData {
         nodes = List.copyOf(nodes);
+        lights = List.copyOf(lights);
         for (int i = 0; i < nodes.size(); i++) {
             int parent = nodes.get(i).parent();
             if (parent < -1 || parent >= i) {
                 throw new IllegalArgumentException("Node " + i + "'s parent " + parent + " is not a node before it");
             }
+            int light = nodes.get(i).light();
+            if (light < -1 || light >= lights.size()) {
+                throw new IllegalArgumentException("Node " + i + "'s light " + light + " is not one of the model's");
+            }
         }
+    }
+
+    /** A model without lights. */
+    public ModelData(List<Node> nodes) {
+        this(nodes, List.of());
     }
 
     /** The meshes and materials its nodes use, each once, in the order the nodes name them. */
@@ -81,17 +134,23 @@ public record ModelData(List<Node> nodes) {
 
     /**
      * Places the model's nodes in {@code scene}, its roots under {@code parent} ({@link SceneGraph#create(long)}'s
-     * parent: a node of the game's), with their transforms, and their meshes in {@code renderables}. Returns the scene
+     * parent: a node of the game's), with their transforms, and their meshes in {@code renderables}. Hidden nodes, and
+     * their children, are put on no layer. Lights are the engine's to place ({@link #lights()}). Returns the scene
      * nodes, by the model's node index.
      */
     public long[] spawn(SceneGraph scene, Renderables renderables, long parent) {
         long[] placed = new long[nodes.size()];
+        boolean[] shown = new boolean[nodes.size()];
         for (int i = 0; i < placed.length; i++) {
             Node node = nodes.get(i);
             long created = scene.create(node.parent() < 0 ? parent : placed[node.parent()]);
             scene.setTranslation(created, node.tx(), node.ty(), node.tz());
             scene.setRotation(created, node.rx(), node.ry(), node.rz(), node.rw());
             scene.setScale(created, node.sx(), node.sy(), node.sz());
+            shown[i] = node.visible() && (node.parent() < 0 || shown[node.parent()]);
+            if (!shown[i]) {
+                scene.setLayers(created, 0);
+            }
             if (node.mesh() != null) {
                 renderables.set(created, node.mesh(), node.materials());
             }

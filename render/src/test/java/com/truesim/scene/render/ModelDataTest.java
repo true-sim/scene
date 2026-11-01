@@ -56,4 +56,28 @@ class ModelDataTest {
         assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
             ModelData.Node.of("lost", -2, null, List.of()))));
     }
+    @Test
+    void hiddenNodesAndTheirChildrenAreOnNoLayerAndLightsAreNamed() {
+        SceneGraph scene = new SceneGraph(new ChangeClock());
+        Renderables renderables = new Renderables(scene);
+        ModelData.Light lamp = new ModelData.Light("lamp", ModelData.LightKind.POINT, 1, 1, 1, 10, 0, 0, 0);
+        ModelData model = new ModelData(List.of(
+            new ModelData.Node("hidden", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), false, -1),
+            new ModelData.Node("child", 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(PAINT), true, 0),
+            new ModelData.Node("shown", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1)),
+            List.of(lamp));
+        long root = scene.create();
+        long[] nodes = model.spawn(scene, renderables, root);
+        assertThat(scene.layers(nodes[0])).isZero();
+        assertThat(scene.layers(nodes[1])).as("under a hidden node").isZero();
+        assertThat(scene.layers(nodes[2])).isEqualTo(scene.layers(root));
+        assertThat(model.lights()).containsExactly(lamp);
+        assertThat(model.nodes().get(1).light()).isZero();
+        assertThat(car().lights()).isEmpty();
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
+            new ModelData.Node("x", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, 0))))
+            .withMessageContaining("light 0");
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
+            new ModelData.Node("x", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -2))));
+    }
 }

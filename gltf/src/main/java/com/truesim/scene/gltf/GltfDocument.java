@@ -24,6 +24,9 @@ final class GltfDocument {
     private static final int JSON_CHUNK = 0x4E4F534A;
     private static final int BIN_CHUNK = 0x004E4942;
     private static final String DATA = "data:";
+    /** The extensions read, besides every {@code KHR_materials_*}: a file requiring others fails. */
+    static final java.util.Set<String> READ = java.util.Set.of("KHR_texture_transform", "KHR_lights_punctual",
+        "KHR_node_visibility", "KHR_mesh_quantization", "KHR_xmp_json_ld");
 
     private final Map<String, Object> json;
     private final List<byte[]> buffers = new ArrayList<>();
@@ -77,8 +80,12 @@ final class GltfDocument {
             throw new IOException("Only glTF 2 is read: version " + asset.get("version"));
         }
         Object required = document.json.get("extensionsRequired");
-        if (required instanceof List<?> extensions && !extensions.isEmpty()) {
-            throw new IOException("The file requires extensions this importer does not read: " + extensions);
+        if (required instanceof List<?> extensions) {
+            List<Object> unread = new ArrayList<>(extensions);
+            unread.removeIf(name -> READ.contains(name) || String.valueOf(name).startsWith("KHR_materials_"));
+            if (!unread.isEmpty()) {
+                throw new IOException("The file requires extensions this importer does not read yet: " + unread);
+            }
         }
         for (Map<String, Object> buffer : document.list("buffers")) {
             Object uri = buffer.get("uri");
