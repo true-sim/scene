@@ -80,4 +80,25 @@ class ModelDataTest {
         assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
             new ModelData.Node("x", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -2))));
     }
+    @Test
+    void linesAreCheckedAndNamedByNodes() {
+        AssetRef<LineData> outline = AssetRef.of(RenderAssets.LINES, new AssetId(3, 1));
+        ModelData model = new ModelData(List.of(new ModelData.Node("o", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null,
+            List.of(), true, -1, List.of(outline))));
+        assertThat(model.references()).containsExactly(outline);
+        assertThat(car().nodes().get(0).lines()).isEmpty();
+        LineData line = new LineData(LineData.Kind.LINES, new float[] {0, 0, 0, 1, 0, 0}, new float[8],
+            new int[] {0, 1}, PAINT);
+        assertThat(line.vertexCount()).isEqualTo(2);
+        assertThat(line.bytes()).isPositive();
+        new LineData(LineData.Kind.POINTS, new float[3], new float[0], new int[] {0}, PAINT);
+        assertThatIllegalArgumentException().isThrownBy(() -> new LineData(LineData.Kind.LINES, new float[4],
+            new float[0], new int[0], PAINT)).withMessageContaining("3 floats");
+        assertThatIllegalArgumentException().isThrownBy(() -> new LineData(LineData.Kind.LINES, new float[3],
+            new float[3], new int[0], PAINT)).withMessageContaining("4 floats");
+        assertThatIllegalArgumentException().isThrownBy(() -> new LineData(LineData.Kind.LINES, new float[3],
+            new float[0], new int[] {0}, PAINT)).withMessageContaining("two indices");
+        org.assertj.core.api.Assertions.assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(
+            () -> new LineData(LineData.Kind.POINTS, new float[3], new float[0], new int[] {1}, PAINT));
+    }
 }

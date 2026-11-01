@@ -21,6 +21,8 @@ public final class RenderAssets {
     public static final AssetType<TextureData> TEXTURE = AssetType.of("texture", TextureData.class, TextureData::bytes);
     /** Models: node trees naming meshes and materials, as glTF scenes and prefabs are. */
     public static final AssetType<ModelData> MODEL = AssetType.of("model", ModelData.class, ModelData::bytes);
+    /** Points and lines: what glTF's point and line primitives hold, beside a node's triangle mesh. */
+    public static final AssetType<LineData> LINES = AssetType.of("lines", LineData.class, LineData::bytes);
 
     private RenderAssets() {
     }

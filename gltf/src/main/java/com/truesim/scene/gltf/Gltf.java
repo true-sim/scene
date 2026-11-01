@@ -11,6 +11,7 @@ import com.truesim.scene.assets.mesh.VertexAttribute;
 import com.truesim.scene.assets.mesh.VertexFormat;
 import com.truesim.scene.meshbuild.MeshBuilder;
 import com.truesim.scene.render.ImageImporter;
+import com.truesim.scene.render.LineData;
 import com.truesim.scene.render.MaterialData;
 import com.truesim.scene.render.ModelData;
 import com.truesim.scene.render.RenderAssets;
@@ -38,7 +39,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * }</pre>
  *
  * <p>Meshes are built into cluster hierarchies; a mesh without normals gets smooth ones. Triangles, strips and fans are
- * read, sparse accessors too; points and lines, skins and animations are not yet. Extensions: every
+ * read, sparse accessors too; points and lines are {@code #lines/M/P} assets of their own ({@link LineData}), named by
+ * the model's nodes beside their meshes; skins and animations are not read yet. Extensions: every
  * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
  * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
  * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
@@ -64,7 +66,8 @@ public final class Gltf {
             paths.importers().add(RenderAssets.MODEL, extension, this::model)
                 .add(RenderAssets.MESH, extension, this::mesh)
                 .add(RenderAssets.MATERIAL, extension, this::material)
-                .add(RenderAssets.TEXTURE, extension, this::image);
+                .add(RenderAssets.TEXTURE, extension, this::image)
+                .add(RenderAssets.LINES, extension, this::lines);
         }
         return this;
     }
@@ -163,14 +166,20 @@ public final class Gltf {
         }
         AssetRef<MeshData> mesh = null;
         List<AssetRef<MaterialData>> materials = new ArrayList<>();
+        List<AssetRef<LineData>> lines = new ArrayList<>();
         if (node.containsKey("mesh")) {
             int meshIndex = GltfDocument.integer(node, "mesh", 0);
-            mesh = paths.ref(RenderAssets.MESH, file.fragment("mesh/" + meshIndex));
-            for (Map<String, Object> primitive : GltfDocument.list(document.get("meshes", meshIndex), "primitives")) {
-                materials.add(primitive.containsKey("material")
-                    ? paths.ref(RenderAssets.MATERIAL, file.fragment("material/"
-                        + GltfDocument.integer(primitive, "material", 0)))
-                    : MaterialData.DEFAULT.ref());
+            List<Map<String, Object>> primitives = GltfDocument.list(document.get("meshes", meshIndex), "primitives");
+            for (int p = 0; p < primitives.size(); p++) {
+                Map<String, Object> primitive = primitives.get(p);
+                if (triangles(primitive)) {
+                    materials.add(material(file, primitive));
+                } else {
+                    lines.add(paths.ref(RenderAssets.LINES, file.fragment("lines/" + meshIndex + "/" + p)));
+                }
+            }
+            if (!materials.isEmpty()) {
+                mesh = paths.ref(RenderAssets.MESH, file.fragment("mesh/" + meshIndex));
             }
         }
         String name = String.valueOf(node.getOrDefault("name", ""));
@@ -178,10 +187,23 @@ public final class Gltf {
         boolean visible = !Boolean.FALSE.equals(extension(node, "KHR_node_visibility").get("visible"));
         int light = GltfDocument.integer(extension(node, "KHR_lights_punctual"), "light", -1);
         out.add(new ModelData.Node(name, parent, t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], mesh,
-            materials, visible, light));
+            materials, visible, light, lines));
         for (double child : GltfDocument.numbers(node, "children")) {
             add(document, file, (int) child, at, out, depth + 1);
         }
+    }
+
+    /** The material {@code primitive} names, or the default. */
+    private AssetRef<MaterialData> material(AssetPath file, Map<String, Object> primitive) {
+        return primitive.containsKey("material")
+            ? paths.ref(RenderAssets.MATERIAL, file.fragment("material/" + GltfDocument.integer(primitive, "material",
+                0)))
+            : MaterialData.DEFAULT.ref();
+    }
+
+    /** Whether {@code primitive} holds triangles, a strip or a fan: a mesh's; else points or lines. */
+    private static boolean triangles(Map<String, Object> primitive) {
+        return GltfDocument.integer(primitive, "mode", 4) >= 4;
     }
 
     /** {@code owner}'s extension {@code name}'s object; empty if it has none. */
@@ -243,9 +265,11 @@ public final class Gltf {
     private MeshData mesh(AssetInput input) throws IOException {
         GltfDocument document = document(input);
         int meshIndex = index(path(input), "mesh");
-        List<Map<String, Object>> primitives = GltfDocument.list(document.get("meshes", meshIndex), "primitives");
+        List<Map<String, Object>> primitives = new ArrayList<>(GltfDocument.list(document.get("meshes", meshIndex),
+            "primitives"));
+        primitives.removeIf(primitive -> !triangles(primitive)); // points and lines are assets of their own
         if (primitives.isEmpty()) {
-            throw new IllegalArgumentException("Mesh " + meshIndex + " has no primitives: " + path(input));
+            throw new IllegalArgumentException("Mesh " + meshIndex + " has no triangles: " + path(input));
         }
         // Attributes every primitive has; positions are a must.
         List<VertexAttribute> attributes = new ArrayList<>(List.of(VertexAttribute.NORMAL, VertexAttribute.TANGENT,
@@ -339,22 +363,92 @@ public final class Gltf {
 
     /** The primitive's triangles: its indices or its vertices in order, strips and fans unrolled. */
     private static int[] triangles(GltfDocument document, Map<String, Object> primitive, int count, AssetPath path) {
-        int[] indices;
-        if (primitive.containsKey("indices")) {
-            indices = document.indices(GltfDocument.integer(primitive, "indices", 0));
-        } else {
-            indices = new int[count];
-            for (int i = 0; i < count; i++) {
-                indices[i] = i;
-            }
-        }
+        int[] indices = vertices(document, primitive, count);
         int mode = GltfDocument.integer(primitive, "mode", 4);
         return switch (mode) {
-            case 4 -> indices;
             case 5 -> strip(indices);
             case 6 -> fan(indices);
-            default -> throw new IllegalArgumentException("Only triangles are read, not mode " + mode + ": " + path);
+            default -> {
+                if (mode != 4) {
+                    throw new IllegalArgumentException("Not a mode of glTF: " + mode + ": " + path);
+                }
+                yield indices;
+            }
         };
+    }
+
+    /** The primitive's vertices in order, or its indices. */
+    private static int[] vertices(GltfDocument document, Map<String, Object> primitive, int count) {
+        if (primitive.containsKey("indices")) {
+            return document.indices(GltfDocument.integer(primitive, "indices", 0));
+        }
+        int[] indices = new int[count];
+        for (int i = 0; i < count; i++) {
+            indices[i] = i;
+        }
+        return indices;
+    }
+
+    // ---------------------------------------------------------------- points and lines
+
+    private LineData lines(AssetInput input) throws IOException {
+        GltfDocument document = document(input);
+        AssetPath path = path(input);
+        String[] parts = path.fragment().split("/");
+        if (parts.length != 3 || !parts[0].equals("lines")) {
+            throw new IllegalArgumentException("Not glTF points or lines: " + path + " (expected #lines/M/P)");
+        }
+        int meshIndex;
+        int primitiveIndex;
+        try {
+            meshIndex = Integer.parseInt(parts[1]);
+            primitiveIndex = Integer.parseInt(parts[2]);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Not glTF points or lines: " + path + " (expected #lines/M/P)");
+        }
+        List<Map<String, Object>> primitives = GltfDocument.list(document.get("meshes", meshIndex), "primitives");
+        if (primitiveIndex < 0 || primitiveIndex >= primitives.size() || triangles(primitives.get(primitiveIndex))) {
+            throw new IllegalArgumentException("Not a primitive of points or lines: " + path);
+        }
+        Map<String, Object> primitive = primitives.get(primitiveIndex);
+        Map<String, Object> names = GltfDocument.object(primitive, "attributes");
+        if (!names.containsKey("POSITION")) {
+            throw new IllegalArgumentException("A primitive without positions: " + path);
+        }
+        float[] positions = document.floats(GltfDocument.integer(names, "POSITION", 0));
+        int count = positions.length / 3;
+        float[] colors = names.containsKey("COLOR_0")
+            ? widen(document.floats(GltfDocument.integer(names, "COLOR_0", 0)), count, 4) : new float[0];
+        int[] order = vertices(document, primitive, count);
+        int mode = GltfDocument.integer(primitive, "mode", 4);
+        int[] indices = switch (mode) {
+            case 0, 1 -> order;
+            case 2 -> lineLoop(order);
+            default -> lineStrip(order);
+        };
+        return new LineData(mode == 0 ? LineData.Kind.POINTS : LineData.Kind.LINES, positions, colors,
+            mode == 1 ? java.util.Arrays.copyOf(indices, indices.length & ~1) : indices,
+            material(path.file(), primitive));
+    }
+
+    /** A loop's segments: each vertex to the next, the last back to the first. */
+    private static int[] lineLoop(int[] order) {
+        int[] out = new int[2 * order.length];
+        for (int i = 0; i < order.length; i++) {
+            out[2 * i] = order[i];
+            out[2 * i + 1] = order[(i + 1) % order.length];
+        }
+        return out;
+    }
+
+    /** A strip's segments: each vertex to the next. */
+    private static int[] lineStrip(int[] order) {
+        int[] out = new int[2 * Math.max(0, order.length - 1)];
+        for (int i = 0; i + 1 < order.length; i++) {
+            out[2 * i] = order[i];
+            out[2 * i + 1] = order[i + 1];
+        }
+        return out;
     }
 
     private static int[] strip(int[] indices) {
