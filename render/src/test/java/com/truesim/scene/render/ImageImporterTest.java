@@ -70,4 +70,20 @@ class ImageImporterTest {
         assertThat(ImageImporter.colorSpace(AssetPath.parse("game://a.png#other")))
             .isEqualTo(TextureData.ColorSpace.SRGB);
     }
+    @Test
+    void webpImportsThroughTheImageIoPlugin() throws Exception {
+        // A 1 x 1 lossless WebP.
+        Files.write(dir.resolve("dot.webp"), java.util.Base64.getDecoder().decode(
+            "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=="));
+        try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
+            PathAssets paths = new PathAssets(cache);
+            paths.mounts().add("game", PathSource.folder(dir));
+            paths.importers().add(RenderAssets.TEXTURE, "webp", ImageImporter.INSTANCE);
+            AssetRef<TextureData> dot = paths.ref(RenderAssets.TEXTURE, "game://dot.webp");
+            TextureData texture = load(tasks, cache, dot);
+            assertThat(cache.failure(dot)).isNull();
+            assertThat(texture.width()).isEqualTo(1);
+            assertThat(texture.height()).isEqualTo(1);
+        }
+    }
 }

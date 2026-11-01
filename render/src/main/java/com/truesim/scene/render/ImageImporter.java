@@ -13,7 +13,8 @@ import java.lang.foreign.ValueLayout;
 import javax.imageio.ImageIO;
 
 /**
- * Imports PNG and JPEG images as textures, through the JDK's image reading: register it for the extensions it reads
+ * Imports PNG, JPEG and WebP images as textures, through ImageIO (WebP by the TwelveMonkeys plugin): register it for the
+ * extensions it reads
  * ({@code paths.importers().add(RenderAssets.TEXTURE, "png", ImageImporter.INSTANCE)}). Images are colors (sRGB)
  * unless the path's fragment says {@code linear} ({@code rock_normal.png#linear}), as data textures are read; glTF
  * materials name their data textures that way. Texels are 8-bit RGBA, rows top to bottom, in memory the garbage

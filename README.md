@@ -365,10 +365,12 @@ assets.acquire(rock);
   Extensions: every `KHR_materials_*` as a material feature (clearcoat by the engine's names, the rest by glTF's, so
   the renderer can take them up one by one; emissive strength scales the emissive color; spec-gloss also approximated
   as metallic-roughness), `KHR_texture_transform` per texture, `KHR_lights_punctual` and `KHR_node_visibility` on the
-  model (`ModelData.lights()`, hidden nodes on no layer), `KHR_mesh_quantization`. A file requiring another extension
-  fails, as glTF asks. Checked against the Khronos sample models
-  (`./gradlew :scene-gltf:test -PgltfSamples=<glTF-Sample-Assets/Models>`): all import but the one requiring WebP
-  images, which comes next with meshopt and KTX2, then skins, morph targets and animations.
+  model (`ModelData.lights()`, hidden nodes on no layer), `KHR_mesh_quantization`, meshopt-compressed buffers
+  (`KHR_meshopt_compression` and its draft, through meshoptimizer), WebP images (`EXT_texture_webp`; `ImageImporter`
+  reads WebP through the TwelveMonkeys ImageIO plugin). A file requiring another extension fails, as glTF asks. Checked against the Khronos sample models
+  (`./gradlew :scene-gltf:test -PgltfSamples=<glTF-Sample-Assets/Models>`): all 270 files import, and the meshopt
+  sample's compressed views decode to its uncompressed fallback. Next: KTX2 textures, Draco, then skins, morph targets
+  and animations.
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
