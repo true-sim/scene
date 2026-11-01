@@ -66,6 +66,13 @@ class ModelDataTest {
         long[] nodes = model.spawn(scene, renderables, scene.create());
         assertThat(renderables.skin(nodes[0])).isEqualTo(new SkinBinding(new long[] {nodes[1]}, identity));
         assertThat(renderables.skin(nodes[2])).isNull();
+        // A node's own morph weights are set on its renderable.
+        ModelData.Node face = new ModelData.Node("face", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(), true, -1,
+            List.of(), -1, List.of(0.5, 0.25));
+        long[] faces = new ModelData(List.of(face)).spawn(scene, renderables, scene.create());
+        assertThat(renderables.morphWeightCount(faces[0])).isEqualTo(2);
+        assertThat(renderables.morphWeight(faces[0], 1)).isEqualTo(0.25f);
+        assertThat(renderables.morphWeightCount(nodes[2])).isZero();
     }
 
     @Test
