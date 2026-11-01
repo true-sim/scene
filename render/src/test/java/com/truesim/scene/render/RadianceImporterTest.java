@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.within;
 
 import com.truesim.common.jobs.TaskScheduler;
 import com.truesim.scene.assets.AssetCache;
+import com.truesim.scene.assets.AssetId;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.PathAssets;
 import com.truesim.scene.assets.PathSource;
@@ -125,6 +126,49 @@ class RadianceImporterTest {
     }
 
     @Test
+    void everyLimitIsChecked() throws IOException {
+        for (String size : new String[] {"-Y 0 +X 1", "-Y 1 +X 0", "-Y 1 +X 40000", "-Y 40000 +X 1",
+            "-Y 16384 +X 32768"}) {
+            assertThatThrownBy(() -> read(file(size))).as(size).hasMessageContaining("texels, not 1 to 32768");
+        }
+        assertThatThrownBy(() -> read(file("-Y 1"))).hasMessageContaining("rows of +X texels");
+        assertThatThrownBy(() -> read(file("-Y 1 -X 2"))).hasMessageContaining("rows of +X texels");
+        assertThatThrownBy(() -> read(file("-Y 1 +X 8", 2, 2, 0, 8, 9, 1)))
+            .as("literals past the end").hasMessageContaining("a run of 9 values at 0 of 8");
+        assertThatThrownBy(() -> read(file("-Y 1 +X 2", 5, 5, 5, 130, 1, 1, 1, 2)))
+            .hasMessageContaining("a repeat past the scanline's end");
+        assertThatThrownBy(() -> RadianceImporter.read(new ByteArrayInputStream(
+            ("#?RADIANCE\n" + "#".repeat(5000) + "\n").getBytes()), "x.hdr"))
+            .hasMessageContaining("longer than 4096 bytes");
+        // Flat scanlines that start like run-length ones: too narrow, the second byte not 2, the width's top bit set,
+        // the widest row (run-length rows are narrower); and texels that start like the old repeat but are not.
+        assertThat(texel(read(file("-Y 1 +X 2", 2, 2, 0, 136, 3, 3, 3, 136)), 1, 0, 0)).isEqualTo(3.5f);
+        int[] eight = new int[32];
+        eight[0] = 5;
+        eight[3] = 136;
+        assertThat(texel(read(file("-Y 1 +X 8", eight)), 0, 0, 0)).as("wide and flat").isEqualTo(5.5f);
+        eight[0] = 2;
+        eight[1] = 3;
+        eight[3] = 136;
+        assertThat(texel(read(file("-Y 1 +X 8", eight)), 0, 0, 1)).isEqualTo(3.5f);
+        eight[1] = 2;
+        eight[2] = 0x80;
+        assertThat(texel(read(file("-Y 1 +X 8", eight)), 0, 0, 2)).isEqualTo(128.5f);
+        int[] widest = new int[4 * 32768];
+        widest[0] = 2;
+        widest[1] = 2;
+        widest[3] = 136;
+        assertThat(texel(read(file("-Y 1 +X 32768", widest)), 0, 0, 1)).isEqualTo(2.5f);
+        TextureData almost = read(file("-Y 1 +X 3", 1, 2, 1, 136, 1, 1, 2, 136, 9, 9, 9, 136));
+        assertThat(texel(almost, 0, 0, 1)).isEqualTo(2.5f);
+        assertThat(texel(almost, 1, 0, 2)).isEqualTo(2.5f);
+        ByteArrayOutputStream older = new ByteArrayOutputStream();
+        older.writeBytes("#?RGBE\n\n-Y 1 +X 1\n".getBytes(StandardCharsets.US_ASCII));
+        older.writeBytes(new byte[] {1, 1, 2, (byte) 136});
+        assertThat(texel(read(older.toByteArray()), 0, 0, 2)).as("the older magic").isEqualTo(2.5f);
+    }
+
+    @Test
     void halfFloatTexelsAreLinearAndSized() {
         assertThatIllegalArgumentException().isThrownBy(() -> new TextureData(1, 1, TextureData.ColorSpace.SRGB,
             TextureData.Format.RGBA16F, Arena.ofAuto().allocate(8))).withMessageContaining("linear");
@@ -151,6 +195,20 @@ class RadianceImporterTest {
             }
             assertThat(cache.failure(ref)).isNull();
             assertThat(texel(cache.get(ref), 0, 0, 0)).isCloseTo(1, within(0.01f));
+        }
+        // Read by id from a source of its own: no path to name it.
+        try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
+            cache.register(RenderAssets.TEXTURE, RadianceImporter.INSTANCE,
+                (id, resource) -> new ByteArrayInputStream("broken".getBytes()));
+            AssetRef<TextureData> byId = AssetRef.of(RenderAssets.TEXTURE, new AssetId(0, 7));
+            cache.acquire(byId);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (cache.loadingCount() > 0) {
+                tasks.drainCompleted();
+                assertThat(System.nanoTime()).isLessThan(deadline);
+                Thread.sleep(1);
+            }
+            assertThat(cache.failure(byId)).hasMessageContaining(new AssetId(0, 7).toString());
         }
     }
 }
