@@ -76,14 +76,23 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
      * @param materials the materials of its mesh's submeshes ({@link Renderables#set}); empty without a mesh
      * @param visible whether it shows, with its children; hidden nodes are spawned but drawn on no layer
      * @param light the index of its light in {@link #lights()}, or -1
+     * @param lines its points and lines, beside its mesh; drawn once the renderer draws them
      */
     public record Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
         double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials,
-        boolean visible, int light) {
+        boolean visible, int light, List<AssetRef<LineData>> lines) {
 
         public Node {
             Objects.requireNonNull(name, "name");
             materials = List.copyOf(materials);
+            lines = List.copyOf(lines);
+        }
+
+        /** A node without points or lines. */
+        public Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
+            double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh,
+            List<AssetRef<MaterialData>> materials, boolean visible, int light) {
+            this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, List.of());
         }
 
         /** A visible node without a light. */
@@ -120,7 +129,7 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
         this(nodes, List.of());
     }
 
-    /** The meshes and materials its nodes use, each once, in the order the nodes name them. */
+    /** The meshes, materials, points and lines its nodes use, each once, in the order the nodes name them. */
     public Set<AssetRef<?>> references() {
         Set<AssetRef<?>> references = new LinkedHashSet<>();
         for (Node node : nodes) {
@@ -128,6 +137,7 @@ public record ModelData(List<Node> nodes, List<Light> lights) {
                 references.add(node.mesh());
             }
             references.addAll(node.materials());
+            references.addAll(node.lines());
         }
         return references;
     }

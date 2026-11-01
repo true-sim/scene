@@ -14,6 +14,7 @@ import com.truesim.scene.assets.PathSource;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.assets.mesh.VertexAttribute;
 import com.truesim.scene.render.ImageImporter;
+import com.truesim.scene.render.LineData;
 import com.truesim.scene.render.MaterialData;
 import com.truesim.scene.render.ModelData;
 import com.truesim.scene.render.RenderAssets;
@@ -258,13 +259,16 @@ class GltfTest {
              "scenes": [{"nodes": [0]}], "nodes": [{"children": [1]}, {"children": [0]}],
             """ + VIEWS + """
              "meshes": [{"primitives": [{"attributes": {"NORMAL": 1}}]}, {"primitives": []},
-               {"primitives": [{"attributes": {"POSITION": 0}, "mode": 1}]}]}
+               {"primitives": [{"attributes": {"POSITION": 0}, "mode": 1}]},
+               {"primitives": [{"attributes": {"POSITION": 0}, "mode": 7}]}]}
             """;
         Files.writeString(dir.resolve("broken.gltf"), json);
         assertThat(failure("game://broken.gltf", RenderAssets.MODEL)).hasMessageContaining("cycle");
         assertThat(failure("game://broken.gltf#mesh/0", RenderAssets.MESH)).hasMessageContaining("without positions");
-        assertThat(failure("game://broken.gltf#mesh/1", RenderAssets.MESH)).hasMessageContaining("no primitives");
-        assertThat(failure("game://broken.gltf#mesh/2", RenderAssets.MESH)).hasMessageContaining("mode 1");
+        assertThat(failure("game://broken.gltf#mesh/1", RenderAssets.MESH)).hasMessageContaining("no triangles");
+        assertThat(failure("game://broken.gltf#mesh/2", RenderAssets.MESH)).as("lines only")
+            .hasMessageContaining("no triangles");
+        assertThat(failure("game://broken.gltf#mesh/3", RenderAssets.MESH)).hasMessageContaining("Not a mode");
     }
 
     @Test
@@ -386,5 +390,53 @@ class GltfTest {
             .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://albedo.webp"));
         MaterialData vendor = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/5"));
         assertThat(vendor.values().has("baseColorTexture")).as("a vendor's image, not required").isFalse();
+    }
+    @Test
+    void pointsAndLinesAreAssetsOfTheirOwn() throws Exception {
+        Files.write(dir.resolve("lines.bin"), geometry());
+        String json = """
+            {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0, 1]}],
+             "nodes": [{"name": "mixed", "mesh": 0}, {"name": "outline", "mesh": 1}],
+             "buffers": [{"uri": "lines.bin", "byteLength": 256}],
+            """ + VIEWS + """
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 3},
+                 {"attributes": {"POSITION": 0, "COLOR_0": 4}, "mode": 1, "material": 0}]},
+               {"primitives": [{"attributes": {"POSITION": 0}, "mode": 0},
+                 {"attributes": {"POSITION": 0}, "mode": 2}, {"attributes": {"POSITION": 0}, "mode": 3},
+                 {"attributes": {"POSITION": 0}, "indices": 3, "mode": 1}, {"attributes": {"NORMAL": 1}, "mode": 1}]}],
+             "materials": [{}]}
+            """;
+        Files.writeString(dir.resolve("lines.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://lines.gltf"));
+        ModelData.Node mixed = model.nodes().get(0);
+        assertThat(mixed.mesh()).isNotNull();
+        assertThat(mixed.materials()).as("the triangles' only").hasSize(1);
+        assertThat(mixed.lines()).containsExactly(paths.ref(RenderAssets.LINES, "game://lines.gltf#lines/0/1"));
+        ModelData.Node outline = model.nodes().get(1);
+        assertThat(outline.mesh()).as("no triangles: no mesh").isNull();
+        assertThat(outline.lines()).hasSize(5);
+        assertThat(load(mixed.mesh()).materialSlots()).isEqualTo(1);
+
+        LineData colored = load(mixed.lines().get(0));
+        assertThat(colored.kind()).isEqualTo(LineData.Kind.LINES);
+        assertThat(colored.indices()).containsExactly(0, 1, 2, 3);
+        assertThat(colored.colors()).hasSize(16).startsWith(1, 0.5f, 0.25f, 1);
+        assertThat(colored.material()).isEqualTo(paths.ref(RenderAssets.MATERIAL, "game://lines.gltf#material/0"));
+        LineData points = load(outline.lines().get(0));
+        assertThat(points.kind()).isEqualTo(LineData.Kind.POINTS);
+        assertThat(points.indices()).containsExactly(0, 1, 2, 3);
+        assertThat(points.colors()).isEmpty();
+        assertThat(points.material()).isEqualTo(MaterialData.DEFAULT.ref());
+        assertThat(load(outline.lines().get(1)).indices()).as("a loop").containsExactly(0, 1, 1, 2, 2, 3, 3, 0);
+        assertThat(load(outline.lines().get(2)).indices()).as("a strip").containsExactly(0, 1, 1, 2, 2, 3);
+        assertThat(load(outline.lines().get(3)).indices()).as("six indices: three segments")
+            .containsExactly(0, 1, 2, 0, 2, 3);
+        assertThat(failure("game://lines.gltf#lines/1/4", RenderAssets.LINES)).hasMessageContaining("without positions");
+        assertThat(failure("game://lines.gltf#lines/0/0", RenderAssets.LINES)).hasMessageContaining("Not a primitive");
+        assertThat(failure("game://lines.gltf#lines/0/9", RenderAssets.LINES)).hasMessageContaining("Not a primitive");
+        assertThat(failure("game://lines.gltf#lines/0/-1", RenderAssets.LINES)).hasMessageContaining("Not a primitive");
+        assertThat(failure("game://lines.gltf#lines/0", RenderAssets.LINES)).hasMessageContaining("#lines/M/P");
+        assertThat(failure("game://lines.gltf#mesh/0/0", RenderAssets.LINES)).hasMessageContaining("#lines/M/P");
+        assertThat(failure("game://lines.gltf#lines/x/0", RenderAssets.LINES)).hasMessageContaining("#lines/M/P");
     }
 }
