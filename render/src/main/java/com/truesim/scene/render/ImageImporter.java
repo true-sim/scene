@@ -33,14 +33,22 @@ public final class ImageImporter implements AssetLoader<TextureData> {
     @Override
     @AllowAllocation("importing images")
     public TextureData load(AssetInput input) throws IOException {
-        BufferedImage image;
         try (InputStream in = input.open()) {
-            image = ImageIO.read(in);
+            return read(in, colorSpace(input.path()), describe(input));
         }
+    }
+
+    /**
+     * Reads a PNG or JPEG image from {@code in} as a texture in {@code colorSpace}: for importers of formats holding
+     * images (a glTF file's embedded ones). {@code what} names it in errors.
+     */
+    @AllowAllocation("importing images")
+    public static TextureData read(InputStream in, TextureData.ColorSpace colorSpace, String what) throws IOException {
+        BufferedImage image = ImageIO.read(in);
         if (image == null) {
-            throw new IOException("Not an image the JDK reads: " + describe(input));
+            throw new IOException("Not an image the JDK reads: " + what);
         }
-        return texture(image, colorSpace(input.path()));
+        return texture(image, colorSpace);
     }
 
     private static String describe(AssetInput input) {
