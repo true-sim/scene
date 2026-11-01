@@ -76,6 +76,10 @@ final class GltfDocument {
         if (!String.valueOf(asset.get("version")).startsWith("2")) {
             throw new IOException("Only glTF 2 is read: version " + asset.get("version"));
         }
+        Object required = document.json.get("extensionsRequired");
+        if (required instanceof List<?> extensions && !extensions.isEmpty()) {
+            throw new IOException("The file requires extensions this importer does not read: " + extensions);
+        }
         for (Map<String, Object> buffer : document.list("buffers")) {
             Object uri = buffer.get("uri");
             byte[] data;
@@ -222,30 +226,50 @@ final class GltfDocument {
     /** Accessor {@code index}'s values as floats, normalized integers mapped to 0..1 or -1..1. */
     float[] floats(int index) {
         Map<String, Object> accessor = get("accessors", index);
-        if (accessor.containsKey("sparse")) {
-            throw new IllegalArgumentException("Sparse accessors are not read: accessor " + index);
-        }
         int components = components((String) accessor.get("type"));
         int count = integer(accessor, "count", 0);
         int type = integer(accessor, "componentType", 5126);
         boolean normalized = Boolean.TRUE.equals(accessor.get("normalized"));
         float[] out = new float[count * components];
-        if (!accessor.containsKey("bufferView")) {
-            return out; // all zeros, as glTF says
+        if (accessor.containsKey("bufferView")) { // else all zeros, as glTF says
+            int viewIndex = integer(accessor, "bufferView", 0);
+            int stride = integer(get("bufferViews", viewIndex), "byteStride", 0);
+            read(view(viewIndex), integer(accessor, "byteOffset", 0), stride, type, normalized, components, count, out,
+                null);
         }
-        int viewIndex = integer(accessor, "bufferView", 0);
-        ByteBuffer view = view(viewIndex);
-        int size = size(type);
-        int stride = integer(get("bufferViews", viewIndex), "byteStride", 0);
-        int step = stride > 0 ? stride : size * components;
-        int offset = integer(accessor, "byteOffset", 0);
-        for (int i = 0; i < count; i++) {
-            int at = offset + i * step;
-            for (int c = 0; c < components; c++) {
-                out[i * components + c] = read(view, at + c * size, type, normalized);
-            }
+        if (accessor.containsKey("sparse")) {
+            Map<String, Object> sparse = object(accessor, "sparse");
+            int changed = integer(sparse, "count", 0);
+            Map<String, Object> indices = object(sparse, "indices");
+            float[] at = new float[changed];
+            read(view(integer(indices, "bufferView", 0)), integer(indices, "byteOffset", 0), 0,
+                integer(indices, "componentType", 5125), false, 1, changed, at, null);
+            Map<String, Object> values = object(sparse, "values");
+            read(view(integer(values, "bufferView", 0)), integer(values, "byteOffset", 0), 0, type, normalized,
+                components, changed, out, at);
         }
         return out;
+    }
+
+    /**
+     * Reads {@code count} values of {@code components} components of {@code type} from {@code view} at
+     * {@code offset}, {@code stride} bytes apart (0: packed), into {@code out}: value {@code i} at index {@code i}, or
+     * at index {@code targets[i]} where given (a sparse accessor's).
+     */
+    private static void read(ByteBuffer view, int offset, int stride, int type, boolean normalized, int components,
+        int count, float[] out, float[] targets) {
+        int size = size(type);
+        int step = stride > 0 ? stride : size * components;
+        for (int i = 0; i < count; i++) {
+            int at = offset + i * step;
+            int to = (targets == null ? i : (int) targets[i]) * components;
+            if (to < 0 || to + components > out.length) {
+                throw new IllegalArgumentException("A sparse index past the accessor's end: " + to / components);
+            }
+            for (int c = 0; c < components; c++) {
+                out[to + c] = read(view, at + c * size, type, normalized);
+            }
+        }
     }
 
     private static float read(ByteBuffer view, int at, int type, boolean normalized) {

@@ -38,7 +38,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * }</pre>
  *
  * <p>Meshes are built into cluster hierarchies; a mesh without normals gets smooth ones. Triangles, strips and fans are
- * read; points and lines, sparse accessors, skins and animations are not. A file is read once while its parts load
+ * read, sparse accessors too; points and lines, skins and animations are not yet. A file requiring an extension
+ * ({@code extensionsRequired}) this importer does not read yet fails, as glTF asks. A file is read once while its parts load
  * close together (a soft cache). Imports run in the background and are thread-safe.
  */
 @AllowAllocation("importing when assets load")

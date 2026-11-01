@@ -360,8 +360,11 @@ assets.acquire(rock);
 - **glTF** (`scene-gltf`): `new Gltf(paths).register()` imports `.gltf` and `.glb` one part per asset: the file is
   its default scene as a model, `#mesh/N` a mesh (a submesh per primitive, built into a cluster hierarchy; smooth
   normals where missing), `#material/N` a metallic-roughness material, `#image/N` an embedded image. External images
-  are textures at their own paths (`#linear` for data textures). Triangles, strips and fans; no skins, animations,
-  sparse accessors or image extensions yet.
+  are textures at their own paths (`#linear` for data textures). Triangles, strips and fans, sparse accessors. A file
+  requiring an extension not read yet fails, as glTF asks. Checked against the Khronos sample models
+  (`./gradlew :scene-gltf:test -PgltfSamples=<glTF-Sample-Assets/Models>`): every file without a required extension
+  imports; the extensions, points and lines, skins, morph targets and animations come next, so that nothing is left
+  out.
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
