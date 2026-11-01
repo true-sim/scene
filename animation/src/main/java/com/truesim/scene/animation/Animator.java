@@ -61,6 +61,11 @@ public final class Animator {
     private int[] cursors = new int[0];
     private double[] scratch = new double[4];
     private int rigVersion = -1;
+    // Level of detail: updated every nth update of its animators, at its turn (staggered), the time between added up.
+    private int every = 1;
+    private int turn;
+    private double pending;
+    private boolean due = true;
     // Events passed this update, dispatched in order after the poses are written.
     private AnimationEvent[] events = new AnimationEvent[8];
     private float[] eventWeights = new float[8];
@@ -181,6 +186,49 @@ public final class Animator {
     /** The scene node posed for skeleton node {@code node}. */
     public long node(int node) {
         return nodes[node];
+    }
+
+    /**
+     * Updates the pose only every {@code n}th update of its animators (1: every update): for instances far away or out
+     * of sight. Its clock adds up the time between, so it keeps time; events and root motion come on its updates, for
+     * the time since its last. Animators added one after another take their turns in step, so the work spreads.
+     */
+    public Animator updateEvery(int n) {
+        if (n < 1) {
+            throw new IllegalArgumentException("Every update at most: " + n);
+        }
+        every = n;
+        return this;
+    }
+
+    public int updateEvery() {
+        return every;
+    }
+
+    /** Whether it updated its pose in the last update of its animators. */
+    public boolean updated() {
+        return due;
+    }
+
+    /** Takes its turn number among its animators: who of them updates when. */
+    void turn(int turn) {
+        this.turn = turn;
+    }
+
+    /**
+     * Adds {@code seconds} to its clock; returns whether it is its turn ({@code tick} counts its animators' updates),
+     * moving its motions on by the time added up then. Not its turn: no root motion this update.
+     */
+    boolean tick(long tick, double seconds) {
+        pending += seconds;
+        due = (tick + turn) % every == 0;
+        if (due) {
+            advance(pending);
+            pending = 0;
+        } else {
+            rootDelta.clear();
+        }
+        return due;
     }
 
     /** Playback on {@code layer}, a layer of its rig. */
@@ -607,6 +655,9 @@ public final class Animator {
 
     /** Samples and blends the layers into the pose; touches nothing shared, so animators sample in parallel. */
     void sample() {
+        if (!due) {
+            return;
+        }
         fit();
         for (int j = 0; j < nodes.length; j++) {
             if (rig.animated(j)) {
@@ -1627,6 +1678,9 @@ public final class Animator {
 
     /** Writes the pose to the scene: on the scene's thread, one animator after another. */
     void write(SceneGraph scene, Animators.MorphSink morphs) {
+        if (!due) {
+            return;
+        }
         boolean playing = anyTouched;
         for (Playback layer : layers) {
             playing |= layer.count > 0;

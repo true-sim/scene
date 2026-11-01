@@ -48,6 +48,8 @@ public final class Animators {
     private Animator[] animators = new Animator[8];
     private int count;
     private MorphSink morphs;
+    private long ticks; // updates so far, for animators updating every few
+    private int added;  // animators added so far, for their turns
     private AnimationEvent[] listened = new AnimationEvent[0];
     private Listener[] listeners = new Listener[0];
     private final JobSystem.RangeTask sample = (from, to, worker) -> {
@@ -86,6 +88,7 @@ public final class Animators {
     @AllowAllocation("animators are made when models spawn")
     public Animator add(Rig rig, long[] nodes) {
         Animator animator = new Animator(rig, nodes, scene);
+        animator.turn(added++);
         if (count == animators.length) {
             animators = Arrays.copyOf(animators, 2 * count);
         }
@@ -134,8 +137,9 @@ public final class Animators {
             throw new IllegalArgumentException("Not a time step: " + seconds);
         }
         for (int i = 0; i < count; i++) {
-            animators[i].advance(seconds);
+            animators[i].tick(ticks, seconds);
         }
+        ticks++;
         if (jobs != null && count > GRAIN) {
             jobs.parallelFor(count, GRAIN, sample);
         } else {
