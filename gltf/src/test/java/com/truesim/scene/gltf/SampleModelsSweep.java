@@ -4,6 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 import com.truesim.common.jobs.TaskScheduler;
+import com.truesim.common.state.ChangeClock;
+import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.Animators;
+import com.truesim.scene.animation.Skeleton;
+import com.truesim.scene.animation.Track;
+import com.truesim.scene.core.SceneGraph;
 import com.truesim.scene.assets.AssetCache;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.PathAssets;
@@ -43,6 +49,8 @@ class SampleModelsSweep {
         int parts = 0;
         int skinned = 0;
         int morphed = 0;
+        int clips = 0;
+        int tracks = 0;
         for (Path file : files) {
             try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
                 PathAssets paths = new PathAssets(cache);
@@ -94,10 +102,40 @@ class SampleModelsSweep {
                         }
                     }
                 }
+                // Each clip plays through on the model's skeleton: its tracks find their nodes, poses are transforms.
+                for (ModelData.Animation animation : m.animations()) {
+                    if (!(load(tasks, cache, animation.clip(), name, failures) instanceof AnimationClip clip)) {
+                        continue;
+                    }
+                    clips++;
+                    tracks += clip.tracks().size();
+                    Skeleton skeleton = m.skeleton();
+                    for (Track track : clip.tracks()) {
+                        if (track.node() < 0 && skeleton.find(track.nodeName()) < 0) {
+                            failures.put(name + " clip " + clip.name(), "a track of no node: " + track.nodeName());
+                        }
+                    }
+                    SceneGraph scene = new SceneGraph(new ChangeClock());
+                    long[] nodes = new long[skeleton.size()];
+                    for (int n = 0; n < nodes.length; n++) {
+                        nodes[n] = skeleton.parent(n) < 0 ? scene.create() : scene.create(nodes[skeleton.parent(n)]);
+                    }
+                    Animators animators = new Animators(scene);
+                    animators.add(skeleton, nodes).play(clip).loop(false);
+                    try {
+                        for (int step = 0; step <= 64; step++) {
+                            animators.update(clip.duration() / 64);
+                            scene.update();
+                        }
+                    } catch (RuntimeException e) {
+                        failures.put(name + " clip " + clip.name(), e.toString());
+                    }
+                }
             }
         }
         System.out.println("glTF samples: " + files.size() + " files, " + parts + " parts, " + skinned
-            + " skinned nodes, " + morphed + " morphing nodes, " + failures.size() + " failures");
+            + " skinned nodes, " + morphed + " morphing nodes, " + clips + " clips of " + tracks + " tracks, "
+            + failures.size() + " failures");
         failures.forEach((what, why) -> System.out.println("  FAIL " + what + ": " + why));
         assertThat(files).isNotEmpty();
     }

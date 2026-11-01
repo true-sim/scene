@@ -25,6 +25,7 @@ example, takes core, world and collision without any render data.
 | `scene-collision` | each cell's colliders and terrain heights, on common-collision shapes                    | milestone 3 |
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
+| `scene-animation` | animation clips and their sampling, skeletons, animators posing scene nodes                | milestone 6 |
 | `scene-render`    | renderables on nodes, materials, textures and models; a PNG/JPEG importer                 | milestone 5 |
 | `scene-gltf`      | glTF 2.0 and GLB import: models, meshes, materials, embedded images                        | milestone 5 |
 
@@ -359,7 +360,7 @@ assets.acquire(rock);
   `spawn(scene, renderables, parent)`; `ImageImporter` reads PNG and JPEG into textures through the JDK.
 - **glTF** (`scene-gltf`): `new Gltf(paths).register()` imports `.gltf` and `.glb` one part per asset: the file is
   its default scene as a model, `#mesh/N` a mesh (a submesh per primitive, built into a cluster hierarchy; smooth
-  normals where missing), `#material/N` a metallic-roughness material, `#image/N` an embedded image. External images
+  normals where missing), `#material/N` a metallic-roughness material, `#animation/N` an animation clip, `#image/N` an embedded image. External images
   are textures at their own paths (`#linear` for data textures). Triangles, strips and fans, sparse accessors; points
   and lines are `#lines/M/P` assets of their own (`RenderAssets.LINES`, `LineData`), named by the model's nodes.
   Extensions: every `KHR_materials_*` as a material feature (clearcoat by the engine's names, the rest by glTF's, so
@@ -369,8 +370,22 @@ assets.acquire(rock);
   (`KHR_meshopt_compression` and its draft, through meshoptimizer), WebP images (`EXT_texture_webp`; `ImageImporter`
   reads WebP through the TwelveMonkeys ImageIO plugin). A file requiring another extension fails, as glTF asks. Checked against the Khronos sample models
   (`./gradlew :scene-gltf:test -PgltfSamples=<glTF-Sample-Assets/Models>`): all 270 files import, and the meshopt
-  sample's compressed views decode to its uncompressed fallback. Next: KTX2 textures, Draco, then skins, morph targets
-  and animations.
+  sample's compressed views decode to its uncompressed fallback; skins, morph targets, cameras and animations are read,
+  every sample clip playing through. Next: KTX2 textures, Draco.
+- **Animation** (`scene-animation`): an `AnimationClip` is tracks of keys (step, linear with shortest-path slerp, cubic
+  spline) moving nodes and morph weights. `Animators` poses scene nodes once a frame before `scene.update()`: clips
+  move on, animators sample in parallel on a `JobSystem`, poses are written on the scene's thread, morph weights go to
+  a sink (the renderer's). Clips find nodes by index on their own model and by name on other rigs:
+
+  ```java
+  long[] nodes = model.spawn(scene, renderables, scene.create());
+  Animator hero = animators.add(model.skeleton(), nodes);
+  hero.play(cache.get(model.animation("Walk"))).speed(1.2);
+  animators.update(dt);
+  scene.update();
+  ```
+
+  Layers, masks, cross-fades, events, root motion and inverse kinematics follow ([docs/animation.md](docs/animation.md)).
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
@@ -471,6 +486,7 @@ dependencies {
     implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
+    implementation("com.truesim.scene:scene-animation:0.35.0") // clips and animators (from 0.35.0)
 }
 ```
 

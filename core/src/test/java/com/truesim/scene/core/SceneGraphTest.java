@@ -160,7 +160,17 @@ class SceneGraphTest {
         assertThatIllegalArgumentException().isThrownBy(() -> scene.setScale(car, 1, 1, 0));
         assertThatIllegalArgumentException().isThrownBy(() -> scene.setScale(car, 1, Double.NaN, 1));
         assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocalBounds(car, 0, 0, 0, Double.NaN, 1, 1));
+        // The whole transform at once is checked the same way.
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, Double.NaN, 0, 0, 0, 0, 0, 1, 1, 1, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, 0, 0, 0, 1e300, 1e300, 0, 1, 1, 1, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, 0, 0, 0, 0, 0, 0, 1, Double.NaN, 1, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> scene.setLocal(car, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0));
         assertThat(scene.local(car).translation()).isEqualTo(Vec3.of(5, 6, 7));
+        scene.setLocal(car, 1, 2, 3, 0, 0, 0, 2, 4, 5, 6);
+        assertThat(scene.local(car)).isEqualTo(Transform.of(Vec3.of(1, 2, 3), Quat.IDENTITY, Vec3.of(4, 5, 6)));
     }
 
     @Test
