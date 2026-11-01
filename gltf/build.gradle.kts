@@ -17,3 +17,12 @@ coverage {
 tasks.withType<Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
+
+// The Khronos sample models, swept when given: ./gradlew :scene-gltf:test -PgltfSamples=<glTF-Sample-Assets/Models>
+tasks.test {
+    providers.gradleProperty("gltfSamples").orNull?.let {
+        systemProperty("truesim.gltf.samples", it)
+        maxHeapSize = "4g"
+        extensions.configure<JacocoTaskExtension> { isEnabled = false }
+    }
+}

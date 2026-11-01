@@ -73,7 +73,8 @@ class GltfDocumentTest {
     void accessorsOfEveryComponentType() throws IOException {
         ByteBuffer bytes = ByteBuffer.allocate(64).order(ByteOrder.LITTLE_ENDIAN);
         bytes.put(0, (byte) -127).put(1, (byte) 255).putShort(2, (short) -32767).putShort(4, (short) 65535)
-            .putInt(8, 70_000_000).putFloat(12, 1.5f).putFloat(20, 2.5f); // floats with a stride of 8: 12, 20
+            .putInt(8, 70_000_000).putFloat(12, 1.5f).putFloat(20, 2.5f) // floats with a stride of 8: 12, 20
+            .put(40, (byte) 1).putFloat(44, 9.5f).putInt(48, -1); // a sparse index and value; an index below 0
         String json = """
             {"asset": {"version": "2.0"}, "buffers": [{"byteLength": 64, "uri": "%s"}],
              "bufferViews": [{"buffer": 0, "byteLength": 64}, {"buffer": 0, "byteOffset": 12, "byteLength": 16,
@@ -97,13 +98,21 @@ class GltfDocumentTest {
                {"bufferView": 0, "componentType": 5124, "count": 1, "type": "SCALAR"},
                {"bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC5"},
                {"bufferView": 2, "componentType": 5126, "count": 1, "type": "SCALAR"},
-               {"componentType": 5126, "count": 1, "type": "SCALAR", "sparse": {}},
+               {"componentType": 5126, "count": 3, "type": "SCALAR", "sparse": {"count": 1,
+                "indices": {"bufferView": 0, "byteOffset": 40, "componentType": 5121},
+                "values": {"bufferView": 0, "byteOffset": 44}}},
                {"bufferView": 3, "componentType": 5125, "count": 2, "type": "SCALAR"},
                {"componentType": 5125, "count": 2, "type": "SCALAR"},
                {"bufferView": 0, "byteOffset": 1, "componentType": 5121, "count": 1, "type": "SCALAR"},
                {"bufferView": 0, "componentType": 5126, "count": 1, "type": "MAT4"},
                {"bufferView": 4, "componentType": 5126, "count": 1, "type": "SCALAR"},
-               {"bufferView": 0, "byteOffset": 8, "componentType": 5125, "count": 1, "type": "SCALAR"}
+               {"bufferView": 0, "byteOffset": 8, "componentType": 5125, "count": 1, "type": "SCALAR"},
+               {"componentType": 5126, "count": 3, "type": "SCALAR", "sparse": {"count": 1,
+                "indices": {"bufferView": 0, "byteOffset": 1, "componentType": 5121},
+                "values": {"bufferView": 0, "byteOffset": 44}}},
+               {"bufferView": 1, "componentType": 5126, "count": 2, "type": "SCALAR", "sparse": {"count": 1,
+                "indices": {"bufferView": 0, "byteOffset": 48, "componentType": 5125},
+                "values": {"bufferView": 0, "byteOffset": 44}}}
              ]}
             """.formatted(base64(bytes.array()));
         GltfDocument document = GltfDocument.read(input(json, Map.of()));
@@ -122,7 +131,9 @@ class GltfDocumentTest {
         assertThatIllegalArgumentException().isThrownBy(() -> document.floats(11)).withMessageContaining("5124");
         assertThatIllegalArgumentException().isThrownBy(() -> document.floats(12)).withMessageContaining("VEC5");
         assertThatIllegalArgumentException().isThrownBy(() -> document.floats(13)).withMessageContaining("buffer 3");
-        assertThatIllegalArgumentException().isThrownBy(() -> document.floats(14)).withMessageContaining("Sparse");
+        assertThat(document.floats(14)).as("sparse, over zeros").containsExactly(0, 9.5f, 0);
+        assertThatIllegalArgumentException().isThrownBy(() -> document.floats(21)).withMessageContaining("past");
+        assertThatIllegalArgumentException().isThrownBy(() -> document.floats(22)).withMessageContaining("past");
         assertThat(document.indices(15)).as("32-bit, strided").containsExactly(70_000_000, 0x3FC00000);
         assertThat(document.indices(16)).containsExactly(0, 0);
         assertThat(document.indices(17)).containsExactly(255);
@@ -162,7 +173,7 @@ class GltfDocumentTest {
     }
 
     @Test
-    void whatCannotBeReadIsRefused() {
+    void whatCannotBeReadIsRefused() throws IOException {
         String chunked = "{\"asset\": {\"version\": \"2.0\"}, \"buffers\": [{\"byteLength\": 4}]}";
         assertThatExceptionOfType(IOException.class)
             .isThrownBy(() -> GltfDocument.read(input(glb(chunked, null, 1), Map.of())))
@@ -185,6 +196,11 @@ class GltfDocumentTest {
         assertThatExceptionOfType(IOException.class)
             .isThrownBy(() -> GltfDocument.read(input("{\"asset\": {\"version\": \"1.0\"}}", Map.of())))
             .withMessageContaining("Only glTF 2");
+        assertThatExceptionOfType(IOException.class).isThrownBy(() -> GltfDocument.read(input(
+            "{\"asset\": {\"version\": \"2.0\"}, \"extensionsRequired\": [\"KHR_texture_transform\"]}", Map.of())))
+            .withMessageContaining("requires extensions this importer does not read: [KHR_texture_transform]");
+        assertThat(GltfDocument.read(input("{\"asset\": {\"version\": \"2.0\"}, \"extensionsRequired\": []}",
+            Map.of())).list("meshes")).isEmpty();
         assertThatIllegalArgumentException().isThrownBy(() -> GltfDocument.read(input("[1]", Map.of())))
             .withMessageContaining("JSON object");
         String plainData = "{\"asset\": {\"version\": \"2\"}, \"buffers\": [{\"uri\": \"data:text/plain,abc\"}]}";
