@@ -420,6 +420,9 @@ assets.acquire(rock);
   `a.fabrik(tail).target(x, y, z).weight(1)`) solve after two-bone chains; modifiers read and set world rotations and
   local transforms on the `Pose` too.
 
+  Far away or out of sight, `a.updateEvery(4)` updates an animator's pose every fourth update only, animators taking
+  turns so the work spreads; its clock adds up the time between, events and root motion arrive on its turns.
+
   `Motion` is open: a game's own motion (a 2D blend space, motion matching, a procedural source) says how long it lasts
   and which of its rig's clips it plays at which times and weights for a phase (`contents`); the animator does the
   sampling, blending, events, root motion and sync from that, as it does for clips and blend spaces
@@ -524,7 +527,7 @@ dependencies {
     implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
-    implementation("com.truesim.scene:scene-animation:0.41.0") // clips, rigs and animators (from 0.35.0)
+    implementation("com.truesim.scene:scene-animation:0.42.0") // clips, rigs and animators (from 0.35.0)
 }
 ```
 
