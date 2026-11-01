@@ -616,11 +616,15 @@ public final class Gltf {
     private static final java.util.Set<String> SRGB_TEXTURES = java.util.Set.of("sheenColorTexture",
         "specularColorTexture", "diffuseTransmissionColorTexture", "diffuseTexture", "specularGlossinessTexture");
     private static final String SPECULAR_GLOSSINESS = "KHR_materials_pbrSpecularGlossiness";
+    /** glTF's default wrap mode: repeating. */
+    private static final int REPEAT = 10497;
 
     /**
      * Sets {@code field} to the texture {@code owner}'s texture info {@code name} names, if it has one, with its
-     * texture coordinate set ({@code fieldTexCoord}) where not 0 and its {@code KHR_texture_transform} where given
-     * ({@code fieldOffset}, {@code fieldRotation} in radians, {@code fieldScale}); whether it did.
+     * texture coordinate set ({@code fieldTexCoord}) where not 0, its {@code KHR_texture_transform} where given
+     * ({@code fieldOffset}, {@code fieldRotation} in radians, {@code fieldScale}) and its sampler where it differs from
+     * glTF's default (repeating, filtered): {@code fieldWrapS}, {@code fieldWrapT} and {@code fieldMagFilter} as glTF's
+     * codes (33071 clamped, 33648 mirrored; 9728 nearest); whether it did.
      */
     private <B extends MaterialData.ValuesBuilder<B>> boolean texture(GltfDocument document, AssetPath file,
         Map<String, Object> owner, String name, boolean linear, B builder, String field) {
@@ -649,6 +653,19 @@ public final class Gltf {
             builder.set(field + "Offset", (float) offset[0], (float) offset[1])
                 .set(field + "Rotation", (float) GltfDocument.number(transform, "rotation", 0))
                 .set(field + "Scale", (float) scale[0], (float) scale[1]);
+        }
+        if (texture.containsKey("sampler")) {
+            Map<String, Object> sampler = document.get("samplers", GltfDocument.integer(texture, "sampler", 0));
+            for (String key : List.of("wrapS", "wrapT")) {
+                int wrap = GltfDocument.integer(sampler, key, REPEAT);
+                if (wrap != REPEAT) {
+                    builder.set(field + Character.toUpperCase(key.charAt(0)) + key.substring(1), wrap);
+                }
+            }
+            int magnified = GltfDocument.integer(sampler, "magFilter", -1);
+            if (magnified >= 0) {
+                builder.set(field + "MagFilter", magnified);
+            }
         }
         Object uri = document.get("images", image).get("uri");
         AssetPath path = uri != null && !((String) uri).startsWith("data:")

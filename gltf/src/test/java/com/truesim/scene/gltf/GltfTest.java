@@ -332,8 +332,10 @@ class GltfTest {
                   "KHR_materials_clearcoat": {}}},
                {"pbrMetallicRoughness": {"baseColorTexture": {"index": 2}}},
                {"pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}}],
-             "textures": [{"source": 0}, {"source": 1, "extensions": {"EXT_texture_webp": {"source": 2}}},
+             "textures": [{"source": 0, "sampler": 0},
+               {"source": 1, "sampler": 1, "extensions": {"EXT_texture_webp": {"source": 2}}},
                {"extensions": {"EXT_texture_webp": {"source": 2}}}, {"extensions": {"VENDOR": {}}}],
+             "samplers": [{"wrapS": 10497}, {"wrapS": 33071, "wrapT": 33648, "magFilter": 9728}],
              "images": [{"uri": "albedo.png"}, {"uri": "albedo.png"}, {"uri": "albedo.webp"}]}
             """;
         Files.writeString(dir.resolve("ext.gltf"), json);
@@ -347,6 +349,8 @@ class GltfTest {
         MaterialData rich = load(paths.ref(RenderAssets.MATERIAL, "game://ext.gltf#material/0"));
         assertThat(rich.values().floats("emissive")).as("times the strength").containsExactly(2, 1, 4);
         assertThat(rich.values().i32("baseColorTextureTexCoord", -1)).isEqualTo(1);
+        assertThat(rich.values().i32("baseColorTextureWrapS", -1)).as("repeating: glTF's default, left out")
+            .isEqualTo(-1);
         assertThat(rich.features()).containsExactly("clearcoat", "sheen", "transmission", "unlit");
         MaterialData.Values coat = rich.feature("clearcoat");
         assertThat(coat.f32("strength", -1)).isEqualTo(0.8f);
@@ -362,6 +366,9 @@ class GltfTest {
         assertThat(sheen.f32("sheenColorTextureRotation", -1)).isEqualTo(1.5f);
         assertThat(sheen.floats("sheenColorTextureScale")).containsExactly(2, 2);
         assertThat(sheen.i32("sheenColorTextureTexCoord", -1)).isEqualTo(1);
+        assertThat(sheen.i32("sheenRoughnessTextureWrapS", -1)).as("clamped").isEqualTo(33071);
+        assertThat(sheen.i32("sheenRoughnessTextureWrapT", -1)).as("mirrored").isEqualTo(33648);
+        assertThat(sheen.i32("sheenRoughnessTextureMagFilter", -1)).as("nearest").isEqualTo(9728);
         assertThat(sheen.texture("sheenRoughnessTexture")).as("the core source over the extension's")
             .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://albedo.png#linear"));
         MaterialData.Values transmission = rich.feature("transmission");
