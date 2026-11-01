@@ -1,6 +1,8 @@
 package com.truesim.scene.render;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.Skeleton;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.core.SceneGraph;
@@ -23,9 +25,25 @@ import java.util.Set;
  * @param lights the lights nodes name ({@link Node#light()})
  * @param skins the skins nodes' meshes are deformed by ({@link Node#skin()})
  * @param cameras the cameras nodes name ({@link Node#camera()}), looking along their node's -Z
+ * @param animations the clips made for it, by name: play them on an animator of its {@link #skeleton()}
  */
 @AllowAllocation("models are made when assets load and spawned when placed")
-public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, List<Camera> cameras) {
+public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, List<Camera> cameras,
+    List<Animation> animations) {
+
+    /**
+     * A clip made for the model, as a glTF animation: loaded as an asset of its own when played.
+     *
+     * @param name its name in the source; may be empty
+     * @param clip the clip
+     */
+    public record Animation(String name, AssetRef<AnimationClip> clip) {
+
+        public Animation {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(clip, "clip");
+        }
+    }
 
     /**
      * A camera of the model, as glTF's: it looks along its node's -Z, +Y up. Perspective with a vertical field of view,
@@ -253,6 +271,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
         lights = List.copyOf(lights);
         skins = List.copyOf(skins);
         cameras = List.copyOf(cameras);
+        animations = List.copyOf(animations);
         for (int i = 0; i < nodes.size(); i++) {
             int parent = nodes.get(i).parent();
             if (parent < -1 || parent >= i) {
@@ -285,6 +304,11 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
         }
     }
 
+    /** A model of no animations. */
+    public ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, List<Camera> cameras) {
+        this(nodes, lights, skins, cameras, List.of());
+    }
+
     /** A model of no cameras. */
     public ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins) {
         this(nodes, lights, skins, List.of());
@@ -298,6 +322,35 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
     /** A model without lights. */
     public ModelData(List<Node> nodes) {
         this(nodes, List.of());
+    }
+
+    /** The clip called {@code name}, the first if several are; throws if none is. */
+    public AssetRef<AnimationClip> animation(String name) {
+        for (Animation animation : animations) {
+            if (animation.name().equals(name)) {
+                return animation.clip();
+            }
+        }
+        throw new IllegalArgumentException("No animation " + name + " among " + animations.size());
+    }
+
+    /**
+     * Its nodes as a skeleton to animate: their names, parents and transforms at rest. Pass it with {@link #spawn}'s
+     * nodes to {@code Animators.add}.
+     */
+    public Skeleton skeleton() {
+        String[] names = new String[nodes.size()];
+        int[] parents = new int[names.length];
+        double[] rest = new double[Skeleton.TRANSFORM * names.length];
+        for (int i = 0; i < names.length; i++) {
+            Node node = nodes.get(i);
+            names[i] = node.name();
+            parents[i] = node.parent();
+            double[] transform = {node.tx(), node.ty(), node.tz(), node.rx(), node.ry(), node.rz(), node.rw(),
+                node.sx(), node.sy(), node.sz()};
+            System.arraycopy(transform, 0, rest, Skeleton.TRANSFORM * i, Skeleton.TRANSFORM);
+        }
+        return new Skeleton(names, parents, rest);
     }
 
     /** The meshes, materials, points and lines its nodes use, each once, in the order the nodes name them. */

@@ -526,9 +526,42 @@ public final class SceneGraph {
         Vec3 t = transform.translation();
         Quat r = transform.rotation();
         Vec3 s = transform.scale();
-        setTranslation(node, t.x(), t.y(), t.z());
-        setRotation(node, r.x(), r.y(), r.z(), r.w());
-        setScale(node, s.x(), s.y(), s.z());
+        setLocal(node, t.x(), t.y(), t.z(), r.x(), r.y(), r.z(), r.w(), s.x(), s.y(), s.z());
+    }
+
+    /**
+     * Sets the node's whole transform relative to its parent: translation, rotation (kept normalized) and scale, checked
+     * as their own setters check them, at once. Animation poses nodes through this.
+     *
+     * @throws IllegalArgumentException as {@link #setTranslation}, {@link #setRotation} or {@link #setScale} would; the
+     *     node is unchanged then
+     */
+    public void setLocal(long node, double tx, double ty, double tz, double rx, double ry, double rz, double rw,
+        double sx, double sy, double sz) {
+        int slot = changing(node);
+        if (!Double.isFinite(tx + ty + tz)) {
+            throw new IllegalArgumentException("Not a finite translation: " + tx + ", " + ty + ", " + tz);
+        }
+        double length = Math.sqrt(rx * rx + ry * ry + rz * rz + rw * rw);
+        if (!(length > 1e-12) || length == Double.POSITIVE_INFINITY) {
+            throw new IllegalArgumentException("Not a rotation: " + rx + ", " + ry + ", " + rz + ", " + rw);
+        }
+        if (!Double.isFinite(sx + sy + sz) || sx == 0 || sy == 0 || sz == 0) {
+            throw new IllegalArgumentException("Not a scale on every axis: " + sx + ", " + sy + ", " + sz);
+        }
+        MemorySegment s = local.segment();
+        long offset = slot * local.stride();
+        put(s, offset, 0, tx);
+        put(s, offset, 1, ty);
+        put(s, offset, 2, tz);
+        put(s, offset, 3, rx / length);
+        put(s, offset, 4, ry / length);
+        put(s, offset, 5, rz / length);
+        put(s, offset, 6, rw / length);
+        put(s, offset, 7, sx);
+        put(s, offset, 8, sy);
+        put(s, offset, 9, sz);
+        markDirty(slot);
     }
 
     /** The node's transform relative to its parent. */

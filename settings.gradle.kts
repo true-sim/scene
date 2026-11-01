@@ -20,12 +20,13 @@ plugins {
 rootProject.name = "scene"
 
 // Each module is published on its own, so a dedicated server takes core and world without render data.
-include("scene-core", "scene-world", "scene-collision", "scene-assets", "scene-meshbuild", "scene-render", "scene-gltf")
+include("scene-core", "scene-world", "scene-collision", "scene-assets", "scene-meshbuild", "scene-animation", "scene-render", "scene-gltf")
 project(":scene-core").projectDir = file("core")
 project(":scene-world").projectDir = file("world")
 project(":scene-collision").projectDir = file("collision")
 project(":scene-assets").projectDir = file("assets")
 project(":scene-meshbuild").projectDir = file("meshbuild")
+project(":scene-animation").projectDir = file("animation")
 project(":scene-render").projectDir = file("render")
 project(":scene-gltf").projectDir = file("gltf")
 

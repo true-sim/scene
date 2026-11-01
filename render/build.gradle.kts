@@ -8,6 +8,7 @@ description = "Scene render data for true-sim: renderables on nodes, materials a
 dependencies {
     api(project(":scene-core"))
     api(project(":scene-assets"))
+    api(project(":scene-animation"))
     runtimeOnly("com.twelvemonkeys.imageio:imageio-webp:3.12.0") // WebP through ImageIO
 }
 

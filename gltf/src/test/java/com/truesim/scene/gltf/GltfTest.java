@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 import com.truesim.common.jobs.TaskScheduler;
+import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.Track;
 import com.truesim.scene.assets.AssetCache;
 import com.truesim.scene.assets.AssetId;
 import com.truesim.scene.assets.AssetRef;
@@ -344,6 +346,62 @@ class GltfTest {
         AssetRef<MeshData> uneven = paths.ref(RenderAssets.MESH, "game://face.gltf#mesh/2");
         load(uneven);
         assertThat(cache.failure(uneven)).hasMessageContaining("different numbers of morph targets");
+    }
+
+    @Test
+    void animationsAreClipsTheModelNames() throws Exception {
+        ByteBuffer b = ByteBuffer.allocate(96).order(ByteOrder.LITTLE_ENDIAN);
+        for (float f : new float[] {0, 1, 0, 0, 0, 2, 0, 0}) {
+            b.putFloat(f); // times, then translations
+        }
+        for (short v : new short[] {0, 0, 0, 32767, 0, 23170, 0, 23170}) {
+            b.putShort(v); // rotations, normalized shorts
+        }
+        for (float f : new float[] {0, 0, 1, 0, 1, 0, 1, 1, 1, 3, 3, 3}) {
+            b.putFloat(f); // a cubic spline weight (in, value, out per key), then scales
+        }
+        String json = """
+            {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0]}],
+             "nodes": [{"name": "hip", "children": [1]}, {"name": "knee"}, {"name": "loose"}],
+             "buffers": [{"uri": "%s", "byteLength": 96}],
+             "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 8},
+               {"buffer": 0, "byteOffset": 8, "byteLength": 24}, {"buffer": 0, "byteOffset": 32, "byteLength": 16},
+               {"buffer": 0, "byteOffset": 48, "byteLength": 24}, {"buffer": 0, "byteOffset": 72, "byteLength": 24}],
+             "accessors": [{"bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR"},
+               {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3"},
+               {"bufferView": 2, "componentType": 5122, "normalized": true, "count": 2, "type": "VEC4"},
+               {"bufferView": 3, "componentType": 5126, "count": 6, "type": "SCALAR"},
+               {"bufferView": 4, "componentType": 5126, "count": 2, "type": "VEC3"}],
+             "animations": [{"name": "bend",
+                 "samplers": [{"input": 0, "output": 1}, {"input": 0, "output": 2, "interpolation": "STEP"},
+                   {"input": 0, "output": 3, "interpolation": "CUBICSPLINE"}, {"input": 0, "output": 4}],
+                 "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}},
+                   {"sampler": 1, "target": {"node": 1, "path": "rotation"}},
+                   {"sampler": 2, "target": {"node": 1, "path": "weights"}},
+                   {"sampler": 3, "target": {"node": 2, "path": "scale"}},
+                   {"sampler": 0, "target": {"path": "pointer"}},
+                   {"sampler": 0, "target": {"node": 0, "path": "pointer"}},
+                   {"sampler": 0, "target": {"path": "translation"}}]},
+               {"samplers": [], "channels": []}]}
+            """.formatted(base64(b.array()));
+        Files.writeString(dir.resolve("bend.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://bend.gltf"));
+        assertThat(model.animations()).extracting(ModelData.Animation::name).containsExactly("bend", "");
+        AnimationClip clip = load(model.animation("bend"));
+        assertThat(clip.name()).isEqualTo("bend");
+        assertThat(clip.duration()).isEqualTo(1);
+        assertThat(clip.tracks()).extracting(Track::nodeName).containsExactly("hip", "knee", "knee", "loose");
+        assertThat(clip.tracks()).extracting(Track::node).as("by the model's index; -1 not placed")
+            .containsExactly(0, 1, 1, -1);
+        assertThat(clip.tracks()).extracting(Track::property).containsExactly(Track.Property.TRANSLATION,
+            Track.Property.ROTATION, Track.Property.WEIGHTS, Track.Property.SCALE);
+        assertThat(clip.tracks()).extracting(Track::interpolation).containsExactly(Track.Interpolation.LINEAR,
+            Track.Interpolation.STEP, Track.Interpolation.CUBIC_SPLINE, Track.Interpolation.LINEAR);
+        assertThat(clip.tracks().get(2).components()).isOne();
+        double[] out = new double[4];
+        clip.tracks().get(1).sample(1, new int[1], 0, out);
+        assertThat(out[1]).isCloseTo(Math.sqrt(0.5), within(1e-4));
+        assertThat(load(model.animation("")).tracks()).isEmpty();
     }
 
     @Test

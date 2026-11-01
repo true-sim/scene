@@ -2,8 +2,12 @@ package com.truesim.scene.render;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.truesim.common.state.ChangeClock;
+import com.truesim.scene.animation.AnimationAssets;
+import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.Skeleton;
 import com.truesim.scene.assets.AssetId;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
@@ -95,6 +99,29 @@ class ModelDataTest {
                 .isThrownBy(() -> new ModelData(List.of(body.withoutSkin(), bone), List.of(), List.of(rootless)))
                 .withMessageContaining("skeleton");
         }
+    }
+
+    @Test
+    void animationsAreNamedClipsPlayedOnItsSkeleton() {
+        AssetRef<AnimationClip> walk = AssetRef.of(AnimationAssets.CLIP, new AssetId(3, 1));
+        AssetRef<AnimationClip> run = AssetRef.of(AnimationAssets.CLIP, new AssetId(3, 2));
+        ModelData car = car();
+        ModelData model = new ModelData(car.nodes(), List.of(), List.of(), List.of(),
+            List.of(new ModelData.Animation("walk", walk), new ModelData.Animation("run", run)));
+        assertThat(model.animation("run")).isEqualTo(run);
+        assertThatIllegalArgumentException().isThrownBy(() -> model.animation("fly"))
+            .withMessageContaining("No animation fly");
+        assertThat(car.animations()).isEmpty();
+        assertThat(new ModelData(car.nodes(), List.of(), List.of(), List.of()).animations()).isEmpty();
+        assertThatNullPointerException().isThrownBy(() -> new ModelData.Animation(null, walk));
+        assertThatNullPointerException().isThrownBy(() -> new ModelData.Animation("walk", null));
+        Skeleton skeleton = model.skeleton();
+        assertThat(skeleton.size()).isEqualTo(4);
+        assertThat(skeleton.name(2)).isEqualTo("wheel");
+        assertThat(skeleton.parent(2)).isZero();
+        assertThat(skeleton.rest(2, 0)).isEqualTo(1);
+        assertThat(skeleton.rest(2, 4)).isEqualTo(0.7071);
+        assertThat(skeleton.rest(2, 9)).isEqualTo(2);
     }
 
     @Test

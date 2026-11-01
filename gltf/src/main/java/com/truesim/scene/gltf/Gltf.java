@@ -1,6 +1,9 @@
 package com.truesim.scene.gltf;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.scene.animation.AnimationAssets;
+import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.Track;
 import com.truesim.scene.assets.AssetInput;
 import com.truesim.scene.assets.AssetLoader;
 import com.truesim.scene.assets.AssetPath;
@@ -29,7 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Imports glTF 2.0 files ({@code .gltf} with their buffers and images, and {@code .glb}) into the engine's asset types,
  * one asset per part, addressed by path fragments: the file itself is its default scene as a {@link ModelData}
  * ({@code car.gltf}), {@code #mesh/N} a mesh with a submesh per primitive, {@code #material/N} a material of the
- * metallic-roughness type, {@code #image/N} an embedded image ({@code #image/N/linear} read as data). External images
+ * metallic-roughness type, {@code #animation/N} an animation clip, {@code #image/N} an embedded image ({@code #image/N/linear} read as data). External images
  * are textures at their own paths, read by the image importer ({@code wheel.png}, {@code wheel_normal.png#linear}).
  *
  * <pre>{@code
@@ -42,8 +45,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * read, sparse accessors too; points and lines are {@code #lines/M/P} assets of their own ({@link LineData}), named by
  * the model's nodes beside their meshes. Skins are read (their joints the model's nodes, a skinned mesh's vertices
  * naming the four joints weighing most, of up to eight, through a palette of the joints it uses), and morph targets
- * (named by the mesh's {@code extras.targetNames}, nodes taking their own weights, else their mesh's); animations are
- * not read yet. Cameras are read, perspective and orthographic. Extensions: every
+ * (named by the mesh's {@code extras.targetNames}, nodes taking their own weights, else their mesh's). Animations are
+ * clips the model names, their tracks finding nodes by the model's index and name (channels of another target, as
+ * {@code KHR_animation_pointer}'s, are skipped). Cameras are read, perspective and orthographic. Extensions: every
  * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
  * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
  * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
@@ -70,7 +74,8 @@ public final class Gltf {
                 .add(RenderAssets.MESH, extension, this::mesh)
                 .add(RenderAssets.MATERIAL, extension, this::material)
                 .add(RenderAssets.TEXTURE, extension, this::image)
-                .add(RenderAssets.LINES, extension, this::lines);
+                .add(RenderAssets.LINES, extension, this::lines)
+                .add(AnimationAssets.CLIP, extension, this::clip);
         }
         return this;
     }
@@ -113,33 +118,8 @@ public final class Gltf {
             throw new IllegalArgumentException("A glTF model is the file, without a fragment: " + path(input));
         }
         GltfDocument document = document(input);
-        List<Map<String, Object>> nodes = document.list("nodes");
-        List<Integer> roots = new ArrayList<>();
-        List<Map<String, Object>> scenes = document.list("scenes");
-        if (!scenes.isEmpty()) {
-            Map<String, Object> scene = document.get("scenes", GltfDocument.integer(document.json(), "scene", 0));
-            for (double root : GltfDocument.numbers(scene, "nodes")) {
-                roots.add((int) root);
-            }
-        } else {
-            boolean[] child = new boolean[nodes.size()];
-            for (Map<String, Object> node : nodes) {
-                for (double c : GltfDocument.numbers(node, "children")) {
-                    child[(int) c] = true;
-                }
-            }
-            for (int i = 0; i < nodes.size(); i++) {
-                if (!child[i]) {
-                    roots.add(i);
-                }
-            }
-        }
         List<ModelData.Node> out = new ArrayList<>();
-        int[] modelIndex = new int[nodes.size()]; // a glTF node's index in the model's nodes, -1 for one not placed
-        java.util.Arrays.fill(modelIndex, -1);
-        for (int root : roots) {
-            add(document, file, root, -1, out, 0, modelIndex);
-        }
+        int[] modelIndex = place(document, file, out);
         List<ModelData.Camera> cameras = new ArrayList<>();
         for (Map<String, Object> camera : document.list("cameras")) {
             String cameraName = String.valueOf(camera.getOrDefault("name", ""));
@@ -170,7 +150,88 @@ public final class Gltf {
                 GltfDocument.number(light, "range", 0), GltfDocument.number(spot, "innerConeAngle", 0),
                 GltfDocument.number(spot, "outerConeAngle", Math.PI / 4)));
         }
-        return new ModelData(out, lights, skins, cameras);
+        List<ModelData.Animation> animations = new ArrayList<>();
+        List<Map<String, Object>> gltfAnimations = document.list("animations");
+        for (int i = 0; i < gltfAnimations.size(); i++) {
+            animations.add(new ModelData.Animation(String.valueOf(gltfAnimations.get(i).getOrDefault("name", "")),
+                paths.ref(AnimationAssets.CLIP, file.fragment("animation/" + i))));
+        }
+        return new ModelData(out, lights, skins, cameras, animations);
+    }
+
+    /**
+     * Places the default scene's nodes into {@code out}, each parent before its children; returns each glTF node's
+     * index in them, -1 for one not placed.
+     */
+    private int[] place(GltfDocument document, AssetPath file, List<ModelData.Node> out) {
+        List<Map<String, Object>> nodes = document.list("nodes");
+        List<Integer> roots = new ArrayList<>();
+        List<Map<String, Object>> scenes = document.list("scenes");
+        if (!scenes.isEmpty()) {
+            Map<String, Object> scene = document.get("scenes", GltfDocument.integer(document.json(), "scene", 0));
+            for (double root : GltfDocument.numbers(scene, "nodes")) {
+                roots.add((int) root);
+            }
+        } else {
+            boolean[] child = new boolean[nodes.size()];
+            for (Map<String, Object> node : nodes) {
+                for (double c : GltfDocument.numbers(node, "children")) {
+                    child[(int) c] = true;
+                }
+            }
+            for (int i = 0; i < nodes.size(); i++) {
+                if (!child[i]) {
+                    roots.add(i);
+                }
+            }
+        }
+        int[] modelIndex = new int[nodes.size()];
+        java.util.Arrays.fill(modelIndex, -1);
+        for (int root : roots) {
+            add(document, file, root, -1, out, 0, modelIndex);
+        }
+        return modelIndex;
+    }
+
+    // ---------------------------------------------------------------- animations
+
+    private AnimationClip clip(AssetInput input) throws IOException {
+        AssetPath path = path(input);
+        int index = index(path, "animation");
+        GltfDocument document = document(input);
+        List<ModelData.Node> nodes = new ArrayList<>();
+        int[] modelIndex = place(document, path.file(), nodes);
+        Map<String, Object> animation = document.get("animations", index);
+        List<Map<String, Object>> samplers = GltfDocument.list(animation, "samplers");
+        List<Track> tracks = new ArrayList<>();
+        for (Map<String, Object> channel : GltfDocument.list(animation, "channels")) {
+            Map<String, Object> target = GltfDocument.object(channel, "target");
+            Track.Property property = switch (String.valueOf(target.get("path"))) {
+                case "translation" -> Track.Property.TRANSLATION;
+                case "rotation" -> Track.Property.ROTATION;
+                case "scale" -> Track.Property.SCALE;
+                case "weights" -> Track.Property.WEIGHTS;
+                default -> null; // another target, as KHR_animation_pointer's
+            };
+            int node = GltfDocument.integer(target, "node", -1);
+            if (property == null || node < 0) {
+                continue;
+            }
+            Map<String, Object> sampler = samplers.get(GltfDocument.integer(channel, "sampler", 0));
+            float[] times = document.floats(GltfDocument.integer(sampler, "input", 0));
+            float[] values = document.floats(GltfDocument.integer(sampler, "output", 0));
+            Track.Interpolation interpolation = switch (String.valueOf(sampler.getOrDefault("interpolation",
+                "LINEAR"))) {
+                case "STEP" -> Track.Interpolation.STEP;
+                case "CUBICSPLINE" -> Track.Interpolation.CUBIC_SPLINE;
+                default -> Track.Interpolation.LINEAR;
+            };
+            int perKey = interpolation == Track.Interpolation.CUBIC_SPLINE ? 3 : 1;
+            int weights = values.length / Math.max(1, perKey * times.length);
+            String name = String.valueOf(document.get("nodes", node).getOrDefault("name", ""));
+            tracks.add(new Track(name, modelIndex[node], property, interpolation, times, values, weights));
+        }
+        return new AnimationClip(String.valueOf(animation.getOrDefault("name", "")), tracks);
     }
 
     /** Skin {@code skin}, its joints as the model's node indices ({@code modelIndex}). */
