@@ -4,8 +4,9 @@ import com.truesim.annotations.AllowAllocation;
 import java.util.HexFormat;
 
 /**
- * An asset's stable id: 128 bits assigned once, at import, and kept when the asset is renamed or moved, so references
- * never break and never depend on paths. Written as 32 hex digits.
+ * An asset's id: 128 bits, written as 32 hex digits. Either derived from the asset's path ({@link AssetPath#id()},
+ * for assets addressed by path through {@link PathAssets}), so stable while the path is, with redirects keeping old
+ * ids loading after a rename; or assigned once by whatever made the asset, and kept however it is stored.
  */
 public record AssetId(long high, long low) {
 
