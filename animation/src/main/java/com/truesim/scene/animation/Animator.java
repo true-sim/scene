@@ -2,7 +2,11 @@ package com.truesim.scene.animation;
 
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.common.math.Maths;
+import com.truesim.common.math.TransformArray;
+import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -22,6 +26,10 @@ import java.util.Objects;
  * double blink = a.curve(BLINK);
  * }</pre>
  *
+ * <p>After the layers, in order: overrides of joints ({@link #override}), two-bone inverse kinematics ({@link #ik}),
+ * look-ats ({@link #lookAt}) and the rig's pose modifiers; targets in world coordinates. Joints the game takes over
+ * ({@link #release}) are left to it.
+ *
  * <p>The quick way, on a rig of one layer binding clips as they play ({@link Animators#add(Skeleton, long[])}):
  * {@code animator.play(clip)}.
  */
@@ -33,6 +41,7 @@ public final class Animator {
 
     private final Rig rig;
     private final Skeleton skeleton;
+    private final SceneGraph scene;
     private final long[] nodes;
     private final Playback[] layers;
     private final double[] parameters;
@@ -62,10 +71,34 @@ public final class Animator {
     private final double[] rootA = new double[7];
     private final double[] rootB = new double[7];
     private final int[] rootCursor = new int[1];
+    // Solvers: their targets; the model pose (in the instance's frame) they work on, the instance's world transform,
+    // which joints they moved this update and which the game took over.
+    private final IkTarget[] iks;
+    private final AimTarget[] aims;
+    private final JointOverride[] overrides;
+    private final double[] modifierWeights;
+    private final Pose view = new Pose(this);
+    private final double[] model;
+    private final double[] world = new double[Skeleton.TRANSFORM];
+    private final double[] link = new double[Skeleton.TRANSFORM];
+    private final boolean[] touched;
+    private final boolean[] released;
+    private final boolean[] solvedLast; // posed by solvers alone last update: they start from rest again
+    private final boolean[] reset;      // and are written at rest, whether solved again or not
+    private boolean anyTouched;
+    private final double[] v0 = new double[3];
+    private final double[] v1 = new double[3];
+    private final double[] v2 = new double[3];
+    private final double[] v3 = new double[3];
+    private final double[] q0 = new double[4];
+    private final double[] q1 = new double[4];
+    private final double[] saved = new double[8];
+    private final double[] goal = new double[3];
 
     @AllowAllocation("animators are made when models spawn")
-    Animator(Rig rig, long[] nodes) {
+    Animator(Rig rig, long[] nodes, SceneGraph scene) {
         this.rig = Objects.requireNonNull(rig, "rig");
+        this.scene = Objects.requireNonNull(scene, "scene");
         this.skeleton = rig.skeleton();
         if (nodes.length != skeleton.size()) {
             throw new IllegalArgumentException("A scene node per skeleton node: " + nodes.length + " for "
@@ -83,6 +116,22 @@ public final class Animator {
             layers[i] = new Playback(rig.layer(i));
         }
         this.parameters = new double[rig.blendSpaceCount()];
+        this.model = new double[n];
+        this.touched = new boolean[nodes.length];
+        this.released = new boolean[nodes.length];
+        this.solvedLast = new boolean[nodes.length];
+        this.reset = new boolean[nodes.length];
+        this.overrides = new JointOverride[nodes.length];
+        this.iks = new IkTarget[rig.ikCount()];
+        for (int i = 0; i < iks.length; i++) {
+            iks[i] = new IkTarget(rig.ik(i));
+        }
+        this.aims = new AimTarget[rig.lookCount()];
+        for (int i = 0; i < aims.length; i++) {
+            aims[i] = new AimTarget(rig.look(i));
+        }
+        this.modifierWeights = new double[rig.modifierCount()];
+        Arrays.fill(modifierWeights, 1);
         fit();
     }
 
@@ -140,6 +189,61 @@ public final class Animator {
     public double parameter(BlendSpace1 space) {
         rig.checkOwn(space, space.rig());
         return parameters[space.index];
+    }
+
+    /** The target of {@code ik}, a chain of its rig: off (weight 0) until given one. */
+    public IkTarget ik(TwoBoneIk ik) {
+        rig.checkOwn(ik, ik.rig());
+        return iks[ik.index];
+    }
+
+    /** The target of {@code look}, a look-at of its rig: off (weight 0) until given one. */
+    public AimTarget lookAt(LookAt look) {
+        rig.checkOwn(look, look.rig());
+        return aims[look.index];
+    }
+
+    /** An override of {@code joint}'s rotation in {@code space}: off (weight 0) until given one. */
+    @AllowAllocation("an override, the first time a joint has one")
+    public JointOverride override(Joint joint, Space space) {
+        int j = rig.jointIndex(joint);
+        Objects.requireNonNull(space, "space");
+        if (overrides[j] == null) {
+            overrides[j] = new JointOverride(j);
+        }
+        overrides[j].space = space;
+        return overrides[j];
+    }
+
+    /** Leaves {@code joint} to the game from now on: the animator neither poses nor reads it but as the scene has it. */
+    public void release(Joint joint) {
+        released[rig.jointIndex(joint)] = true;
+    }
+
+    /** Takes {@code joint} back from the game. */
+    public void hold(Joint joint) {
+        released[rig.jointIndex(joint)] = false;
+    }
+
+    /** Whether the game has {@code joint} ({@link #release}). */
+    public boolean released(Joint joint) {
+        return released[rig.jointIndex(joint)];
+    }
+
+    /** How much {@code modifier}, one of the rig's, changes this animator's pose: 0 to 1, 1 at first. */
+    public void weight(PoseModifier modifier, double weight) {
+        int i = rig.modifierIndex(modifier);
+        if (i < 0) {
+            throw new IllegalArgumentException("Not a modifier of the rig: " + modifier);
+        }
+        modifierWeights[i] = checkWeight(weight);
+    }
+
+    private static double checkWeight(double weight) {
+        if (!(weight >= 0 && weight <= 1)) {
+            throw new IllegalArgumentException("A weight from 0 to 1: " + weight);
+        }
+        return weight;
     }
 
     /**
@@ -511,6 +615,20 @@ public final class Animator {
         if (rig.rootJoint() >= 0) {
             rootMotion();
         }
+        Arrays.fill(touched, false);
+        anyTouched = false;
+        for (int j = 0; j < nodes.length; j++) {
+            reset[j] = solvedLast[j] && !released[j];
+            if (reset[j]) {
+                for (int i = 0; i < Skeleton.TRANSFORM; i++) {
+                    pose[Skeleton.TRANSFORM * j + i] = skeleton.rest(j, i);
+                }
+                anyTouched = true;
+            }
+        }
+        if (solving()) {
+            solve();
+        }
     }
 
     /**
@@ -793,9 +911,535 @@ public final class Animator {
         }
     }
 
+    // ---------------------------------------------------------------- solvers
+
+    /** Whether anything after the layers changes the pose this update. */
+    private boolean solving() {
+        for (JointOverride o : overrides) {
+            if (o != null && o.weight > 0) {
+                return true;
+            }
+        }
+        for (IkTarget ik : iks) {
+            if (ik.weight > 0) {
+                return true;
+            }
+        }
+        for (AimTarget aim : aims) {
+            if (aim.weight > 0) {
+                return true;
+            }
+        }
+        for (double weight : modifierWeights) {
+            if (weight > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Overrides, inverse kinematics, look-ats and modifiers, in that order, on the model pose. */
+    private void solve() {
+        // Joints no clip poses are as the scene has them (the game's), but those only the solvers posed last update
+        // start from rest, as clips' joints do: solutions do not build on each other.
+        TransformArray locals = scene.localTransforms();
+        MemorySegment segment = locals.segment();
+        for (int j = 0; j < nodes.length; j++) {
+            int b = Skeleton.TRANSFORM * j;
+            if ((!rig.animated(j) || released[j]) && !reset[j]) {
+                long offset = NodeHandle.index(nodes[j]) * locals.stride();
+                for (int i = 0; i < Skeleton.TRANSFORM; i++) {
+                    pose[b + i] = segment.get(ValueLayout.JAVA_DOUBLE, offset + 8L * i);
+                }
+            }
+        }
+        instanceWorld(segment, locals.stride());
+        Kinematics.forward(skeleton, pose, model);
+        for (JointOverride o : overrides) {
+            if (o != null && o.weight > 0 && !released[o.joint]) {
+                override(o);
+            }
+        }
+        for (IkTarget ik : iks) {
+            if (ik.weight > 0) {
+                toModel(ik.target, v3);
+                solve(ik.ik, v3, ik.hasPole ? ik.pole : null, ik.hasRotation ? ik.rotation : null, ik.weight);
+            }
+        }
+        for (AimTarget aim : aims) {
+            if (aim.weight > 0) {
+                aim(aim);
+            }
+        }
+        for (int i = 0; i < modifierWeights.length; i++) {
+            if (modifierWeights[i] > 0) {
+                view.weight = modifierWeights[i];
+                rig.modifier(i).modify(view);
+            }
+        }
+    }
+
+    /** The instance's world transform (the skeleton root's parent's), from the scene's local transforms as they are. */
+    private void instanceWorld(MemorySegment segment, long stride) {
+        System.arraycopy(IDENTITY, 0, world, 0, Skeleton.TRANSFORM);
+        for (long node = scene.parent(nodes[0]); node != NodeHandle.NONE; node = scene.parent(node)) {
+            long offset = NodeHandle.index(node) * stride;
+            for (int i = 0; i < Skeleton.TRANSFORM; i++) {
+                link[i] = segment.get(ValueLayout.JAVA_DOUBLE, offset + 8L * i);
+            }
+            Kinematics.compose(link, 0, world, 0, world, 0); // the ancestor's transform, then what is below it
+        }
+    }
+
+    /** World point {@code p} into the instance's frame, into {@code out}. */
+    private void toModel(double[] p, double[] out) {
+        out[0] = p[0] - world[0];
+        out[1] = p[1] - world[1];
+        out[2] = p[2] - world[2];
+        Kinematics.unrotate(world, 3, out);
+        out[0] /= world[7];
+        out[1] /= world[8];
+        out[2] /= world[9];
+    }
+
+    /** World rotation {@code q} into the instance's frame, into {@code out}. */
+    private void toModelRotation(double[] q, double[] out) {
+        out[0] = -world[3];
+        out[1] = -world[4];
+        out[2] = -world[5];
+        out[3] = world[6];
+        Kinematics.multiply(out, 0, q[0], q[1], q[2], q[3]);
+    }
+
+    /** Joint {@code j}'s world position, into {@code out}. */
+    void worldPosition(int j, double[] out) {
+        int b = Skeleton.TRANSFORM * j;
+        out[0] = model[b] * world[7];
+        out[1] = model[b + 1] * world[8];
+        out[2] = model[b + 2] * world[9];
+        Kinematics.rotate(world, 3, out);
+        out[0] += world[0];
+        out[1] += world[1];
+        out[2] += world[2];
+    }
+
+    /** The world height of the instance's frame's origin. */
+    double groundHeight() {
+        return world[1];
+    }
+
+    /** Moves joint {@code j} by world (dx, dy, dz): its translation in its parent's frame changed to match. */
+    void moveWorld(int j, double dx, double dy, double dz) {
+        v0[0] = dx;
+        v0[1] = dy;
+        v0[2] = dz;
+        Kinematics.unrotate(world, 3, v0);
+        v0[0] /= world[7];
+        v0[1] /= world[8];
+        v0[2] /= world[9];
+        int parent = skeleton.parent(j);
+        if (parent >= 0) {
+            int p = Skeleton.TRANSFORM * parent;
+            Kinematics.unrotate(model, p + 3, v0);
+            v0[0] /= model[p + 7];
+            v0[1] /= model[p + 8];
+            v0[2] /= model[p + 9];
+        }
+        int b = Skeleton.TRANSFORM * j;
+        pose[b] += v0[0];
+        pose[b + 1] += v0[1];
+        pose[b + 2] += v0[2];
+        touch(j);
+        Kinematics.forward(skeleton, pose, model);
+    }
+
+    /** Brings {@code ik}'s end to world (x, y, z) by {@code weight}, bending as the chain is. */
+    void reach(TwoBoneIk ik, double x, double y, double z, double weight) {
+        v2[0] = x;
+        v2[1] = y;
+        v2[2] = z;
+        toModel(v2, v3);
+        solve(ik, v3, null, null, weight);
+    }
+
+    private void touch(int j) {
+        touched[j] = true;
+        anyTouched = true;
+    }
+
+    /** Sets joint {@code j}'s model rotation to {@code q}, through its local one. */
+    private void setModelRotation(int j, double[] q, int at) {
+        int b = Skeleton.TRANSFORM * j;
+        System.arraycopy(q, at, pose, b + 3, 4);
+        int parent = skeleton.parent(j);
+        if (parent >= 0) {
+            int p = Skeleton.TRANSFORM * parent;
+            Kinematics.premultiply(pose, b + 3, -model[p + 3], -model[p + 4], -model[p + 5], model[p + 6]);
+        }
+        Kinematics.normalizeQuaternion(pose, b + 3);
+    }
+
+    private void override(JointOverride o) {
+        int b = Skeleton.TRANSFORM * o.joint;
+        System.arraycopy(pose, b + 3, saved, 0, 4);
+        if (o.space == Space.LOCAL) {
+            System.arraycopy(o.rotation, 0, pose, b + 3, 4);
+        } else {
+            setModelRotation(o.joint, o.rotation, 0);
+        }
+        Kinematics.nlerp(saved, 0, pose, b + 3, o.weight);
+        touch(o.joint);
+        Kinematics.forward(skeleton, pose, model);
+    }
+
+    /**
+     * Holden's two-bone solution in the model pose: the reach clamped (or stretched), the angles at the upper and middle
+     * joints set by the law of cosines in the chain's plane, the chain turned to the target, then about the line to it
+     * so the middle joint is in the pole's plane; the end given {@code rotation} (model frame) if not null; all by
+     * {@code weight} from the pose as it was.
+     */
+    private void solve(TwoBoneIk ik, double[] point, double[] poleWorld, double[] rotationWorld, double weight) {
+        double[] target = goal; // its own: the scratch vectors are used below
+        System.arraycopy(point, 0, target, 0, 3);
+        int a = Skeleton.TRANSFORM * ik.upper;
+        int b = Skeleton.TRANSFORM * ik.middle;
+        int c = Skeleton.TRANSFORM * ik.end;
+        System.arraycopy(pose, a + 3, saved, 0, 4);
+        System.arraycopy(pose, b + 3, saved, 4, 4);
+        double lab = distance(model, a, b);
+        double lcb = distance(model, b, c);
+        double lat = Maths.sqrt(square(target[0] - model[a]) + square(target[1] - model[a + 1])
+            + square(target[2] - model[a + 2]));
+        if (ik.stretch() > 1 && lat > lab + lcb) {
+            double k = 1 + weight * (Math.min(lat / (lab + lcb), ik.stretch()) - 1);
+            for (int i = 0; i < 3; i++) {
+                pose[b + i] *= k;
+                pose[c + i] *= k;
+            }
+            touch(ik.end);
+            Kinematics.forward(skeleton, pose, model);
+            lab *= k;
+            lcb *= k;
+        }
+        double eps = 1e-6;
+        lat = Math.max(eps, Math.min(lat, lab + lcb - eps));
+        // c - a, b - a, a - b, c - b, t - a
+        difference(model, c, a, v0);
+        difference(model, b, a, v1);
+        double acab0 = angleBetween(v0, v1);
+        double[] ba = v2;
+        ba[0] = -v1[0];
+        ba[1] = -v1[1];
+        ba[2] = -v1[2];
+        difference(model, c, b, v3);
+        double babc0 = angleBetween(ba, v3);
+        double acab1 = Maths.acos(clamp((lcb * lcb - lab * lab - lat * lat) / (-2 * lab * lat)));
+        double babc1 = Maths.acos(clamp((lat * lat - lab * lab - lcb * lcb) / (-2 * lab * lcb)));
+        // The bend's axis: across the chain's plane (or any across a straight chain)
+        Kinematics.cross(v0, v1, v2);
+        if (!(Kinematics.normalize(v2) > 1e-9)) {
+            Kinematics.normalize(v0);
+            Kinematics.across(v0, v2);
+        }
+        // The upper joint by the bend at it, the middle by its own; both about the axis in their own frames
+        v1[0] = v2[0];
+        v1[1] = v2[1];
+        v1[2] = v2[2];
+        Kinematics.unrotate(model, a + 3, v1);
+        Kinematics.axisAngle(v1, acab1 - acab0, q0);
+        Kinematics.multiply(pose, a + 3, q0[0], q0[1], q0[2], q0[3]);
+        Kinematics.unrotate(model, b + 3, v2);
+        Kinematics.axisAngle(v2, babc1 - babc0, q0);
+        Kinematics.multiply(pose, b + 3, q0[0], q0[1], q0[2], q0[3]);
+        Kinematics.forward(skeleton, pose, model);
+        // Then the chain turned so its end points at the target
+        difference(model, c, a, v0);
+        v1[0] = target[0] - model[a];
+        v1[1] = target[1] - model[a + 1];
+        v1[2] = target[2] - model[a + 2];
+        Kinematics.normalize(v0);
+        Kinematics.normalize(v1);
+        Kinematics.across(v0, v2);
+        turn(ik.upper, v0, v1, v2);
+        if (poleWorld != null) {
+            // About the line to the target, so the middle joint is in the plane of the pole
+            toModel(poleWorld, v3);
+            v0[0] = target[0] - model[a];
+            v0[1] = target[1] - model[a + 1];
+            v0[2] = target[2] - model[a + 2];
+            Kinematics.normalize(v0);
+            difference(model, b, a, v1);
+            v2[0] = v3[0] - model[a];
+            v2[1] = v3[1] - model[a + 1];
+            v2[2] = v3[2] - model[a + 2];
+            across(v1, v0);
+            across(v2, v0);
+            if (Math.min(Kinematics.normalize(v1), Kinematics.normalize(v2)) > 1e-9) { // else no plane to turn into
+                turn(ik.upper, v1, v2, v0); // right round, if opposite: about the line to the target
+            }
+        }
+        // By the weight from where they were
+        Kinematics.nlerp(saved, 0, pose, a + 3, weight);
+        Kinematics.nlerp(saved, 4, pose, b + 3, weight);
+        touch(ik.upper);
+        touch(ik.middle);
+        Kinematics.forward(skeleton, pose, model);
+        if (rotationWorld != null) {
+            System.arraycopy(pose, c + 3, saved, 0, 4);
+            toModelRotation(rotationWorld, q1);
+            setModelRotation(ik.end, q1, 0);
+            Kinematics.nlerp(saved, 0, pose, c + 3, weight);
+            touch(ik.end);
+            Kinematics.forward(skeleton, pose, model);
+        }
+    }
+
+    /**
+     * Turns joint {@code j} (model frame) by the rotation taking unit vector {@code from} to {@code to}: about
+     * {@code opposite} when they are opposite.
+     */
+    private void turn(int j, double[] from, double[] to, double[] opposite) {
+        double angle = Kinematics.angle(from, to);
+        Kinematics.cross(from, to, v3);
+        if (!(Kinematics.normalize(v3) > 1e-12)) {
+            if (angle < Math.PI / 2) {
+                return; // the same way already
+            }
+            System.arraycopy(opposite, 0, v3, 0, 3);
+        }
+        Kinematics.unrotate(model, Skeleton.TRANSFORM * j + 3, v3);
+        Kinematics.axisAngle(v3, angle, q0);
+        Kinematics.multiply(pose, Skeleton.TRANSFORM * j + 3, q0[0], q0[1], q0[2], q0[3]);
+        Kinematics.forward(skeleton, pose, model);
+    }
+
+    /** Points {@code aim}'s joint's axis at its target: the chain from its top down, each its share, the joint the rest. */
+    private void aim(AimTarget aim) {
+        LookAt look = aim.look;
+        int h = Skeleton.TRANSFORM * look.joint;
+        toModel(aim.target, v2); // the target in the instance's frame
+        // Where the animation points it, and the target within the limit of that
+        pointing(look, v0);
+        v1[0] = v2[0] - model[h];
+        v1[1] = v2[1] - model[h + 1];
+        v1[2] = v2[2] - model[h + 2];
+        double distance = Kinematics.normalize(v1);
+        double angle = Kinematics.angle(v0, v1);
+        if (angle > look.limit) {
+            // v1 turned back toward v0, to the limit (about any axis across v0 if v1 is right behind it)
+            Kinematics.cross(v0, v1, v3);
+            if (!(Kinematics.normalize(v3) > 1e-9)) {
+                Kinematics.across(v0, v3);
+            }
+            Kinematics.axisAngle(v3, look.limit, q1);
+            v1[0] = v0[0];
+            v1[1] = v0[1];
+            v1[2] = v0[2];
+            Kinematics.rotate(q1, 0, v1);
+        }
+        for (int i = 0; i < 3; i++) {
+            v2[i] = model[h + i] + distance * v1[i]; // the target point, limited
+        }
+        for (int step = look.chain.length; step >= 0; step--) {
+            int j = step == 0 ? look.joint : look.chain[step - 1];
+            double share = (step == 0 ? 1 : look.shares[step - 1]) * aim.weight;
+            pointing(look, v0);
+            v1[0] = v2[0] - model[h];
+            v1[1] = v2[1] - model[h + 1];
+            v1[2] = v2[2] - model[h + 2];
+            Kinematics.normalize(v1);
+            double turn = Kinematics.angle(v0, v1) * share;
+            Kinematics.cross(v0, v1, v3);
+            if (Kinematics.normalize(v3) > 1e-12 && turn > 0) {
+                Kinematics.unrotate(model, Skeleton.TRANSFORM * j + 3, v3);
+                Kinematics.axisAngle(v3, turn, q0);
+                Kinematics.multiply(pose, Skeleton.TRANSFORM * j + 3, q0[0], q0[1], q0[2], q0[3]);
+                touch(j);
+                Kinematics.forward(skeleton, pose, model);
+            }
+        }
+    }
+
+    /** Where {@code look}'s joint points its axis, in the model frame: into {@code out}. */
+    private void pointing(LookAt look, double[] out) {
+        out[0] = look.axis[0];
+        out[1] = look.axis[1];
+        out[2] = look.axis[2];
+        Kinematics.rotate(model, Skeleton.TRANSFORM * look.joint + 3, out);
+    }
+
+    /** {@code v} less its part along unit {@code axis}. */
+    private static void across(double[] v, double[] axis) {
+        double d = Kinematics.dot(v, axis);
+        v[0] -= d * axis[0];
+        v[1] -= d * axis[1];
+        v[2] -= d * axis[2];
+    }
+
+    private static double distance(double[] m, int a, int b) {
+        return Maths.sqrt(square(m[b] - m[a]) + square(m[b + 1] - m[a + 1]) + square(m[b + 2] - m[a + 2]));
+    }
+
+    private static void difference(double[] m, int to, int from, double[] out) {
+        out[0] = m[to] - m[from];
+        out[1] = m[to + 1] - m[from + 1];
+        out[2] = m[to + 2] - m[from + 2];
+    }
+
+    /** The angle between two vectors, normalizing copies of neither: they are normalized in place. */
+    private static double angleBetween(double[] a, double[] b) {
+        double la = Math.max(1e-12, Maths.sqrt(Kinematics.dot(a, a)));
+        double lb = Math.max(1e-12, Maths.sqrt(Kinematics.dot(b, b)));
+        return Maths.acos(clamp(Kinematics.dot(a, b) / (la * lb)));
+    }
+
+    private static double clamp(double cos) {
+        return Math.max(-1, Math.min(1, cos));
+    }
+
+    private static double square(double x) {
+        return x * x;
+    }
+
+    /** A two-bone chain's target on this animator: a point, optionally a pole and the end's rotation, and a weight. */
+    public final class IkTarget {
+
+        private final TwoBoneIk ik;
+        private final double[] target = new double[3];
+        private final double[] pole = new double[3];
+        private final double[] rotation = {0, 0, 0, 1};
+        private boolean hasPole;
+        private boolean hasRotation;
+        private double weight;
+
+        private IkTarget(TwoBoneIk ik) {
+            this.ik = ik;
+        }
+
+        /** Reaches the chain's end for world (x, y, z). */
+        public IkTarget target(double x, double y, double z) {
+            set(target, x, y, z);
+            return this;
+        }
+
+        /** Bends the middle joint toward world (x, y, z): a knee forward, an elbow out. */
+        public IkTarget pole(double x, double y, double z) {
+            set(pole, x, y, z);
+            hasPole = true;
+            return this;
+        }
+
+        /** Bends as the chain bends now. */
+        public IkTarget noPole() {
+            hasPole = false;
+            return this;
+        }
+
+        /** Gives the end this world rotation (a foot flat on a slope, a hand on a handle). */
+        public IkTarget rotation(double x, double y, double z, double w) {
+            rotation[0] = x;
+            rotation[1] = y;
+            rotation[2] = z;
+            rotation[3] = w;
+            Kinematics.normalizeQuaternion(rotation, 0);
+            hasRotation = true;
+            return this;
+        }
+
+        /** Leaves the end's rotation to the chain. */
+        public IkTarget noRotation() {
+            hasRotation = false;
+            return this;
+        }
+
+        /** How far toward the solution, 0 (off) to 1. */
+        public IkTarget weight(double weight) {
+            this.weight = checkWeight(weight);
+            return this;
+        }
+
+        public double weight() {
+            return weight;
+        }
+    }
+
+    /** A look-at's target on this animator: a point and a weight. */
+    public final class AimTarget {
+
+        private final LookAt look;
+        private final double[] target = new double[3];
+        private double weight;
+
+        private AimTarget(LookAt look) {
+            this.look = look;
+        }
+
+        /** Looks at world (x, y, z). */
+        public AimTarget target(double x, double y, double z) {
+            set(target, x, y, z);
+            return this;
+        }
+
+        /** How far toward it, 0 (off) to 1. */
+        public AimTarget weight(double weight) {
+            this.weight = checkWeight(weight);
+            return this;
+        }
+
+        public double weight() {
+            return weight;
+        }
+    }
+
+    /** A joint's rotation set by the game, over the animation by a weight. */
+    public final class JointOverride {
+
+        private final int joint;
+        private final double[] rotation = {0, 0, 0, 1};
+        private Space space = Space.LOCAL;
+        private double weight;
+
+        private JointOverride(int joint) {
+            this.joint = joint;
+        }
+
+        /** The rotation, in its space. */
+        public JointOverride rotation(double x, double y, double z, double w) {
+            rotation[0] = x;
+            rotation[1] = y;
+            rotation[2] = z;
+            rotation[3] = w;
+            Kinematics.normalizeQuaternion(rotation, 0);
+            return this;
+        }
+
+        /** How far over the animation, 0 (off) to 1. */
+        public JointOverride weight(double weight) {
+            this.weight = checkWeight(weight);
+            return this;
+        }
+
+        public double weight() {
+            return weight;
+        }
+
+        public Space space() {
+            return space;
+        }
+    }
+
+    private static void set(double[] v, double x, double y, double z) {
+        if (!Double.isFinite(x + y + z)) {
+            throw new IllegalArgumentException("Not a point: " + x + ", " + y + ", " + z);
+        }
+        v[0] = x;
+        v[1] = y;
+        v[2] = z;
+    }
+
     /** Writes the pose to the scene: on the scene's thread, one animator after another. */
     void write(SceneGraph scene, Animators.MorphSink morphs) {
-        boolean playing = false;
+        boolean playing = anyTouched;
         for (Playback layer : layers) {
             playing |= layer.count > 0;
         }
@@ -803,7 +1447,8 @@ public final class Animator {
             return;
         }
         for (int j = 0; j < nodes.length; j++) {
-            if (rig.animated(j)) {
+            solvedLast[j] = touched[j] && !rig.animated(j) && !released[j];
+            if ((rig.animated(j) || touched[j] || reset[j]) && !released[j]) {
                 int b = Skeleton.TRANSFORM * j;
                 scene.setLocal(nodes[j], pose[b], pose[b + 1], pose[b + 2], pose[b + 3], pose[b + 4], pose[b + 5],
                     pose[b + 6], visible(pose[b + 7]), visible(pose[b + 8]), visible(pose[b + 9]));

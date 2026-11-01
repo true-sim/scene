@@ -36,6 +36,9 @@ public final class Rig {
     private final List<AnimationCurve> curves = new ArrayList<>();
     private int blendSpaces;
     private int rootJoint = -1;
+    private final List<TwoBoneIk> iks = new ArrayList<>();
+    private final List<LookAt> looks = new ArrayList<>();
+    private final List<PoseModifier> modifiers = new ArrayList<>();
     private RootMotion rootMotion;
     // The layout of an animator's values: per joint whether a clip moves it, its morph weights' offset and count;
     // then the curves.
@@ -93,6 +96,59 @@ public final class Rig {
     /** What of the root joint's motion is taken, or null. */
     public RootMotion rootMotion() {
         return rootMotion;
+    }
+
+    int ikCount() {
+        return iks.size();
+    }
+
+    TwoBoneIk ik(int i) {
+        return iks.get(i);
+    }
+
+    int lookCount() {
+        return looks.size();
+    }
+
+    LookAt look(int i) {
+        return looks.get(i);
+    }
+
+    int modifierCount() {
+        return modifiers.size();
+    }
+
+    PoseModifier modifier(int i) {
+        return modifiers.get(i);
+    }
+
+    /** {@code modifier}'s place among the rig's, or -1. */
+    int modifierIndex(PoseModifier modifier) {
+        for (int i = 0; i < modifiers.size(); i++) {
+            if (modifiers.get(i) == modifier) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** {@code joint}'s index, checked to be a joint of the rig. */
+    int jointIndex(Joint joint) {
+        Objects.requireNonNull(joint, "joint");
+        if (joint.index() < 0 || joint.index() >= skeleton.size() || !skeleton.name(joint.index()).equals(joint.name())) {
+            throw new IllegalArgumentException("Not a joint of the rig: " + joint);
+        }
+        return joint.index();
+    }
+
+    /** Whether joint {@code above} is an ancestor of joint {@code below}. */
+    boolean isAbove(int above, int below) {
+        for (int j = skeleton.parent(below); j >= 0; j = skeleton.parent(j)) {
+            if (j == above) {
+                return true;
+            }
+        }
+        return false;
     }
 
     int blendSpaceCount() {
@@ -367,6 +423,50 @@ public final class Rig {
             }
             rig.rootJoint = index;
             rig.rootMotion = motion;
+            return this;
+        }
+
+        /**
+         * A two-bone chain from {@code upper} through {@code middle} to {@code end}, each above the next, solved to reach
+         * a target each animator gives ({@link Animator#ik}).
+         */
+        @AllowAllocation("setting up a rig")
+        public TwoBoneIk twoBoneIk(Joint upper, Joint middle, Joint end) {
+            rig.checkSettingUp();
+            int u = rig.jointIndex(upper);
+            int m = rig.jointIndex(middle);
+            int e = rig.jointIndex(end);
+            if (!rig.isAbove(u, m) || !rig.isAbove(m, e)) {
+                throw new IllegalArgumentException("Each joint of a chain is above the next: " + upper + ", " + middle
+                    + ", " + end);
+            }
+            TwoBoneIk ik = new TwoBoneIk(rig, rig.iks.size(), u, m, e);
+            rig.iks.add(ik);
+            return ik;
+        }
+
+        /**
+         * Turns {@code joint} to point its own axis ({@code x}, {@code y}, {@code z}) at a target each animator gives
+         * ({@link Animator#lookAt}); share the turn with the joints above it by {@link LookAt#chain}.
+         */
+        @AllowAllocation("setting up a rig")
+        public LookAt lookAt(Joint joint, double x, double y, double z) {
+            rig.checkSettingUp();
+            int j = rig.jointIndex(joint);
+            double[] axis = {x, y, z};
+            if (!(Kinematics.normalize(axis) > 0) || !Double.isFinite(x + y + z)) {
+                throw new IllegalArgumentException("Not an axis: " + x + ", " + y + ", " + z);
+            }
+            LookAt look = new LookAt(rig, rig.looks.size(), j, axis);
+            rig.looks.add(look);
+            return look;
+        }
+
+        /** Runs {@code modifier} on each animator's pose after its solvers, in the order added. */
+        @AllowAllocation("setting up a rig")
+        public Builder modifier(PoseModifier modifier) {
+            rig.checkSettingUp();
+            rig.modifiers.add(Objects.requireNonNull(modifier, "modifier"));
             return this;
         }
 
