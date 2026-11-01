@@ -25,6 +25,12 @@ public final class ClipState {
     double fadeOut;        // played once: seconds before its end to fade out over; -1 none
     boolean fresh;         // not advanced yet: events at its start fire
     long started;          // when it started, for the layer's newest
+    double before;         // its phase before the last update, and whether it passed its end (its start, backwards)
+    boolean wrapped;
+    boolean backwards;
+    private SyncGroup group;
+    private boolean lead;
+    ClipState leader;      // its group's leader this update (itself if it leads), or null
 
     ClipState(Animator animator) {
         this.animator = animator;
@@ -43,6 +49,33 @@ public final class ClipState {
         this.fadeOut = fadeOut;
         this.fresh = true;
         this.started = started;
+        this.before = 0;
+        this.wrapped = false;
+        this.backwards = false;
+        this.group = motion instanceof Clip clip ? clip.group() : ((BlendSpace1) motion).group();
+        this.lead = false;
+        this.leader = null;
+    }
+
+    /** Has it keep in step with {@code group}'s other motions (null: none). */
+    public ClipState sync(SyncGroup group) {
+        this.group = group;
+        return this;
+    }
+
+    /** Its sync group, or null. */
+    public SyncGroup group() {
+        return group;
+    }
+
+    /** Has it lead its group, whatever it weighs (one at a time: the newest made to lead does). */
+    public ClipState lead(boolean lead) {
+        this.lead = lead;
+        return this;
+    }
+
+    public boolean leads() {
+        return lead;
     }
 
     /** What it plays. */
@@ -164,22 +197,34 @@ public final class ClipState {
         }
     }
 
-    /** Moves its fade and phase on by {@code seconds}; returns its phase before. */
-    double advance(double seconds) {
-        double before = phase;
+    /**
+     * Moves its fade on by {@code seconds}, and its phase unless it follows its group's leader ({@code follow}); returns
+     * its phase before.
+     */
+    double advance(double seconds, boolean follow) {
+        before = phase;
+        wrapped = false; // until it moves
         if (fade != fadeTarget) {
             double step = fadeRate * seconds;
             fade = fade < fadeTarget ? Math.min(fadeTarget, fade + step) : Math.max(fadeTarget, fade - step);
         }
-        if (!paused) {
+        if (!paused && !follow) {
             double duration = duration();
             phase = place(duration > 0 ? phase + seconds * speed / duration : 0);
-            if (fadeOut >= 0 && fadeTarget != 0
-                && (speed >= 0 ? 1 - phase : phase) * duration <= fadeOut * Math.abs(speed)) { // instant: at once
-                fadeOutOver(fadeOut);
-            }
+            moved(speed < 0);
         }
         return before;
+    }
+
+    /** Notes how its phase moved from {@link #before}, and fades it out near its end if it plays once. */
+    void moved(boolean back) {
+        backwards = back;
+        wrapped = back ? phase > before : phase < before;
+        double duration = duration();
+        if (fadeOut >= 0 && fadeTarget != 0
+            && (speed >= 0 ? 1 - phase : phase) * duration <= fadeOut * Math.abs(speed)) { // instant: at once
+            fadeOutOver(fadeOut);
+        }
     }
 
     /** Whether it is done: faded out, or played once to its end. */

@@ -54,6 +54,14 @@ public final class Animator {
     private AnimationEvent[] events = new AnimationEvent[8];
     private float[] eventWeights = new float[8];
     private int eventCount;
+    // Root motion: the update's, and scratch for working it out.
+    private final RootDelta rootDelta = new RootDelta();
+    private final double[] layerDelta = new double[4];
+    private final double[] stateDelta = new double[4];
+    private final double[] segment = new double[4];
+    private final double[] rootA = new double[7];
+    private final double[] rootB = new double[7];
+    private final int[] rootCursor = new int[1];
 
     @AllowAllocation("animators are made when models spawn")
     Animator(Rig rig, long[] nodes) {
@@ -132,6 +140,14 @@ public final class Animator {
     public double parameter(BlendSpace1 space) {
         rig.checkOwn(space, space.rig());
         return parameters[space.index];
+    }
+
+    /**
+     * The rig's root motion of the last update: what its clips moved the root joint by on the axes it takes, which the
+     * pose leaves out. All 0 for a rig without root motion.
+     */
+    public RootDelta rootDelta() {
+        return rootDelta;
     }
 
     /** {@code curve}'s value as of the last update, blended as the clips keying it are; 0 if none does. */
@@ -297,18 +313,29 @@ public final class Animator {
             states[--count] = gone; // kept for reuse
         }
 
+        /** Moves its motions on, but for followers' phases; queues the events of those that moved. */
         private void advance(double seconds) {
             for (int i = 0; i < count; i++) {
                 ClipState state = states[i];
                 boolean fresh = state.fresh;
                 state.fresh = false;
-                double before = state.advance(seconds);
+                boolean follows = state.leader != null && state.leader != state;
+                double before = state.advance(seconds, follows);
                 double weightNow = weight * state.effectiveWeight();
-                if (weightNow > 0) {
+                if (weightNow > 0 && !follows) {
                     events(state, before, weightNow, fresh);
                 }
             }
-            drop();
+        }
+
+        /** Its followers take their leaders' phases. */
+        private void follow() {
+            for (int i = 0; i < count; i++) {
+                ClipState state = states[i];
+                if (state.leader != null && state.leader != state) {
+                    Animator.this.follow(state, state.leader);
+                }
+            }
         }
 
         private void sample() {
@@ -360,11 +387,108 @@ public final class Animator {
         eventWeights[eventCount++] = (float) weight;
     }
 
-    /** Moves every layer's motions on by {@code seconds}, queueing the events they pass. */
+    /**
+     * Moves every layer's motions on by {@code seconds}, queueing the events they pass: each sync group's leader first,
+     * then its followers to the leader's phase.
+     */
     void advance(double seconds) {
+        lead();
         for (Playback layer : layers) {
             layer.advance(seconds);
         }
+        for (Playback layer : layers) {
+            layer.follow();
+        }
+        for (Playback layer : layers) {
+            layer.drop();
+        }
+    }
+
+    /** Picks each sync group's leader: the newest made to lead, else the heaviest (the oldest of equals). */
+    private void lead() {
+        for (Playback layer : layers) {
+            for (int i = 0; i < layer.count; i++) {
+                ClipState state = layer.states[i];
+                state.leader = null;
+                if (state.group() == null) {
+                    continue;
+                }
+                ClipState best = null;
+                double bestWeight = -1;
+                for (Playback other : layers) {
+                    for (int k = 0; k < other.count; k++) {
+                        ClipState candidate = other.states[k];
+                        if (candidate.group() != state.group()) {
+                            continue;
+                        }
+                        double weight = other.weight * candidate.effectiveWeight();
+                        boolean better;
+                        if (best == null) {
+                            better = true;
+                        } else if (candidate.leads() != best.leads()) {
+                            better = candidate.leads();
+                        } else if (candidate.leads()) {
+                            better = candidate.started > best.started;
+                        } else {
+                            better = weight > bestWeight;
+                        }
+                        if (better) {
+                            best = candidate;
+                            bestWeight = weight;
+                        }
+                    }
+                }
+                state.leader = best;
+            }
+        }
+    }
+
+    /**
+     * Puts {@code follower} at {@code leader}'s phase: marker by marker where their clips share the leader's markers
+     * around its time (between the same two markers, as far between them), else as far through.
+     */
+    private void follow(ClipState follower, ClipState leader) {
+        double phase = leader.phase;
+        Clip lead = markerClip(leader);
+        Clip clip = markerClip(follower);
+        int markers = lead.markerCount();
+        int own = clip.markerCount();
+        if (markers > 0 && own > 0) {
+            double duration = lead.duration();
+            double time = leader.phase * duration;
+            int p = markers - 1; // the last marker at or before its time; before the first: the last, a loop ago
+            for (int m = 0; m < markers; m++) {
+                if (lead.markerTime(m) <= time) {
+                    p = m;
+                }
+            }
+            int n = (p + 1) % markers;
+            double span = lead.markerTime(n) - lead.markerTime(p) + (n <= p ? duration : 0);
+            double into = time - lead.markerTime(p) + (time < lead.markerTime(p) ? duration : 0);
+            double fraction = span > 0 ? into / span : 0;
+            for (int k = 0; k < own; k++) {
+                int next = (k + 1) % own;
+                if (clip.marker(k) == lead.marker(p) && clip.marker(next) == lead.marker(n)) {
+                    double ownDuration = clip.duration();
+                    double ownSpan = clip.markerTime(next) - clip.markerTime(k) + (next <= k ? ownDuration : 0);
+                    double t = clip.markerTime(k) + fraction * ownSpan;
+                    phase = ownDuration > 0 ? (t % ownDuration) / ownDuration : 0;
+                    break;
+                }
+            }
+        }
+        follower.phase = follower.looping() ? phase : Math.min(Math.max(phase, 0), 1);
+        follower.moved(leader.backwards);
+    }
+
+    /** The clip whose markers {@code state} goes by: its clip, or its blend space's heavier one. */
+    private Clip markerClip(ClipState state) {
+        if (state.motion instanceof Clip clip) {
+            return clip;
+        }
+        BlendSpace1 space = (BlendSpace1) state.motion;
+        int first = space.blend(parameters[space.index], blendWeight);
+        return blendWeight[0] >= 0.5 ? space.clip(first) : space.clip(first + 1);
     }
 
     /** Samples and blends the layers into the pose; touches nothing shared, so animators sample in parallel. */
@@ -382,6 +506,155 @@ public final class Animator {
             if (playback.count > 0 && playback.weight > 0) {
                 playback.sample();
             }
+        }
+        rootDelta.clear();
+        if (rig.rootJoint() >= 0) {
+            rootMotion();
+        }
+    }
+
+    /**
+     * Works out the update's root motion, blended as the override layers blend (additive layers add none), and takes
+     * it out of the pose: the root joint at rest on the axes taken.
+     */
+    private void rootMotion() {
+        int root = rig.rootJoint();
+        RootMotion mode = rig.rootMotion();
+        double dx = 0;
+        double dy = 0;
+        double dz = 0;
+        double dyaw = 0;
+        for (Playback playback : layers) {
+            if (playback.count == 0 || playback.weight == 0 || playback.layer.isAdditive()) {
+                continue;
+            }
+            Arrays.fill(layerDelta, 0);
+            double total = 0;
+            for (int i = 0; i < playback.count; i++) {
+                ClipState state = playback.states[i];
+                double w = state.effectiveWeight();
+                total += w;
+                if (w == 0) {
+                    continue;
+                }
+                if (state.motion instanceof Clip clip) {
+                    moveOf(clip, state, root, mode, w);
+                } else {
+                    BlendSpace1 space = (BlendSpace1) state.motion;
+                    int first = space.blend(parameters[space.index], blendWeight);
+                    double a = blendWeight[0];
+                    moveOf(space.clip(first), state, root, mode, w * a);
+                    if (a < 1) {
+                        moveOf(space.clip(first + 1), state, root, mode, w * (1 - a));
+                    }
+                }
+            }
+            if (total == 0) {
+                continue;
+            }
+            double norm = Math.max(1, total);
+            double k = playback.weight * playback.layer.weight(root);
+            dx += k * (layerDelta[0] / norm - dx);
+            dy += k * (layerDelta[1] / norm - dy);
+            dz += k * (layerDelta[2] / norm - dz);
+            dyaw += k * (layerDelta[3] / norm - dyaw);
+        }
+        rootDelta.dx = dx;
+        rootDelta.dy = mode.height() ? dy : 0;
+        rootDelta.dz = dz;
+        rootDelta.yaw = mode.yaw() ? dyaw : 0;
+        if (!rig.animated(root)) {
+            return;
+        }
+        int b = Skeleton.TRANSFORM * root;
+        pose[b] = skeleton.rest(root, 0);
+        pose[b + 2] = skeleton.rest(root, 2);
+        if (mode.height()) {
+            pose[b + 1] = skeleton.rest(root, 1);
+        }
+        if (mode.yaw()) {
+            // The rotation without its turn about y (its twist), with the rest pose's instead
+            double ty = pose[b + 4];
+            double tw = pose[b + 6];
+            double length = Maths.sqrt(ty * ty + tw * tw);
+            if (length > 0) {
+                ty /= length;
+                tw /= length;
+                double ry = skeleton.rest(root, 4);
+                double rw = skeleton.rest(root, 6);
+                double rl = Maths.sqrt(ry * ry + rw * rw);
+                ry = rl > 0 ? ry / rl : 0;
+                rw = rl > 0 ? rw / rl : 1;
+                // twist' = conjugate(twist) * restTwist: both about y
+                double cy = tw * ry - ty * rw;
+                double cw = tw * rw + ty * ry;
+                multiplyBy(pose, b + 3, 0, cy, 0, cw);
+            }
+        }
+    }
+
+    /** {@code q} (at {@code at}) times (x, y, z, w), in place. */
+    private static void multiplyBy(double[] q, int at, double x, double y, double z, double w) {
+        double ax = q[at];
+        double ay = q[at + 1];
+        double az = q[at + 2];
+        double aw = q[at + 3];
+        q[at] = aw * x + ax * w + ay * z - az * y;
+        q[at + 1] = aw * y - ax * z + ay * w + az * x;
+        q[at + 2] = aw * z + ax * y - ay * x + az * w;
+        q[at + 3] = aw * w - ax * x - ay * y - az * z;
+    }
+
+    /**
+     * Adds to {@link #layerDelta}, weighing {@code w}, how far {@code clip} moved the root over {@code state}'s last
+     * update: from its phase before to its phase now, across its end (its start, backwards) if it passed it.
+     */
+    private void moveOf(Clip clip, ClipState state, int root, RootMotion mode, double w) {
+        double duration = clip.duration();
+        double t0 = state.before * duration;
+        double t1 = state.phase * duration;
+        if (!state.wrapped) {
+            move(clip, root, mode, t0, t1, stateDelta);
+        } else {
+            move(clip, root, mode, t0, state.backwards ? 0 : duration, stateDelta);
+            move(clip, root, mode, state.backwards ? duration : 0, t1, segment);
+            // The second part as the first left the root facing
+            double c = Maths.cos(stateDelta[3]);
+            double s = Maths.sin(stateDelta[3]);
+            stateDelta[0] += c * segment[0] + s * segment[2];
+            stateDelta[1] += segment[1];
+            stateDelta[2] += -s * segment[0] + c * segment[2];
+            stateDelta[3] += segment[3];
+        }
+        for (int i = 0; i < 4; i++) {
+            layerDelta[i] += w * stateDelta[i];
+        }
+    }
+
+    /**
+     * How far {@code clip} moves the root from {@code from} to {@code to} seconds into {@code out}: (x, y, z) in its
+     * frame at {@code from} when the turn is taken (else its parent's), and the turn about y.
+     */
+    private void move(Clip clip, int root, RootMotion mode, double from, double to, double[] out) {
+        clip.root(root, from, rootCursor, rootA, scratch);
+        clip.root(root, to, rootCursor, rootB, scratch);
+        double x = rootB[0] - rootA[0];
+        double z = rootB[2] - rootA[2];
+        out[1] = rootB[1] - rootA[1];
+        if (mode.yaw()) {
+            double yawA = 2 * Maths.atan2(rootA[4], rootA[6]);
+            double yawB = 2 * Maths.atan2(rootB[4], rootB[6]);
+            double turn = yawB - yawA;
+            turn -= 2 * Math.PI * Math.floor((turn + Math.PI) / (2 * Math.PI)); // the short way: -pi to pi
+            double c = Maths.cos(yawA);
+            double s = Maths.sin(yawA);
+            out[0] = c * x - s * z;
+            out[2] = s * x + c * z;
+            out[3] = turn;
+        } else {
+            out[0] = x;
+            out[2] = z;
+            out[3] = 0;
         }
     }
 

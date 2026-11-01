@@ -21,6 +21,7 @@ public final class BlendSpace1 implements Motion {
     final int index; // its parameter's in an animator's
     private double[] at = new double[0];
     private Clip[] clips = new Clip[0];
+    private SyncGroup group;
 
     BlendSpace1(Rig rig, int index) {
         this.rig = rig;
@@ -61,6 +62,18 @@ public final class BlendSpace1 implements Motion {
         at = places;
         clips = placed;
         return this;
+    }
+
+    /** Has it join {@code group} whenever it plays (null: none); while the rig is set up. */
+    public BlendSpace1 sync(SyncGroup group) {
+        rig.checkSettingUp();
+        this.group = group;
+        return this;
+    }
+
+    /** The sync group it joins by default, or null. */
+    public SyncGroup group() {
+        return group;
     }
 
     /** How many clips it blends. */

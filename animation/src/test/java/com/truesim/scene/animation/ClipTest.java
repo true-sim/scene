@@ -46,19 +46,19 @@ class ClipTest {
         assertThat(state.motion()).isInstanceOf(Clip.class);
         assertThat(state.looping()).isTrue();
         assertThat(state.speed()).isEqualTo(1);
-        state.advance(2.5);
+        state.advance(2.5, false);
         assertThat(state.time()).isCloseTo(0.5, within(1e-12));
         assertThat(state.phase()).isCloseTo(0.25, within(1e-12));
         assertThat(state.speed(-1).speed()).isEqualTo(-1);
-        state.advance(1);
+        state.advance(1, false);
         assertThat(state.time()).isCloseTo(1.5, within(1e-12)); // backwards past the start: wrapped to the end
         assertThat(state.finished()).isFalse();
-        state.loop(false).speed(2).advance(5);
+        state.loop(false).speed(2).advance(5, false);
         assertThat(state.time()).isEqualTo(2);
         assertThat(state.finished()).isTrue();
         state.speed(-1);
         assertThat(state.finished()).isFalse();
-        state.advance(10);
+        state.advance(10, false);
         assertThat(state.time()).isZero();
         assertThat(state.finished()).isTrue();
         assertThat(state.time(1.25).time()).isEqualTo(1.25);
@@ -67,10 +67,10 @@ class ClipTest {
         assertThat(state.finished()).isFalse();
         // Paused, time stays.
         assertThat(state.pause().paused()).isTrue();
-        state.advance(0.25);
+        state.advance(0.25, false);
         assertThat(state.time()).isEqualTo(1.5);
         assertThat(state.resume().paused()).isFalse();
-        state.advance(0.25);
+        state.advance(0.25, false);
         assertThat(state.time()).isEqualTo(1.75);
         assertThat(state.weight(0.5).weight()).isEqualTo(0.5);
         assertThat(state.fade()).isOne();
@@ -86,7 +86,7 @@ class ClipTest {
     void anInstantClipStaysAtItsStart() {
         ClipState state = playing(new AnimationClip("", List.of(new Track("a", 0, Property.SCALE,
             Interpolation.STEP, new float[] {0}, new float[] {1, 1, 1}, 0))));
-        state.advance(3);
+        state.advance(3, false);
         assertThat(state.time()).isZero();
         assertThat(state.time(2).time()).isZero();
     }
