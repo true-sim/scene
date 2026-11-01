@@ -61,6 +61,8 @@ public final class Renderables {
     private List<AssetRef<MaterialData>>[] materials = newMaterials(64);
     private boolean[] castsShadows = new boolean[64];
     private SkinBinding[] skins = new SkinBinding[64];
+    private float[][] morphWeights = new float[64][];
+    private int[] morphWeightCounts = new int[64];
     private int size;
     /** Scene changes seen by {@link #update()}: up to this stamp. */
     private long sceneSeen;
@@ -200,6 +202,41 @@ public final class Renderables {
     /** The skin deforming {@code node}'s renderable, or null. */
     public SkinBinding skin(long node) {
         return skins[held(node)];
+    }
+
+    /**
+     * Sets the morph target weights of {@code node}'s renderable to {@code weights[offset..offset + count)}; targets
+     * past them weigh 0. Not logged: renderers read them each update. Its signature is an animator's morph sink's, so
+     * {@code animators.morphSink(renderables::setMorphWeights)} drives them. Allocates only when the count grows.
+     */
+    @AllowAllocation("room for more weights than before")
+    public void setMorphWeights(long node, double[] weights, int offset, int count) {
+        checkOwner();
+        int index = held(node);
+        java.util.Objects.checkFromIndexSize(offset, count, weights.length);
+        float[] kept = morphWeights[index];
+        if (kept == null || kept.length < count) {
+            kept = new float[count];
+            morphWeights[index] = kept;
+        }
+        for (int i = 0; i < count; i++) {
+            kept[i] = (float) weights[offset + i];
+        }
+        morphWeightCounts[index] = count;
+    }
+
+    /** How many morph weights {@code node}'s renderable has set. */
+    public int morphWeightCount(long node) {
+        return morphWeightCounts[held(node)];
+    }
+
+    /** Morph target {@code target}'s weight on {@code node}'s renderable: 0 past those set. */
+    public float morphWeight(long node, int target) {
+        int index = held(node);
+        if (target < 0) {
+            throw new IndexOutOfBoundsException("Not a target: " + target);
+        }
+        return target < morphWeightCounts[index] ? morphWeights[index][target] : 0;
     }
 
     /** Removes {@code node}'s renderable, if it has one. */
@@ -374,6 +411,7 @@ public final class Renderables {
         materials[index] = null;
         castsShadows[index] = false;
         skins[index] = null;
+        morphWeightCounts[index] = 0;
         size--;
     }
 
@@ -384,5 +422,7 @@ public final class Renderables {
         materials = Arrays.copyOf(materials, length);
         castsShadows = Arrays.copyOf(castsShadows, length);
         skins = Arrays.copyOf(skins, length);
+        morphWeights = Arrays.copyOf(morphWeights, length);
+        morphWeightCounts = Arrays.copyOf(morphWeightCounts, length);
     }
 }

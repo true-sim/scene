@@ -139,6 +139,29 @@ class RenderablesTest {
     }
 
     @Test
+    void morphWeightsAreSetUntilRemoved() {
+        long face = scene.create();
+        renderables.set(face, ROCK, List.of());
+        assertThat(renderables.morphWeightCount(face)).isZero();
+        assertThat(renderables.morphWeight(face, 3)).isZero();
+        renderables.setMorphWeights(face, new double[] {9, 0.25, 0.5, 9}, 1, 2);
+        assertThat(renderables.morphWeightCount(face)).isEqualTo(2);
+        assertThat(renderables.morphWeight(face, 1)).isEqualTo(0.5f);
+        assertThat(renderables.morphWeight(face, 2)).as("past those set").isZero();
+        renderables.setMorphWeights(face, new double[] {1}, 0, 1); // fewer: kept in the same room
+        assertThat(renderables.morphWeightCount(face)).isOne();
+        assertThat(renderables.morphWeight(face, 1)).isZero();
+        renderables.setMorphWeights(face, new double[] {1, 2, 3}, 0, 3); // more: more room
+        assertThat(renderables.morphWeight(face, 2)).isEqualTo(3);
+        assertThatThrownBy(() -> renderables.morphWeight(face, -1)).isInstanceOf(IndexOutOfBoundsException.class);
+        assertThatThrownBy(() -> renderables.setMorphWeights(face, new double[1], 0, 2))
+            .isInstanceOf(IndexOutOfBoundsException.class);
+        renderables.remove(face);
+        renderables.set(face, ROCK, List.of());
+        assertThat(renderables.morphWeightCount(face)).as("gone with the renderable").isZero();
+    }
+
+    @Test
     void misuseIsChecked() {
         long node = scene.create();
         assertThatIllegalArgumentException().isThrownBy(() -> renderables.mesh(node)).withMessageContaining("No renderable");

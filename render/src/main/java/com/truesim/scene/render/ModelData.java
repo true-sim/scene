@@ -387,6 +387,13 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
             }
             if (node.mesh() != null) {
                 renderables.set(created, node.mesh(), node.materials());
+                if (!node.morphWeights().isEmpty()) {
+                    double[] weights = new double[node.morphWeights().size()];
+                    for (int w = 0; w < weights.length; w++) {
+                        weights[w] = node.morphWeights().get(w);
+                    }
+                    renderables.setMorphWeights(created, weights, 0, weights.length);
+                }
             }
             placed[i] = created;
         }
