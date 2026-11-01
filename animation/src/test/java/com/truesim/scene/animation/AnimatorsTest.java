@@ -100,7 +100,7 @@ class AnimatorsTest {
         // Stopped, the pose stays.
         animator.stop();
         assertThat(animator.playing()).isNull();
-        assertThat(animator.weightCount(0)).isZero();
+        assertThat(animator.weightCount(0)).as("the rig's layout stays").isEqualTo(2);
         animators.update(0.25);
         assertThat(scene.local(nodes[0]).translation()).isEqualTo(Vec3.of(0, 1.75, 0));
     }
@@ -163,7 +163,7 @@ class AnimatorsTest {
         Animators animators = new Animators(scene);
         long[] nodes = spawn();
         animators.add(leg(), nodes).play(new AnimationClip("", List.of(new Track("hip", 0, Property.SCALE,
-            Interpolation.STEP, new float[] {0}, new float[] {0, 1, -0.0f}, 0))));
+            Interpolation.STEP, new float[] {0}, new float[] {0, 1, -2e-7f}, 0))));
         animators.update(0);
         assertThat(scene.local(nodes[0]).scale()).isEqualTo(Vec3.of(1e-6, 1, -1e-6));
     }

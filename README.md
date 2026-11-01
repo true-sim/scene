@@ -385,7 +385,28 @@ assets.acquire(rock);
   scene.update();
   ```
 
-  Layers, masks, cross-fades, events, root motion and inverse kinematics follow ([docs/animation.md](docs/animation.md)).
+  A `Rig`, built once per model and shared by its instances, does the rest: clips bound to joints, events and
+  curves on them, 1D blend spaces, masks and layers (override by weight and mask, or additive from a clip's first frame
+  or the rest pose). Each layer of an animator cross-fades between up to four motions; nothing per frame allocates:
+
+  ```java
+  Rig.Builder r = Rig.builder(model.skeleton());
+  Clip idle = r.clip(cache.get(model.animation("Idle")));
+  Clip run = r.clip(cache.get(model.animation("Run"))).event(0.5, FOOTSTEP).curve(BLINK, times, values);
+  BlendSpace1 move = r.blendSpace1().at(0, idle).at(5, run);
+  Rig.Layer base = r.layer();
+  Rig.Layer upper = r.layer().mask(r.mask().include(r.joint("spine")).build());
+  Rig rig = r.build();
+  Animator a = animators.add(rig, nodes);
+  a.layer(base).play(move);
+  animators.listen(FOOTSTEP, (node, event, weight) -> audio.footstep(node));
+  // each frame
+  a.input(move, speed);
+  if (attack) a.layer(upper).playOnce(slash, 0.1, 0.2);   // fades in, and out at its end
+  double blink = a.curve(BLINK);
+  ```
+
+  Sync groups, root motion and inverse kinematics follow ([docs/animation.md](docs/animation.md)).
 - **Nothing by default:** no mount and no importer exists until the game adds them; the first importer of a type
   registers the cache's loader for it, which picks the importer by extension. Folders never open files outside them.
 
@@ -486,7 +507,7 @@ dependencies {
     implementation("com.truesim.scene:scene-assets:0.17.0")    // asset references and the cache
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
-    implementation("com.truesim.scene:scene-animation:0.35.0") // clips and animators (from 0.35.0)
+    implementation("com.truesim.scene:scene-animation:0.38.0") // clips, rigs and animators (from 0.35.0)
 }
 ```
 

@@ -7,6 +7,8 @@ import static org.assertj.core.api.Assertions.within;
 
 import com.truesim.scene.animation.Track.Interpolation;
 import com.truesim.scene.animation.Track.Property;
+import com.truesim.common.state.ChangeClock;
+import com.truesim.scene.core.SceneGraph;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -30,14 +32,23 @@ class ClipTest {
         assertThat(AnimationAssets.CLIP.type()).isEqualTo(AnimationClip.class);
     }
 
+    /** A state playing {@code clip} on an animator of one node "a". */
+    static ClipState playing(AnimationClip clip) {
+        Skeleton one = new Skeleton(new String[] {"a"}, new int[] {-1}, new double[] {0, 0, 0, 0, 0, 0, 1, 1, 1, 1});
+        SceneGraph scene = new SceneGraph(new ChangeClock());
+        return new Animators(scene).add(one, new long[] {scene.create()}).play(clip);
+    }
+
     @Test
     void loopingTimeWrapsAndPlayingOnceStopsAtTheEnds() {
-        ClipState state = new ClipState(new AnimationClip("", List.of(moving("a", 0, 2))));
-        assertThat(state.clip().duration()).isEqualTo(2);
+        ClipState state = playing(new AnimationClip("", List.of(moving("a", 0, 2))));
+        assertThat(state.duration()).isEqualTo(2);
+        assertThat(state.motion()).isInstanceOf(Clip.class);
         assertThat(state.looping()).isTrue();
         assertThat(state.speed()).isEqualTo(1);
         state.advance(2.5);
         assertThat(state.time()).isCloseTo(0.5, within(1e-12));
+        assertThat(state.phase()).isCloseTo(0.25, within(1e-12));
         assertThat(state.speed(-1).speed()).isEqualTo(-1);
         state.advance(1);
         assertThat(state.time()).isCloseTo(1.5, within(1e-12)); // backwards past the start: wrapped to the end
@@ -61,17 +72,23 @@ class ClipTest {
         assertThat(state.resume().paused()).isFalse();
         state.advance(0.25);
         assertThat(state.time()).isEqualTo(1.75);
+        assertThat(state.weight(0.5).weight()).isEqualTo(0.5);
+        assertThat(state.fade()).isOne();
+        assertThat(state.fadingOut()).isFalse();
+        assertThat(state.toString()).contains("phase", "weight 0.5");
         assertThatIllegalArgumentException().isThrownBy(() -> state.time(Double.NaN));
         assertThatIllegalArgumentException().isThrownBy(() -> state.speed(Double.POSITIVE_INFINITY));
-        assertThatNullPointerException().isThrownBy(() -> new ClipState(null));
+        assertThatIllegalArgumentException().isThrownBy(() -> state.weight(1.5));
+        assertThatIllegalArgumentException().isThrownBy(() -> state.weight(Double.NaN));
     }
 
     @Test
     void anInstantClipStaysAtItsStart() {
-        ClipState state = new ClipState(new AnimationClip("", List.of(new Track("a", 0, Property.SCALE,
+        ClipState state = playing(new AnimationClip("", List.of(new Track("a", 0, Property.SCALE,
             Interpolation.STEP, new float[] {0}, new float[] {1, 1, 1}, 0))));
         state.advance(3);
         assertThat(state.time()).isZero();
+        assertThat(state.time(2).time()).isZero();
     }
 
     @Test
