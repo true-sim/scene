@@ -68,6 +68,7 @@ public final class MeshBuilder {
     private final int vertexCount;
     private float[] positions;
     private final float[][] attributes = new float[VertexAttribute.values().length][];
+    private int[] jointPalette;
     private int[] joints;
     private final List<int[]> submeshes = new ArrayList<>();
     private int maxVertices = 64;
@@ -112,6 +113,12 @@ public final class MeshBuilder {
     /** Skinning joints: four indices from 0 to 255 per vertex. */
     public MeshBuilder joints(int[] indices) {
         this.joints = indices.clone();
+        return this;
+    }
+
+    /** Which skin joint each joint index is ({@link MeshData.Builder#jointPalette}). */
+    public MeshBuilder jointPalette(int[] skinJoints) {
+        this.jointPalette = skinJoints.clone();
         return this;
     }
 
@@ -336,6 +343,9 @@ public final class MeshBuilder {
         }
         if (joints != null) {
             builder.joints(remappedJoints(remap, used));
+        }
+        if (jointPalette != null) {
+            builder.jointPalette(jointPalette);
         }
         for (int level = finestFirst.size() - 1; level >= 0; level--) {
             for (Cluster cluster : finestFirst.get(level)) {

@@ -365,6 +365,7 @@ class MeshBuilderTest {
             .attribute(VertexAttribute.COLOR, colors)
             .attribute(VertexAttribute.WEIGHTS, weights)
             .joints(joints)
+            .jointPalette(java.util.stream.IntStream.range(1000, 1200).toArray()) // the skin's joints from 1000
             .submesh(triangles(0, 8, 8)) // only part of the grid: unused vertices are dropped
             .submesh(triangles(8, 16, 8))
             .coneWeight(0.5)
@@ -372,6 +373,8 @@ class MeshBuilderTest {
             .buildHierarchy();
         assertThat(mesh.vertexCount()).isEqualTo(17 * 9);
         assertThat(mesh.materialSlots()).isEqualTo(2);
+        assertThat(mesh.jointCount()).isEqualTo(200);
+        assertThat(mesh.paletteJoint(5)).isEqualTo(1005);
         double[] p = new double[3];
         double[] uv = new double[2];
         double[] color = new double[4];

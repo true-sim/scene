@@ -9,6 +9,7 @@ import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.PathAssets;
 import com.truesim.scene.assets.PathSource;
 import com.truesim.scene.render.ImageImporter;
+import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.render.MaterialData;
 import com.truesim.scene.render.ModelData;
 import com.truesim.scene.render.RenderAssets;
@@ -40,6 +41,7 @@ class SampleModelsSweep {
         }
         TreeMap<String, String> failures = new TreeMap<>();
         int parts = 0;
+        int skinned = 0;
         for (Path file : files) {
             try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
                 PathAssets paths = new PathAssets(cache);
@@ -67,10 +69,26 @@ class SampleModelsSweep {
                     load(tasks, cache, texture, name, failures);
                     parts++;
                 }
+                // Each skinned node's mesh names joints of its skin.
+                ModelData m = (ModelData) model;
+                for (ModelData.Node node : m.nodes()) {
+                    if (node.skin() >= 0 && cache.get(node.mesh()) instanceof MeshData mesh) {
+                        skinned++;
+                        int joints = m.skins().get(node.skin()).jointCount();
+                        boolean fits = mesh.jointCount() > 0;
+                        for (int j = 0; j < mesh.jointCount(); j++) {
+                            fits &= mesh.paletteJoint(j) < joints;
+                        }
+                        if (!fits) {
+                            failures.put(name + " node " + node.name(), "a palette past its skin's " + joints
+                                + " joints, or none");
+                        }
+                    }
+                }
             }
         }
-        System.out.println("glTF samples: " + files.size() + " files, " + parts + " parts, " + failures.size()
-            + " failures");
+        System.out.println("glTF samples: " + files.size() + " files, " + parts + " parts, " + skinned
+            + " skinned nodes, " + failures.size() + " failures");
         failures.forEach((what, why) -> System.out.println("  FAIL " + what + ": " + why));
         assertThat(files).isNotEmpty();
     }

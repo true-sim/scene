@@ -49,6 +49,55 @@ class ModelDataTest {
     }
 
     @Test
+    void skinsNameTheirJointsAmongTheNodes() {
+        float[] identity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        ModelData.Skin skin = new ModelData.Skin("arm", new int[] {1}, identity, 0);
+        ModelData.Node body = new ModelData.Node("body", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1,
+            List.of(), 0);
+        ModelData.Node bone = ModelData.Node.of("bone", 0, null, List.of());
+        ModelData model = new ModelData(List.of(body, bone), List.of(), List.of(skin));
+        assertThat(model.skins()).containsExactly(skin);
+        assertThat(bone.skin()).as("of no skin").isEqualTo(-1);
+        assertThat(model.bytes()).isGreaterThan(new ModelData(List.of(body.withoutSkin(), bone)).bytes());
+        // Copies in and out; equal by value.
+        int[] joints = skin.joints();
+        joints[0] = 5;
+        assertThat(skin.joint(0)).isEqualTo(1);
+        assertThat(skin.inverseBindMatrices()).containsExactly(identity);
+        assertThat(skin.jointCount()).isOne();
+        assertThat(skin.inverseBind(0, 15)).isEqualTo(1);
+        ModelData.Skin same = new ModelData.Skin("arm", new int[] {1}, identity.clone(), 0);
+        assertThat(same).isEqualTo(skin).hasSameHashCodeAs(skin).isNotEqualTo(null).isNotEqualTo("arm");
+        assertThat(new ModelData.Skin("leg", new int[] {1}, identity, 0)).isNotEqualTo(skin);
+        assertThat(new ModelData.Skin("arm", new int[] {0}, identity, 0)).isNotEqualTo(skin);
+        assertThat(new ModelData.Skin("arm", new int[] {1}, new float[16], 0)).isNotEqualTo(skin);
+        assertThat(new ModelData.Skin("arm", new int[] {1}, identity, -1)).isNotEqualTo(skin);
+        assertThat(skin.toString()).contains("arm", "1 joints", "skeleton 0");
+        org.assertj.core.api.Assertions.assertThatExceptionOfType(IndexOutOfBoundsException.class)
+            .isThrownBy(() -> skin.inverseBind(0, 16));
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData.Skin("x", new int[0], new float[0], -1));
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData.Skin("x", new int[1], new float[15], -1));
+        // Nodes name skins of the model; skins name its nodes.
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(body, bone)))
+            .withMessageContaining("skin 0 is not one of the model's");
+        ModelData.Node minus = new ModelData.Node("x", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1,
+            List.of(), -2);
+        assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(minus)));
+        for (int[] bad : new int[][] {{2}, {-1}}) {
+            ModelData.Skin far = new ModelData.Skin("far", bad, identity, -1);
+            assertThatIllegalArgumentException()
+                .isThrownBy(() -> new ModelData(List.of(body.withoutSkin(), bone), List.of(), List.of(far)))
+                .withMessageContaining("is not a node");
+        }
+        for (int skeleton : new int[] {2, -2}) {
+            ModelData.Skin rootless = new ModelData.Skin("r", new int[] {1}, identity, skeleton);
+            assertThatIllegalArgumentException()
+                .isThrownBy(() -> new ModelData(List.of(body.withoutSkin(), bone), List.of(), List.of(rootless)))
+                .withMessageContaining("skeleton");
+        }
+    }
+
+    @Test
     void parentsComeBeforeTheirChildren() {
         assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
             ModelData.Node.of("child", 1, null, List.of()), ModelData.Node.of("parent", -1, null, List.of()))))

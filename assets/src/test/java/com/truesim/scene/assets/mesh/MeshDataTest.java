@@ -66,6 +66,66 @@ class MeshDataTest {
     }
 
     @Test
+    void skinnedMeshesKnowTheirJointsAndEachJointsBox() {
+        // grid() names joints v * 10 + i, weighing only the first: the palette runs to the highest named.
+        MeshData mesh = twoMeshlets(grid()).build();
+        assertThat(mesh.jointCount()).isEqualTo(54);
+        assertThat(mesh.paletteJoint(20)).isEqualTo(20);
+        double[] box = new double[6];
+        mesh.jointBox(10, box); // vertex 1 alone
+        assertThat(box).containsExactly(POSITIONS[3], POSITIONS[4], POSITIONS[5], POSITIONS[3], POSITIONS[4],
+            POSITIONS[5]);
+        mesh.jointBox(11, box); // named, but of weight 0: moves nothing
+        assertThat(box[0]).isGreaterThan(box[3]);
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> mesh.jointBox(54, box));
+        assertThatExceptionOfType(IndexOutOfBoundsException.class).isThrownBy(() -> mesh.paletteJoint(-1));
+        // A palette: joint i is skin joint palette[i]; joints past it are refused.
+        int[] few = new int[24];
+        float[] weights = new float[24];
+        for (int v = 0; v < 6; v++) {
+            few[4 * v] = v % 2;
+            few[4 * v + 1] = 1;
+            // Thirds and a tenth: rounded, the bytes would sum to 257; the largest gives the rest back.
+            weights[4 * v] = 0.3f;
+            weights[4 * v + 1] = 0.3f;
+            weights[4 * v + 2] = 0.3f;
+            weights[4 * v + 3] = 0.1f;
+        }
+        weights[20] = 0.1f; // vertex 5: the second weighs most
+        weights[21] = 0.9f;
+        weights[22] = 0;
+        weights[23] = 0;
+        MeshData palette = twoMeshlets(grid().joints(few).weights(weights).jointPalette(new int[] {300, 7})).build();
+        assertThat(palette.jointCount()).isEqualTo(2);
+        assertThat(palette.paletteJoint(0)).isEqualTo(300);
+        double[] w = new double[4];
+        palette.unorm4(VertexAttribute.WEIGHTS, 0, w);
+        assertThat(Math.round((w[0] + w[1] + w[2] + w[3]) * 255)).as("bytes summing to 255").isEqualTo(255);
+        palette.unorm4(VertexAttribute.WEIGHTS, 5, w);
+        assertThat(w[1]).isCloseTo(0.9, within(1 / 255.0));
+        palette.jointBox(1, box); // every vertex weighs joint 1
+        assertThat(box[0]).isZero();
+        assertThat(box[3]).isEqualTo(2);
+        assertThatIllegalStateException().isThrownBy(() -> twoMeshlets(grid().jointPalette(new int[] {1})).build())
+            .withMessageContaining("past the palette");
+        assertThatIllegalArgumentException().isThrownBy(() -> grid().jointPalette(new int[0]));
+        assertThatIllegalArgumentException().isThrownBy(() -> grid().jointPalette(new int[257]));
+        assertThatIllegalArgumentException().isThrownBy(() -> grid().jointPalette(new int[] {-1}));
+        // All weights zero stays zero; joints without weights: the first joint moves its vertex.
+        MeshData zero = twoMeshlets(grid().weights(new float[24])).build();
+        zero.unorm4(VertexAttribute.WEIGHTS, 0, w);
+        assertThat(w).containsOnly(0.0);
+        VertexFormat jointsOnly = VertexFormat.of(VertexAttribute.JOINTS);
+        MeshData unweighted = twoMeshlets(MeshData.builder(jointsOnly, 6).positions(POSITIONS).joints(few)
+            .materialSlots(2)).build();
+        unweighted.jointBox(1, box); // the first joint of the odd vertices (1, 3, 5) alone: not vertex 4, raised
+        assertThat(box).containsExactly(0, 0, 0, 2, 0, 1);
+        MeshData plain = twoMeshlets(MeshData.builder(VertexFormat.of(), 6).positions(POSITIONS).materialSlots(2))
+            .build();
+        assertThat(plain.jointCount()).as("unskinned").isZero();
+    }
+
+    @Test
     void closingFreesTheBuffers() {
         MeshData mesh = twoMeshlets(grid()).build();
         MemorySegment kept = mesh.positions();
