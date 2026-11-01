@@ -85,7 +85,7 @@ public final class Animators {
     /** An animator of {@code rig} posing {@code nodes}, the scene nodes of its skeleton's nodes in its order. */
     @AllowAllocation("animators are made when models spawn")
     public Animator add(Rig rig, long[] nodes) {
-        Animator animator = new Animator(rig, nodes);
+        Animator animator = new Animator(rig, nodes, scene);
         if (count == animators.length) {
             animators = Arrays.copyOf(animators, 2 * count);
         }

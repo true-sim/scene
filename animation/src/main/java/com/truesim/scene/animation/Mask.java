@@ -1,7 +1,6 @@
 package com.truesim.scene.animation;
 
 import com.truesim.annotations.AllowAllocation;
-import java.util.Objects;
 
 /**
  * How much a layer moves each joint, 0 to 1: an upper-body layer moves the spine and what hangs from it and leaves the
@@ -81,12 +80,7 @@ public final class Mask {
         }
 
         private int check(Joint joint) {
-            Objects.requireNonNull(joint, "joint");
-            if (joint.index() < 0 || joint.index() >= weights.length
-                || !rig.skeleton().name(joint.index()).equals(joint.name())) {
-                throw new IllegalArgumentException("Not a joint of the rig: " + joint);
-            }
-            return joint.index();
+            return rig.jointIndex(joint);
         }
 
         @AllowAllocation("setting up a rig")
