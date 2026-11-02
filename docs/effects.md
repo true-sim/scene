@@ -1683,3 +1683,50 @@ Details the steps settled where sections 2 and 5 left them open.
   `COLLIDED` for the step (collision events, step 14). Spheres, boxes and capsules push out what ends inside them (no
   sweep: fast particles can pass thin ones); planes and the height field count a move ending behind them that started
   no more than the radius behind; the world casts a ray along the move.
+
+### Step 12: collision, engine side (engine 0.149.0)
+
+- The kernel collides as `CpuSimulation` does, by the first method of each chain the GPU has (`ModulePrograms`
+  encodes only it): the scene's colliders (up to 256 a frame, `MAX_COLLIDERS`), a height field and the collision
+  view's last depth. `STUCK` particles only age; `COLLIDED` marks a hit for collision events.
+- What the simulation collides with travels in a frame record (`ParticleFrame`) behind one push pointer, written as
+  the frame records (frame buffers' addresses name the recording slot's copy, and `Particles.update` may come between
+  frames): colliders, heights, depth, CPU uploads, events, ray tracing.
+- Height field: `particles.heights(world, size, resolution)` samples the game's `ParticleWorld` on a grid around
+  `heightFocus(x, z)` and samples it again when the focus moves a quarter of the size away (a storage buffer of floats,
+  bilinear; no texture, no tiles yet). `EffectSync` given a world sets up 256 m at 2 m around its first viewer.
+- Depth: `ParticleCollisionDepth`, added to the collision view, is a modifier of `SCENE_DEPTH` (a technique providing
+  and modifying nothing is never built) that copies that view's depth on a grid of at most 512 samples a side with its
+  view-projection and inverse into a buffer the next frame's simulation reads; the normal comes from neighbouring
+  samples. Rain on a floor: stuck where the depth has the floor, through it without depth collision.
+
+### Step 13: ray collision (engine 0.150.0)
+
+- `simulate_rays.slang` is `simulate.slang` with `PARTICLE_RAYS` (an `#include`; the build compiles files that name
+  `[shader(...)]`, so its comment does): `collide.rays` traces each particle's move plus its radius into the frame's
+  top level (opaque, nearest hit), and two more rays beside it give the normal (against the move where they miss: no
+  vertex fetch). `particles.rays(rayTracing, renderer)` turns it on where the device traces rays, for effects encoded
+  after it; `ParticleSimulation` then requests the `TopLevel` and runs its update and spawn from the rays variant,
+  ordered after the build. Elsewhere chains fall back (lavapipe runs the depth half of the test, as `ShadowsTest`).
+- Deviation: no binning of chunks per variant; a frame with ray collision set up runs every emitter in the rays variant.
+
+### Step 14: events and sub-emitters (scene 0.51.0, engine 0.151.0)
+
+- Events: birth (a particle born in one frame sends it in the next), death (as it was), collision and periodic (after
+  the step; periodic when its age crosses a multiple of the interval), each with a chance (`random(seed, salt + 15)`)
+  and a count of children (any binding, at most 255); salts from `CpuSimulation.EVENT_SALTS` (8192), 16 per event; at
+  most 8 events per emitter on the GPU. `emit` events (particles as emitters) are step 19 and do nothing yet.
+- Children start at their parent (their shapes about it, turned by the emitter for world space), seeded
+  `combine(combine(parent seed, salt), i)`, spawn indices counted per emitter, born at the frame's end;
+  `Init.inherit(velocity, color, size)` takes a share of the parent's velocity and multiplies by its color and size.
+  CPU emitters spawn into CPU emitters only (CPU into GPU later).
+- GPU: the update appends event records (target, count, the parent's snapshot) into a buffer of 65,536 (more are
+  dropped and counted, `particles.eventsDropped()`), keyed (parent slot, phase, event); a radix sort by that key, a
+  rekey by (target, parent emitter), a second stable sort (the particle sort's passes, 8 each), then a scan gives each
+  target its first event and children, which the spawn args add to its demand after its records and the spawn reads
+  by binary search. The result matches `CpuSimulation` particle for particle (fireworks: a burst on the death of a
+  burst on the death of a rocket) and is the same in two runs.
+- E22 bursts: shared instances per asset and cell were built in steps 1 and 2; a thousand impacts in a frame are one
+  instance and one draw. Not built: dropping a full shared instance's oldest particles for new demand (overflow is
+  counted instead).
+- The demo has fireworks.
