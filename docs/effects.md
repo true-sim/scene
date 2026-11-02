@@ -2000,5 +2000,25 @@ Details the steps settled where sections 2 and 5 left them open.
   `-Pcamera=orbit|keys:...|follow:...`), or `--args=measure` times the frames in stereo at a Quest 3's eye size.
 - Options: `-Ptorches=N` (torches in rings beyond the arena, all placements of six shared fires), `-Psparks=N`
   (sparks with trails), `-Pglass=true` (a window), `-Pasync=true` (the simulation async where it may be).
-- Its fires belong to the effect type `FIRES` (levels at 22 and 40 m: drawn 0.6 and 0.35, the far one updated every
-  second frame); the torches are shared (6 variants, own simulations within 9 m).
+- Its fires belong to the effect type `FIRES` (levels at 22 and 40 m from the camera: drawn 0.6 and 0.35, the far one
+  updated every second frame); the torches are shared (6 variants, own simulations within 9 m); the bonfire's smoke
+  and the dust devil draw at half resolution.
+- `--args=measure` (Ryzen 9 9950X3D, RX 9070 XT, stereo 2064 x 2208 per eye, 600 frames; ms per frame, mean / 1 %
+  high / worst), engine 0.156.0 against 0.157.0:
+
+  | | before | after |
+  |---|---|---|
+  | wall clock, frame start to next start | 2.817 / 4.170 / 5.198 | 2.213 / 3.026 / 4.263 |
+  | CPU, main thread | 2.234 / 3.616 / 4.326 | 1.321 / 1.919 / 2.736 |
+  | scene update | 0.243 / 0.415 / 0.448 | 0.232 / 0.386 / 0.462 |
+  | animation | 0.202 / 0.303 / 0.348 | 0.199 / 0.321 / 0.432 |
+  | effects sync | 0.347 / 1.331 / 1.842 | 0.127 / 0.371 / 0.467 |
+  | graph record and submit | 1.442 / 1.890 / 2.832 | 0.763 / 1.090 / 2.027 |
+  | waiting for a frame slot | 0.573 / 1.182 / 1.352 | 0.882 / 1.591 / 3.128 |
+  | GPU, frame | 2.547 / 3.067 / 3.231 | 2.200 / 2.748 / 4.294 |
+  | bound by (frames, GPU / CPU) | 193 / 407 | 523 / 77 |
+  | 1 % low | 240 fps | 331 fps |
+
+  Per eye, "particle draw" 0.229 ms before; after 0.121 ms plus the half resolution's 0.010 (depth), 0.031 (draw)
+  and 0.028 (upsample). "particle lights threshold" 0.189 to 0.010 ms; the 48 event sort passes (about 0.1 ms) are one
+  of 0.010 ms, and recording them went with them (most of the record's gain). The frame is now bound by the GPU.
