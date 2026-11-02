@@ -157,7 +157,7 @@ class ValuesTest {
         ModuleRegistry modules = ModuleRegistry.BUILT_IN.with(rays);
         assertThat(modules.type("game.rays")).isSameAs(rays);
         assertThat(ModuleRegistry.BUILT_IN.type("game.rays")).isNull();
-        assertThat(ModuleRegistry.BUILT_IN.names()).contains(Shape.CONE, Forces.DRAG, Over.COLOR).hasSize(28);
+        assertThat(ModuleRegistry.BUILT_IN.names()).contains(Shape.CONE, Forces.DRAG, Over.COLOR).hasSize(31);
         assertThat(ModuleRegistry.BUILT_IN.type(Shape.SPHERE).runsOn(Target.CPU)).isTrue();
         assertThatIllegalArgumentException().isThrownBy(() -> modules.with(rays)).withMessageContaining("already");
         assertThatIllegalArgumentException().isThrownBy(() -> new ModuleType("x", ModuleType.Stage.INIT,
