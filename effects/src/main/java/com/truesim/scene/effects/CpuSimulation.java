@@ -280,6 +280,7 @@ public final class CpuSimulation {
             int seed = EffectRuntime.particleSeed(emitterSeed, index);
             float age = (float) (records.age(r) - k * (double) records.interval(r));
             p.born(i, seed, index);
+            s.direction(0, 0, 0); // no shape yet: speed alone moves nothing, as on the GPU
             for (int m = 0; m < program.init.length; m++) {
                 init(s, p, i, program.init[m], parameters, seed);
             }

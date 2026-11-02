@@ -1544,3 +1544,47 @@ Details the steps settled where sections 2 and 5 left them open.
   followers; shared burst instances of `old` end).
 - For step 9 (scene-animation): `Animator.node(Joint)`, and `Animators.animator(node)` finds the animator a listener
   heard of by its first node.
+
+### Step 8: `EffectSync` and the effects plugin (engine 0.144.0)
+
+- **`EffectSync`** (engine-scene) owns an `EffectRuntime` and a `CpuSimulation` of a scene's `Effects` and calls
+  `Particles.update` each frame; viewers and quality go to the runtime. It does not take `SceneResources`: effects
+  built in code need no loading, and renderer textures still go through `particles.texture(ref, slot)` (acquiring
+  them through `SceneResources` is left for when effects load from files). Beams end at nodes through
+  `sync.beamEnd(effect, emitter, node)`, followed every frame while both last (step 7's `particles.beamEnd` stays).
+- **The plugin** is `EffectsPlugin` (key `effects`), in engine-scene beside `Assets`, not in engine-app, which has no
+  render or scene dependencies, and not named `Effects`, beside scene-effects' store. One world's effects per plugin
+  (`fx.effects(scene)`), synced in `afterUpdate` with the frame's delta; `effects.quality` and
+  `effects.budgetMegabytes`; `fx.draw(sceneViews)` adds a `ParticleDraw` per view.
+- **`Particles.update` may come between frames** (it is for the frame about to begin), as plugins call it.
+- **Rebasing** has no pass of its own: once an effect is `Particles.REBASE_DISTANCE` (4,096 m, settable) from its
+  origin along an axis, the origin moves to it and the emitter record carries the shift, which the update pass adds to
+  the world-space particles and their trail points as it copies them. The emitter record is 176 bytes (with the shift
+  and the inherited velocity). An effect 7,000 km out draws the same image as at the origin (0 channels off by more
+  than 8 of 255, rebased every ten frames).
+- **Inherited velocity**: world-space newborn get `inheritVelocity` times their effect's velocity over the frame,
+  computed on the CPU in doubles; burst calls inherit nothing.
+- **Pooling**: an ended effect's instances (their ranges) and its programs stay warm for `Particles.WARM_FRAMES`
+  (300, settable) for the next instance of the same asset, at most 4 per asset, given back early when the pool lacks
+  room. Module programs are kept that way rather than by a timer in `ModulePrograms`.
+- **Hot reload**: an effect restarted by `effects.replace` keeps the ranges of emitters whose target, capacity and side
+  units are unchanged (starting empty); the others are given back and placed again.
+- **Transforms as drawn**: D91 is not built, so nodes' world transforms are taken as they are.
+- 100 torches on rocks in the scene benchmark allocate 0 bytes per frame (median); the sync costs about 4 ms there
+  (RX 9070 XT, 32 job threads), mostly `Particles.update` writing 300 emitter records and the CPU emitters' particles:
+  to look at with budgets (step 18).
+
+### Step 9: `EffectBindings` (engine 0.145.0)
+
+- In engine-scene with the plugin (`fx.bindings(animators)`, evaluated before the sync). `onEvent(event, effect,
+  joint)` serves every animator of its `Animators`: the listener's node finds the animator (`Animators.animator`), the
+  effect plays attached to that animator's joint node, with `.scale(parameter[, factor])` (the event's weight),
+  `.minimumWeight(w)` and `.offset(x, y, z)`; a joint beyond an animator's skeleton plays nothing there. Each effect
+  played allocates its handle, as `Effects.play` does.
+- `curve(animator, curve, effect, parameter).map(scale, bias)` sets the parameter every `update`, allocation-free, while
+  the effect plays.
+- The demo's fox carries four foot-down events (back left, back right, front left, front right) on its walk (0.5,
+  0.692, 0.017, 0.375 s) and run (1.0, 1.092, 0.525, 0.417 s), found from the feet's heights, and a flickering curve on
+  its survey that drives the torch's intensity.
+- `CpuSimulation` kept the last shape's direction for a speed given before any shape (the GPU starts each particle
+  with none); fixed in scene 0.48.0.
