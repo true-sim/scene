@@ -41,6 +41,7 @@ with the reasons, and marks where the decision differs from the first recommenda
 | E20 | Off-screen and far behavior **per effect type**. | As recommended. |
 | E21 | A new module **`scene-effects`**. | As recommended. |
 | E22 | **Gameplay bursts chosen per call**: into one shared instance per asset (thousands of hits, one draw) or as instances of their own (each movable and stoppable). | Differs: choosable. Shared instances are per asset *and cell* (§2.7). |
+| E23 | **Shared simulations**: an effect whose modules don't depend on where it is simulates K variants (own seeds and time offsets) and draws them at many placements, each a transform and a variant; eligibility comes from its modules; near placements may keep simulations of their own (step 18a). | Added by the user after step 9. |
 
 **Reviewer notes on decisions** (from the review; the user's answers to them are at the end of §6):
 
@@ -936,6 +937,24 @@ If it becomes one, the tile-based GPU makes blending cheap and bandwidth to memo
 and budgets fall to tens of thousands of particles; the design still fits (CPU emitters for small effects, fewer
 layers), but half-resolution particles and depth history copies would need rethinking for tile memory.
 
+**Shared simulations (E23, step 18a).** A hundred torches on a map need not be a hundred simulations. An asset marked
+shareable gets K variants (default 6, per asset), each simulated once in local space at its own seed and time offset so
+neighbours don't flicker in step; every instance in the world becomes a *placement*, a transform and the variant it
+shows, and the draw applies the placement's transform in the vertex shader. The simulation and the CPU's emitter work
+fall from one per instance to K, plus a small record per placement; drawing (pixels, and the sort of sorted emitters,
+per placement) costs as before.
+- **Eligibility is derived from the modules**, not trusted from the author: local-space emitters, noise and curl noise,
+  drag, uniform gravity and wind, vortices about the effect's own axis, flipbooks, ribbons and trails in local space are
+  shareable; world-space emitters only on static nodes (where world and local space agree); collision of any kind
+  (depth, terrain, colliders, rays), forces at world positions (attractors, vector fields placed in the world),
+  inherited velocity, events spawning into the world, and parameters set per instance (game code, `EffectBindings`)
+  make an asset unshareable, and `effects.play` then gives it simulations of its own as today, with a debug note.
+- **With LOD**: placements near a viewer may keep simulations of their own and fall back to a shared variant past a
+  distance, the swap hidden by the LOD fades; a placement's start time picks the variant whose phase is closest, so a
+  torch lit in front of the player starts at its beginning.
+- **API**: `EffectData.shared(k)` on the asset; `effects.play` returns a handle as for any instance (stop, move,
+  scale work per placement; per-instance parameters are refused on shared assets).
+
 **Scope per step** is in section 5; the largest risks are steps 4 (the kernel), 7 (ribbons) and 16 (mesh particles).
 
 ### 2.12 Editor, hot reload and debugging
@@ -1220,6 +1239,7 @@ and are device-free; engine steps depend on the scene release that has their typ
 | 17 | engine | Lighting per emitter (E14): per-vertex light list and sun shadow; per-pixel normal-mapped; six-way lightmaps; lowered by quality | 1,024 point lights screenshot (`Screenshots.renderLights` style); smoke lit from one side; cost on both shading techniques |
 | 17b | engine | Particle lights: the light module, a GPU-written range in `Lights`, `ClusteredLights` binning a GPU count, budgets per emitter and global (brightest kept), no shadows | Sparks lighting the ground and a rock beside them (screenshot); a burst over the global budget keeps the brightest and stays within it; `ClusteredForwardShading` and `VisibilityBufferShading` draw the same light; no CPU readback |
 | 18 | both | Scalability: effect types enforced, budgets in bytes, LOD transitions (faded fractions, hysteresis, extrapolated reduced rates), half-resolution particles with depth-aware upsample per eye, `effects.quality`; the main group on the async queue measured against the graphics queue; debug views | `ParticleBenchmark` (1M particles: update, sort, draw; an overdraw scene of large smoke sprites) on the RX 9070 XT and at Quest 3 eye size through `StereoBench`; README tables dated |
+| 18a | both | Shared simulations (E23): eligibility from modules (scene, with `CpuSimulation` placements), K variants per asset with seeds and time offsets, placements as transform and variant drawn through the variant's particles, placements in `ParticleDraw` and the sort, near placements with their own simulation through LOD | 1,000 static torches cost 6 simulations (CPU and GPU timings against unshared); neighbouring placements out of phase; an asset with collision or bindings refused sharing and simulated per instance; a placement moved, stopped and scaled alone; the swap at the LOD distance without a pop |
 | 19 | engine | Emitter state on the GPU (E2) as emitting particles: the emit updater, fixed-point accumulators, child ranges per parent, ribbons per parent | 100,000 sparks each with a trail; counts against `EffectRuntime`'s closed forms for one parent; stop and LOD of the parent reach the children |
 | 20 | engine | Plugin modules: `[ParticleModule]` Slang structs registered like material types (generated records, name ids), a generated kernel variant; `modify(PARTICLES)` techniques; optional Java twins for CPU emitters | A game's own force module in a test project, as `CustomPassTest` does for passes |
 | 21 | engine | Glass order (open question 1): before and split; reactive mask and mesh-particle motion vectors when TAA lands | A fire behind a window tinted by it; sparks in front of it untinted; with TAA, no ghosting behind sparks |
