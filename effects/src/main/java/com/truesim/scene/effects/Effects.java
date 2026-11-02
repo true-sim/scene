@@ -849,7 +849,7 @@ public final class Effects {
         long id = id(slot);
         if (kinds[slot] == PLACEMENT) {
             int variant = slot(links[slot]);
-            if (variant >= 0 && --placements[variant] == 0 && states[variant] == PLAYING) {
+            if (variant >= 0 && --placements[variant] == 0) {
                 stop(variant); // its particles live out their lives, undrawn: new placements start a new variant
             }
             int near = slot(nears[slot]);
@@ -1031,12 +1031,12 @@ public final class Effects {
     }
 
     /**
-     * Gives the placement in {@code slot} a simulation of its own while {@code near} (an effect where it is, seeded as
-     * it is), or stops it: its particles live out their lives.
+     * Gives the placement in {@code slot} a simulation of its own when it comes {@code near} (an effect where it is,
+     * seeded as it is), or stops it when it goes far: its particles live out their lives. Called as that changes
+     * ({@link #nearAt} says otherwise).
      */
     void near(int slot, boolean near) {
-        int own = slot(nears[slot]);
-        if (near && (own < 0 || states[own] != PLAYING)) {
+        if (near) {
             int s = claim(data[slot]);
             kinds[s] = NEAR;
             links[s] = id(slot);
@@ -1045,8 +1045,8 @@ public final class Effects {
             System.arraycopy(rotations, 4 * slot, rotations, 4 * s, 4);
             nears[slot] = id(s);
             log(id(s), ADDED);
-        } else if (!near && own >= 0 && states[own] == PLAYING) {
-            stop(own);
+        } else {
+            stop(slot(nears[slot]));
         }
     }
 
