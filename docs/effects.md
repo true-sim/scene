@@ -1437,3 +1437,45 @@ Details the steps settled where sections 2 and 5 left them open.
 - **Spawn scale** is the type's scale at the quality times the level's; emitters below their minimum quality spawn
   nothing. Seeds: `emitterSeed = Hash.combine(effectSeed, emitter)`, `particleSeed = Hash.combine(emitterSeed,
   spawnIndex)`.
+
+### Step 3: `CpuSimulation` (scene 0.46.0)
+
+- **Update:** after `runtime.update`, `simulation.update()` follows each effect slot (an effect new in a slot gets
+  particle arrays for its CPU emitters, of their capacities, and its origin), then per CPU emitter: survivors age and
+  move by the effect's time since the last update, clamped to `MAX_STEP` (0.1 s); then the frame's records spawn, in
+  order, while there is room (the rest is counted as dropped). Effects run in parallel on the job system, each alone.
+- **Survivors:** a particle dies when `age + dt >= lifetime`; the others are copied down in order (the survivor copy,
+  done in place: the same order as the GPU's copy into the second buffer).
+- **Spawning:** a newborn starts at its frame's origin at rest with lifetime 1 s, size 0.1 and white, then runs the
+  initializers in order; one already dead at the end of the frame (`age >= lifetime`) is not added. World-space ones
+  are placed where the emitter was at their birth (between its last and current positions by the birth time), turned
+  by its rotation, as float offsets from the effect's origin (its position when it started); a burst call's particles
+  at the call's position, +Y turned to its normal. Then each moves on by its age under the updaters.
+- **Motion** is exact for gravity `a` and linear drag `k` (summed over the updaters, each evaluated at the particle's
+  normalized age at the start of the step): `v' = a/k + (v - a/k) e^(-kh)`, `p' = p + h a/k + (v - a/k)(1 - e^(-kh))/k`,
+  or `p + vh + ah^2/2` without drag. Local-space particles take world down turned into the emitter's frame.
+- **Over life:** `over.size` and `over.color` multiply the size and color at birth (kept per particle, a side array on
+  the GPU) by their curve or gradient at the normalized age; several multiply together.
+- **Shapes** (in the emitter's frame, +Y up; draws by salt offset): point (direction uniform on the sphere: `y = 1 -
+  2u8`, turn `2π u9`); sphere (direction as the point's, radius `R cbrt((1-T)^3 + (1 - (1-T)^3) u10)`); box (`(u8 -
+  0.5) x`, `(u9 - 0.5) y`, `(u10 - 0.5) z`, direction from u11, u12); cone (on the disc of its radius, then direction
+  `cos α = 1 - u10 (1 - cos angle)`, turn `2π u11`); disc (`ρ = R sqrt(u8)`, turn `2π u9`, direction +Y).
+- **Salts:** a module's draws use 16 salts from `16 × its place in its list`, updaters from 4096 on; its fields take
+  the first, in alphabetical order of their names, and its own draws (shapes) take 8 on. A particle's seed is
+  `Hash.combine(Hash.combine(effect seed, emitter), (int) spawn index)`.
+- **The hash vectors** are in the jar as `com/truesim/scene/effects/hash-vectors.csv` (main resources of
+  `scene-effects`, so the engine's step 4 reads them from the dependency), checked by `CpuSimulationTest`. A few:
+
+  | Function | Inputs (hex) | Result (hex) |
+  |---|---|---|
+  | `pcg` | 00000000 | 07bb2fe2 |
+  | `pcg` | 0000002a | 48f432ff |
+  | `pcg` | ffffffff | e62a4902 |
+  | `combine(seed, salt) = pcg(seed + pcg(salt))` | 00000001, 00000002 | 7deda5d8 |
+  | `combine` | 12345678, 9abcdef0 | 49071dc7 |
+  | `random(seed, salt) = (combine >>> 8) × 2^-24`, as float bits | 00000007, 00000003 | 3e8f4856 |
+  | `random`, as float bits | deadbeef, 00001000 | 3dc47048 |
+
+- **`ParticleCursor`** reads one CPU emitter's particles in spawn order, positions and velocities in the world; made
+  once, refilled by `simulation.particles(effect, emitter, cursor)`. **`ParticleWorld`** (heights and raycasts, with a
+  reusable `Hit`) is taken by `CpuSimulation` and unused until collision (step 12).
