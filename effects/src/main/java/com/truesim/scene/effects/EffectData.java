@@ -396,7 +396,7 @@ public final class EffectData {
                     problems.add(e.name + ": " + module.type() + " runs at " + type.stage() + ", not at " + stage
                         + ".");
                 }
-                if (!type.runsOn(e.target())) {
+                if (!type.runsOn(e.target()) && !chained(list, module, e.target())) {
                     problems.add(e.name + ": " + module.type() + " does not run on " + e.target() + " emitters.");
                 }
                 if (type.capability().compareTo(needed) > 0) {
@@ -422,6 +422,29 @@ public final class EffectData {
                 }
             }
             return needed;
+        }
+
+        /**
+         * Whether {@code module} is in a collision chain of {@code list} (a method and its fallbacks) of which some
+         * method runs on {@code target}: the others are left out on that target.
+         */
+        private boolean chained(List<Module> list, Module module, Target target) {
+            int at = list.indexOf(module);
+            int first = at;
+            while (first > 0 && Collide.fallback(list.get(first))) {
+                first--;
+            }
+            int last = at;
+            while (last + 1 < list.size() && Collide.fallback(list.get(last + 1))) {
+                last++;
+            }
+            for (int i = first; i <= last && last > first; i++) {
+                ModuleType type = modules.type(list.get(i).type());
+                if (type != null && type.runsOn(target)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** Checks the parameter a module value reads. */

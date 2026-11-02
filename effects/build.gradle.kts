@@ -8,6 +8,7 @@ description = "Scene effects for true-sim: particle effects as data, the emitter
 dependencies {
     api(project(":scene-core"))
     api(project(":scene-assets"))
+    testImplementation("com.truesim.common:common-collision:0.2.0") // a CPU emitter hitting the physics scene
 }
 
 coverage {

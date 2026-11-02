@@ -114,6 +114,7 @@ public final class Effects {
     private int scale = ONE;
     private boolean pausedAll;
     private final float[] wind = new float[3];
+    private final EffectColliders colliders;
 
     // Burst calls into shared instances, in the order made.
     private long[] burstEffects = new long[16];
@@ -145,6 +146,7 @@ public final class Effects {
             throw new IllegalArgumentException("The change log needs room: " + logCapacity);
         }
         this.scene = Objects.requireNonNull(scene, "scene");
+        colliders = new EffectColliders(scene);
         clock = scene.clock();
         logStamps = new long[logCapacity];
         logEffects = new long[logCapacity];
@@ -153,6 +155,11 @@ public final class Effects {
 
     public SceneGraph scene() {
         return scene;
+    }
+
+    /** The colliders on the scene's nodes that collision modules bounce particles off. */
+    public EffectColliders colliders() {
+        return colliders;
     }
 
     /** Plays {@code effect} attached to {@code node}: it follows the node (a joint's node for a socket). */
@@ -817,6 +824,7 @@ public final class Effects {
             throw new IllegalArgumentException("Not a time step: " + ticks);
         }
         now += ticks;
+        colliders.update();
         for (int slot = 0; slot < slots; slot++) {
             if (states[slot] == FREE) {
                 continue;

@@ -71,6 +71,12 @@ public final class CpuSimulation {
     private static final int LINE = 18;
     private static final int ORBIT = 19;
     private static final int SPEED_LIMIT = 20;
+    private static final int COLLIDERS = 21;
+    private static final int HEIGHT = 22;
+    private static final int WORLD = 23;
+    /** Particle flags: stuck where it hit (frozen), and collided in its last step. */
+    static final int STUCK = 1;
+    static final int COLLIDED = 2;
     private static final float TAU = (float) Maths.TAU;
     /** How fast gusts of wind change: noise cells per second. */
     static final float GUST_RATE = 0.5f;
@@ -267,7 +273,7 @@ public final class CpuSimulation {
     }
 
     /** Ages and moves the particles by {@code dt}; the dead leave, the others keep their order (the survivor copy). */
-    private static void survive(Slot s, Particles p, Program program, float[] parameters, float dt,
+    private void survive(Slot s, Particles p, Program program, float[] parameters, float dt,
             int emitterSeed) {
         int kept = 0;
         for (int i = 0; i < p.count; i++) {
@@ -416,8 +422,16 @@ public final class CpuSimulation {
      * Moves particle {@code i} on by {@code h} seconds under the updaters (forces, then orbits and limits), then
      * applies those over its life. Fields are read by their index in alphabetical order of their names.
      */
-    private static void step(Slot s, Particles p, int i, Program program, float[] parameters, float h,
+    private void step(Slot s, Particles p, int i, Program program, float[] parameters, float h,
             int emitterSeed) {
+        p.flags[i] &= ~COLLIDED;
+        if ((p.flags[i] & STUCK) != 0) { // frozen where it hit: it only ages
+            p.age[i] += h;
+            if (program.overSize || program.overColor) {
+                over(s, p, i, program, parameters);
+            }
+            return;
+        }
         double ax = 0;
         double ay = 0;
         double az = 0;
@@ -566,12 +580,153 @@ public final class CpuSimulation {
                 }
             }
         }
+        if (program.collides) {
+            kill |= collide(s, p, i, program, parameters, x, y, z);
+        }
         if (kill) {
             p.lifetime[i] = p.age[i]; // within an attractor's kill radius: dead from now, gone at the next step
         }
         if (program.overSize || program.overColor) {
             over(s, p, i, program, parameters);
         }
+    }
+
+    /**
+     * Collides particle {@code i}, which moved from ({@code x0}, {@code y0}, {@code z0}) this step, by the program's
+     * collision methods (the first hit responds); returns whether it dies of it. In its effect's world frame about its
+     * origin: local-space particles are turned out of their emitter's frame and back.
+     */
+    private boolean collide(Slot s, Particles p, int i, Program program, float[] parameters, double x0, double y0,
+            double z0) {
+        boolean local = program.local;
+        // Into world axes, about the origin the collider positions are taken from
+        double ox = local ? s.x : s.ox;
+        double oy = local ? s.y : s.oy;
+        double oz = local ? s.z : s.oz;
+        s.out(x0, y0, z0, local);
+        double ax = s.wx;
+        double ay = s.wy;
+        double az = s.wz;
+        s.out(p.px[i], p.py[i], p.pz[i], local);
+        double bx = s.wx;
+        double by = s.wy;
+        double bz = s.wz;
+        int seed = p.seed[i];
+        for (Op op : program.update) {
+            boolean hit = switch (op.code) {
+                case COLLIDERS -> hitColliders(s, op, parameters, seed, p, i, ax, ay, az, bx, by, bz, ox, oy, oz);
+                case HEIGHT -> hitHeight(s, radius(op, 2, parameters, p, i), ax, ay, az, bx, by, bz, ox, oy, oz);
+                case WORLD -> hitWorld(s, radius(op, 2, parameters, p, i), ax, ay, az, bx, by, bz, ox, oy, oz);
+                default -> false;
+            };
+            if (!hit) {
+                continue;
+            }
+            // Fields: colliders have layers at 2, so their response fields are one further on
+            int shift = op.code == COLLIDERS ? 1 : 0;
+            int response = Math.round(value(op, 3 + shift, parameters, seed, p, i));
+            s.out(p.vx[i], p.vy[i], p.vz[i], local);
+            double vx = s.wx;
+            double vy = s.wy;
+            double vz = s.wz;
+            double into = vx * s.nx + vy * s.ny + vz * s.nz;
+            double keep = 1 - value(op, 1, parameters, seed, p, i); // friction
+            p.flags[i] |= COLLIDED;
+            if (response == Collide.Response.KILL.ordinal()) {
+                return true;
+            }
+            if (response == Collide.Response.STICK.ordinal() || response == Collide.Response.SNAP.ordinal()) {
+                p.flags[i] |= STUCK;
+                vx = 0;
+                vy = 0;
+                vz = 0;
+            } else if (into < 0) {
+                double back = response == Collide.Response.BOUNCE.ordinal()
+                    ? -value(op, 4 + shift, parameters, seed, p, i) : 0;
+                vx = (vx - into * s.nx) * keep + back * into * s.nx;
+                vy = (vy - into * s.ny) * keep + back * into * s.ny;
+                vz = (vz - into * s.nz) * keep + back * into * s.nz;
+            }
+            s.in(s.cx, s.cy, s.cz, local);
+            p.px[i] = (float) s.wx;
+            p.py[i] = (float) s.wy;
+            p.pz[i] = (float) s.wz;
+            s.in(vx, vy, vz, local);
+            p.vx[i] = (float) s.wx;
+            p.vy[i] = (float) s.wy;
+            p.vz[i] = (float) s.wz;
+            return false;
+        }
+        return false;
+    }
+
+    /** A collision module's radius (field {@code field}), or half the particle's size where it gives none. */
+    private static double radius(Op op, int field, float[] parameters, Particles p, int i) {
+        double r = value(op, field, parameters, p.seed[i], p, i);
+        return r > 0 ? r : 0.5 * p.size[i];
+    }
+
+    /**
+     * Whether the move from a to b (world axes, about the origin o) ends in one of the colliders in the module's
+     * layers: the first such; the contact (where the particle stays, outside it) into s.cx..cz and the normal into
+     * s.nx..nz.
+     */
+    private boolean hitColliders(Slot s, Op op, float[] parameters, int seed, Particles p, int i, double ax,
+            double ay, double az, double bx, double by, double bz, double ox, double oy, double oz) {
+        EffectColliders colliders = effects.colliders();
+        int mask = Math.round(value(op, 2, parameters, seed, p, i));
+        double r = radius(op, 3, parameters, p, i);
+        for (int c = 0; c < colliders.count(); c++) {
+            if ((colliders.layers(c) & mask) == 0) {
+                continue;
+            }
+            s.collider(colliders, c, ox, oy, oz);
+            if (s.hitCollider(colliders.kind(c), colliders.size(c, 0), colliders.size(c, 1), colliders.size(c, 2), r,
+                ax, ay, az, bx, by, bz)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether the move ends below the world's ground (with the radius): contact on it, normal from its slope. */
+    private boolean hitHeight(Slot s, double r, double ax, double ay, double az, double bx, double by, double bz,
+            double ox, double oy, double oz) {
+        if (world == null) {
+            return false;
+        }
+        double x = ox + bx;
+        double z = oz + bz;
+        double ground = world.height(x, z);
+        if (!(ground - oy > by - r)) {
+            return false; // above it (or no ground there)
+        }
+        double e = 0.1;
+        double gx = world.height(x - e, z) - world.height(x + e, z);
+        double gz = world.height(x, z - e) - world.height(x, z + e);
+        s.normal(Double.isNaN(gx) ? 0 : gx, 2 * e, Double.isNaN(gz) ? 0 : gz);
+        s.contact(bx, ground - oy + r, bz);
+        return true;
+    }
+
+    /** Whether the move crosses the world's surfaces (a ray from a to b and the radius on): contact before it. */
+    private boolean hitWorld(Slot s, double r, double ax, double ay, double az, double bx, double by, double bz,
+            double ox, double oy, double oz) {
+        double dx = bx - ax;
+        double dy = by - ay;
+        double dz = bz - az;
+        double length = Maths.sqrt(dx * dx + dy * dy + dz * dz);
+        if (world == null || length < TINY) {
+            return false;
+        }
+        ParticleWorld.Hit hit = s.hit;
+        if (!world.raycast(ox + ax, oy + ay, oz + az, dx / length, dy / length, dz / length, length + r, hit)) {
+            return false;
+        }
+        double along = Math.max(0, hit.distance() - r) / length;
+        s.normal(hit.nx(), hit.ny(), hit.nz());
+        s.contact(ax + dx * along, ay + dy * along, az + dz * along);
+        return true;
     }
 
     /** How much of an attractor's strength reaches {@code distance}: falling to 0 at {@code radius} (0: all of it). */
@@ -651,6 +806,7 @@ public final class CpuSimulation {
         final float[] color0;
         final int[] seed;
         final long[] index;
+        final int[] flags;
 
         @AllowAllocation("an effect's particles, made when it starts")
         Particles(int capacity) {
@@ -669,12 +825,14 @@ public final class CpuSimulation {
             color0 = new float[4 * capacity];
             seed = new int[capacity];
             index = new long[capacity];
+            flags = new int[capacity];
         }
 
         /** A newborn at {@code i}: at the origin of its frame, at rest, with the modules' fallbacks. */
         void born(int i, int seed, long index) {
             this.seed[i] = seed;
             this.index[i] = index;
+            flags[i] = 0;
             setPosition(i, 0, 0, 0);
             vx[i] = 0;
             vy[i] = 0;
@@ -715,6 +873,7 @@ public final class CpuSimulation {
             System.arraycopy(color0, 4 * from, color0, 4 * to, 4);
             seed[to] = seed[from];
             index[to] = index[from];
+            flags[to] = flags[from];
         }
     }
 
@@ -727,7 +886,8 @@ public final class CpuSimulation {
     }
 
     /** An emitter's modules as operations. */
-    private record Program(Op[] init, Op[] update, boolean overSize, boolean overColor, boolean local) {
+    private record Program(Op[] init, Op[] update, boolean overSize, boolean overColor, boolean local,
+            boolean collides) {
 
         @AllowAllocation("an emitter's program, made when its effect starts")
         static Program of(EffectData data, EmitterData emitter) {
@@ -735,11 +895,25 @@ public final class CpuSimulation {
             Op[] update = ops(data, emitter.update(), UPDATE_SALTS);
             boolean size = false;
             boolean color = false;
-            for (Op op : update) {
+            boolean collides = false;
+            // Of each collision chain, the first method the CPU has collides; the others are left out
+            boolean chosen = false;
+            for (int m = 0; m < update.length; m++) {
+                Op op = update[m];
+                Module module = emitter.update().get(m);
+                if (module.type().startsWith("collide.")) {
+                    chosen &= Collide.fallback(module); // a method that is no fallback starts a chain
+                    if (!chosen && op.code >= 0) {
+                        chosen = true;
+                        collides = true;
+                    } else {
+                        update[m] = new Op(-1, op.bindings, op.offsets, op.color, op.curve, op.gradient, op.salt);
+                    }
+                }
                 size |= op.code == OVER_SIZE;
                 color |= op.code == OVER_COLOR;
             }
-            return new Program(init, update, size, color, emitter.space() == Space.LOCAL);
+            return new Program(init, update, size, color, emitter.space() == Space.LOCAL, collides);
         }
 
         @AllowAllocation("an emitter's program, made when its effect starts")
@@ -770,6 +944,10 @@ public final class CpuSimulation {
                     case Forces.LINE -> LINE;
                     case Forces.ORBIT -> ORBIT;
                     case Forces.SPEED_LIMIT -> SPEED_LIMIT;
+                    case Collide.COLLIDERS -> COLLIDERS;
+                    case Collide.HEIGHT -> HEIGHT;
+                    case Collide.WORLD -> WORLD;
+                    case Collide.DEPTH, Collide.RAYS -> -1; // GPU methods of a chain: left out here
                     default -> throw new IllegalStateException("No Java implementation of " + module.type());
                 };
                 List<String> names = type.fields().keySet().stream().sorted().toList();
@@ -847,6 +1025,24 @@ public final class CpuSimulation {
         double uz;
         final float[] noise = new float[4];
         final float[] curl = new float[3];
+        // Collision scratch: a vector in world axes, a collider about the origin, a contact, a normal, a world hit.
+        double wx;
+        double wy;
+        double wz;
+        double kx;
+        double ky;
+        double kz;
+        double kqx;
+        double kqy;
+        double kqz;
+        double kqw;
+        double cx;
+        double cy;
+        double cz;
+        double nx;
+        double ny;
+        double nz;
+        final ParticleWorld.Hit hit = new ParticleWorld.Hit();
         // Scratch: a direction, a rotation (as a quaternion) and a rotated vector, a color.
         float dx;
         float dy;
@@ -957,6 +1153,165 @@ public final class CpuSimulation {
             rx = x - along * ux;
             ry = y - along * uy;
             rz = z - along * uz;
+        }
+
+        /** A vector of the particles' space in world axes (turned out of the effect's frame if local): wx, wy, wz. */
+        void out(double x, double y, double z, boolean local) {
+            if (local) {
+                axis(x, y, z, false, false);
+                wx = ux;
+                wy = uy;
+                wz = uz;
+            } else {
+                wx = x;
+                wy = y;
+                wz = z;
+            }
+        }
+
+        /** A vector in world axes in the particles' space (turned into the effect's frame if local): wx, wy, wz. */
+        void in(double x, double y, double z, boolean local) {
+            if (local) {
+                double cx2 = 2 * (-qy * z + qz * y);
+                double cy2 = 2 * (-qz * x + qx * z);
+                double cz2 = 2 * (-qx * y + qy * x);
+                wx = x + qw * cx2 - qy * cz2 + qz * cy2;
+                wy = y + qw * cy2 - qz * cx2 + qx * cz2;
+                wz = z + qw * cz2 - qx * cy2 + qy * cx2;
+            } else {
+                wx = x;
+                wy = y;
+                wz = z;
+            }
+        }
+
+        void contact(double x, double y, double z) {
+            cx = x;
+            cy = y;
+            cz = z;
+        }
+
+        /** The normal set, made unit length. */
+        void normal(double x, double y, double z) {
+            double length = Maths.sqrt(x * x + y * y + z * z);
+            nx = x / length;
+            ny = y / length;
+            nz = z / length;
+        }
+
+        /** Collider {@code c}'s position about the origin ({@code ox}, {@code oy}, {@code oz}) and its rotation. */
+        void collider(EffectColliders colliders, int c, double ox, double oy, double oz) {
+            kx = colliders.position(c, 0) - ox;
+            ky = colliders.position(c, 1) - oy;
+            kz = colliders.position(c, 2) - oz;
+            kqx = colliders.rotation(c, 0);
+            kqy = colliders.rotation(c, 1);
+            kqz = colliders.rotation(c, 2);
+            kqw = colliders.rotation(c, 3);
+        }
+
+        /** ({@code x}, {@code y}, {@code z}) turned by the collider's rotation ({@code sign} -1: its inverse). */
+        void colliderTurn(double x, double y, double z, double sign) {
+            double qx2 = sign * kqx;
+            double qy2 = sign * kqy;
+            double qz2 = sign * kqz;
+            double cx2 = 2 * (qy2 * z - qz2 * y);
+            double cy2 = 2 * (qz2 * x - qx2 * z);
+            double cz2 = 2 * (qx2 * y - qy2 * x);
+            rx = x + kqw * cx2 + qy2 * cz2 - qz2 * cy2;
+            ry = y + kqw * cy2 + qz2 * cx2 - qx2 * cz2;
+            rz = z + kqw * cz2 + qx2 * cy2 - qy2 * cx2;
+        }
+
+        /**
+         * Whether a particle of radius {@code r} moving from a to b ends touching the collider set (of {@code kind}
+         * and sizes {@code sx}, {@code sy}, {@code sz}): the contact outside it and the normal.
+         */
+        boolean hitCollider(EffectColliders.Kind kind, double sx, double sy, double sz, double r, double ax, double ay,
+                double az, double bx, double by, double bz) {
+            double qx2 = bx - kx;
+            double qy2 = by - ky;
+            double qz2 = bz - kz;
+            switch (kind) {
+                case PLANE -> {
+                    colliderTurn(0, 1, 0, 1);
+                    double before = (ax - kx) * rx + (ay - ky) * ry + (az - kz) * rz - r;
+                    double after = qx2 * rx + qy2 * ry + qz2 * rz - r;
+                    if (!(after < 0 && before >= -r)) {
+                        return false;
+                    }
+                    normal(rx, ry, rz);
+                    contact(bx - after * nx, by - after * ny, bz - after * nz);
+                    return true;
+                }
+                case SPHERE -> {
+                    return outOf(qx2, qy2, qz2, sx + r);
+                }
+                case CAPSULE -> {
+                    colliderTurn(0, 1, 0, 1);
+                    double along = Math.max(-sy, Math.min(sy, qx2 * rx + qy2 * ry + qz2 * rz));
+                    double ex = rx * along;
+                    double ey = ry * along;
+                    double ez = rz * along;
+                    if (!outOf(qx2 - ex, qy2 - ey, qz2 - ez, sx + r)) {
+                        return false;
+                    }
+                    contact(cx + ex, cy + ey, cz + ez);
+                    return true;
+                }
+                default -> { // BOX
+                    colliderTurn(qx2, qy2, qz2, -1);
+                    double lx = rx;
+                    double ly = ry;
+                    double lz = rz;
+                    double ex = sx + r;
+                    double ey = sy + r;
+                    double ez = sz + r;
+                    double px = ex - Math.abs(lx);
+                    double py = ey - Math.abs(ly);
+                    double pz = ez - Math.abs(lz);
+                    if (!(px > 0 && py > 0 && pz > 0)) {
+                        return false;
+                    }
+                    // Out through the face it is least deep behind
+                    double fx = 0;
+                    double fy = 0;
+                    double fz = 0;
+                    if (px <= py && px <= pz) {
+                        fx = lx < 0 ? -1 : 1;
+                        lx = fx * ex;
+                    } else if (py <= pz) {
+                        fy = ly < 0 ? -1 : 1;
+                        ly = fy * ey;
+                    } else {
+                        fz = lz < 0 ? -1 : 1;
+                        lz = fz * ez;
+                    }
+                    colliderTurn(fx, fy, fz, 1);
+                    normal(rx, ry, rz);
+                    colliderTurn(lx, ly, lz, 1);
+                    contact(kx + rx, ky + ry, kz + rz);
+                    return true;
+                }
+            }
+        }
+
+        /**
+         * Whether ({@code x}, {@code y}, {@code z}) from the collider's center is within {@code reach} of it: then the
+         * normal along it and the contact at that reach (about the collider set).
+         */
+        private boolean outOf(double x, double y, double z, double reach) {
+            double d = Maths.sqrt(x * x + y * y + z * z);
+            if (!(d < reach)) {
+                return false;
+            }
+            if (d > TINY) {
+                normal(x, y, z);
+            } else {
+                normal(0, 1, 0);
+            }
+            contact(kx + nx * reach, ky + ny * reach, kz + nz * reach);
+            return true;
         }
 
         /** ({@code x}, {@code y}, {@code z}) turned about the unit axis set by an angle of that cosine and sine. */
