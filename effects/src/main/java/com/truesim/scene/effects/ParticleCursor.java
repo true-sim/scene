@@ -154,6 +154,16 @@ public final class ParticleCursor {
         return particles.size[index];
     }
 
+    /** The current particle's rotation in its billboard's plane, in radians ({@link Init#ROTATION}). */
+    public float rotation() {
+        return particles.rotation[index];
+    }
+
+    /** Where the current particle's flipbook starts, as a fraction of its frames ({@link Init#FRAME}). */
+    public float frame() {
+        return particles.frame[index];
+    }
+
     /** Component {@code component} (0 red to 3 alpha) of the current particle's linear color. */
     public float color(int component) {
         return particles.color[4 * index + component];

@@ -31,7 +31,8 @@ public final class ModuleRegistry {
             .build(),
         init(Shape.CONE).field("angle", Bind.constant(0.5f)).field("radius", Bind.constant(0)).build(),
         init(Shape.DISC).field("radius", Bind.constant(1)).build(),
-        init(Shape.MESH).targets(Target.GPU).field("mode", Bind.constant(Shape.SURFACE)).build(),
+        init(Shape.MESH).targets(Target.GPU).field("mode", Bind.constant(Shape.SURFACE))
+            .field("upward", Bind.constant(0)).build(),
         init(Shape.BONES).targets(Target.GPU).field("radius", Bind.constant(0)).build(),
         init(Shape.MASK).targets(Target.GPU).field("mask", Forces.NO_FIELD)
             .field("channel", Bind.constant(Shape.LUMINANCE)).field("threshold", Bind.constant(0))
@@ -42,6 +43,8 @@ public final class ModuleRegistry {
             .build(),
         init(Init.SIZE).field("size", Bind.constant(0.1f)).build(),
         init(Init.COLOR).field("color", Bind.color(1, 1, 1, 1)).build(),
+        init(Init.ROTATION).field("angle", Bind.constant(0)).build(),
+        init(Init.FRAME).field("frame", Bind.constant(0)).build(),
         init(Init.INHERIT).field("velocity", Bind.constant(0)).field("color", Bind.constant(0))
             .field("size", Bind.constant(0)).build(),
         update(Forces.GRAVITY).field("scale", Bind.constant(1)).build(),

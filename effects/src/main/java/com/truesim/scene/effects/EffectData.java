@@ -51,11 +51,18 @@ public final class EffectData {
     private final double end;
     private final double lingering;
     private final double burstEnd;
+    private final int variants;
+    private final double near;
+    private final String refusal;
     private final List<Object> key;
     private final int hash;
 
-    private EffectData(Builder b, List<EmitterData> emitters, int[] depths, double[] chains, double[] ends) {
+    private EffectData(Builder b, List<EmitterData> emitters, int[] depths, double[] chains, double[] ends,
+            String refusal) {
         type = b.type;
+        this.refusal = refusal;
+        variants = refusal == null ? b.variants : 0;
+        near = b.near;
         parameters = List.copyOf(b.parameters);
         offsets = new int[parameters.size()];
         int size = 0;
@@ -93,7 +100,7 @@ public final class EffectData {
         for (float value : defaults) {
             values.add(value);
         }
-        key = List.of(type, parameters, values, this.emitters, maxEventDepth);
+        key = List.of(type, parameters, values, this.emitters, maxEventDepth, b.variants, near);
         hash = key.hashCode();
     }
 
@@ -224,6 +231,28 @@ public final class EffectData {
         return AssetRef.generated(EffectAssets.EFFECT, INLINE, this, 0);
     }
 
+    /**
+     * How many variants its instances share (E23, effects.md §2.11): each simulated once, every instance played a
+     * placement drawing one of them; 0 when it is not shared, as asked for or because its modules refuse it
+     * ({@link #sharingRefusal()}).
+     */
+    public int variants() {
+        return variants;
+    }
+
+    /** Within this distance of a viewer a placement of it simulates on its own, in metres; 0: never. */
+    public double nearDistance() {
+        return near;
+    }
+
+    /**
+     * Why it was asked to be shared and is not (its instances then simulate on their own, as unshared ones do), or
+     * null: its first module, renderer or space that depends on where an instance is.
+     */
+    public String sharingRefusal() {
+        return refusal;
+    }
+
     /** About the memory it takes, for the asset cache's budget. */
     public long bytes() {
         long bytes = 256 + 4L * defaults.length;
@@ -257,6 +286,8 @@ public final class EffectData {
         private final List<float[]> defaults = new ArrayList<>();
         private final List<EmitterData.Builder> emitters = new ArrayList<>();
         private int maxEventDepth = DEFAULT_EVENT_DEPTH;
+        private int variants;
+        private double near;
 
         private Builder(EffectType type) {
             this.type = Objects.requireNonNull(type, "type");
@@ -302,6 +333,27 @@ public final class EffectData {
             }
             maxEventDepth = levels;
             return this;
+        }
+
+        /**
+         * Shares simulations among its instances (E23): {@code variants} simulations, each at its own seed, drawn at
+         * every instance played (a placement: a transform and a variant), if its modules allow it: every emitter on the
+         * GPU in local space, no collision, mesh or bone shapes, mesh, light or beam renderers. Otherwise it is
+         * simulated per instance, as {@link EffectData#sharingRefusal()} says why. Placements within
+         * {@code nearDistance} metres of a viewer (0: none) simulate on their own.
+         */
+        public Builder shared(int variants, double nearDistance) {
+            if (variants < 1 || !(nearDistance >= 0)) {
+                throw new IllegalArgumentException("Not a sharing: " + variants + " variants, near " + nearDistance);
+            }
+            this.variants = variants;
+            near = nearDistance;
+            return this;
+        }
+
+        /** Shares {@code variants} simulations among its instances, however near ({@link #shared(int, double)}). */
+        public Builder shared(int variants) {
+            return shared(variants, 0);
         }
 
         /** The effect, its modules checked against the built-in modules. */
@@ -379,7 +431,34 @@ public final class EffectData {
             for (int i = 0; i < n; i++) {
                 settle(i, built, chains, ends);
             }
-            return new EffectData(b, built, depths, chains, ends);
+            return new EffectData(b, built, depths, chains, ends, b.variants == 0 ? null : refusal(built));
+        }
+
+        /** Why the effect cannot share simulations (effects.md §2.11's eligibility), or null. */
+        private static String refusal(List<EmitterData> built) {
+            for (EmitterData e : built) {
+                if (e.target() != Target.GPU) {
+                    return e.name() + " is a CPU emitter";
+                }
+                if (e.space() != Space.LOCAL) {
+                    return e.name() + " is in world space";
+                }
+                for (List<Module> list : List.of(e.init(), e.update())) {
+                    for (Module module : list) {
+                        String name = module.type();
+                        if (name.startsWith("collide.") || name.equals(Shape.MESH) || name.equals(Shape.BONES)) {
+                            return e.name() + " has " + name + ", which depends on where it is";
+                        }
+                    }
+                }
+                for (Renderer r : e.renderers()) {
+                    if (r.kind() == Renderer.Kind.MESH || r.kind() == Renderer.Kind.LIGHT
+                        || r.kind() == Renderer.Kind.BEAM) {
+                        return e.name() + " draws " + r.kind().name().toLowerCase() + "s, which are per instance";
+                    }
+                }
+            }
+            return null;
         }
 
         /** Checks modules at {@code stage}; returns what they need of the device. */
@@ -534,6 +613,11 @@ public final class EffectData {
 
         /** Checks the events an emitter sends, noting the emitters they spawn. */
         private void events(int i, EmitterData.Builder e) {
+            long emits = e.events().stream().filter(event -> event.kind() == ParticleEvent.Kind.EMIT).count();
+            if (emits > CpuSimulation.MAX_EMITS) {
+                problems.add(e.name + " sends " + emits + " emit events, more than the " + CpuSimulation.MAX_EMITS
+                    + " a particle keeps accumulators for.");
+            }
             for (ParticleEvent event : e.events()) {
                 String where = e.name + ": " + event.kind().name().toLowerCase() + " event";
                 binding(where, event.count());

@@ -43,6 +43,16 @@ public final class EffectRuntime {
     private static final long MAX_RATE = 1L << 60;
     /** Effects per job. */
     private static final int GRAIN = 16;
+    /** Seconds a change of the drawn fraction takes: levels of detail fade, they do not pop. */
+    public static final double FADE = 0.3;
+    /** Of the budget, the share beyond which the least significant effects spawn at half their scale. */
+    public static final double BUDGET_SOFT = 0.75;
+
+    /** What an effect costs the budget, in bytes: the engine's slots for its emitters' capacities. */
+    @FunctionalInterface
+    public interface Cost {
+        long bytes(EffectData effect);
+    }
 
     private final Effects effects;
     private final JobSystem jobs;
@@ -61,6 +71,10 @@ public final class EffectRuntime {
     private int typeCount;
     private int[] order = new int[16];
     private int candidates;
+    private boolean byPriority; // the candidates sort by priority first, for the budget, rather than by type
+    private long budget = Long.MAX_VALUE;
+    private Cost cost;
+    private double seconds; // of the world clock this update
     private final JobSystem.RangeTask spawnTask = (from, to, worker) -> {
         for (int slot = from; slot < to; slot++) {
             spawn(slot);
@@ -91,6 +105,20 @@ public final class EffectRuntime {
 
     public Quality quality() {
         return quality;
+    }
+
+    /**
+     * Keeps the effects within {@code bytes} (Long.MAX_VALUE: no budget), each costing what {@code cost} says (once
+     * per effect data, not per frame): the most significant first, by their types' priorities, then their
+     * significance; past {@link #BUDGET_SOFT} of it effects spawn at half their scale, past all of it they are culled
+     * as their types say. Variants of shared effects count, placements cost nothing.
+     */
+    public void budget(long bytes, Cost cost) {
+        if (bytes < 0) {
+            throw new IllegalArgumentException("Not a budget: " + bytes);
+        }
+        budget = bytes;
+        this.cost = Objects.requireNonNull(cost, "cost");
     }
 
     /** Forgets the viewers: with none, every effect counts as at distance 0. */
@@ -137,6 +165,7 @@ public final class EffectRuntime {
      * playing.
      */
     public void update(long ticks) {
+        seconds = ticks * SECONDS;
         dropFinishedCalls();
         effects.advance(ticks);
         int slots = effects.slots();
@@ -252,23 +281,16 @@ public final class EffectRuntime {
             }
             EffectType type = effects.dataAt(slot).type();
             in.type = typeIndex(type);
-            in.distance = nearestViewer(slot);
-            double widen = 1 + type.hysteresis();
-            in.far = in.distance > type.maxDistance() * (in.far ? 1 : widen);
-            int lod = in.lod;
-            while (lod + 1 < type.lodCount() && in.distance > type.lod(lod + 1).distance() * widen) {
-                lod++;
+            in.nearest = Double.POSITIVE_INFINITY;
+            if (effects.variantAt(slot)) {
+                continue; // as near as its nearest placement shown, below
             }
-            while (lod > 0 && in.distance < type.lod(lod).distance()) {
-                lod--;
-            }
-            in.lod = lod;
-            in.key = type.significance() == EffectType.Significance.AGE ? effects.timeAt(slot)
-                : in.culled ? in.distance : in.distance / widen;
+            levels(slot, in, nearestViewer(slot));
             if (!in.far) {
                 order[candidates++] = slot;
             }
         }
+        byPriority = false;
         sortCandidates();
         int type = -1;
         int kept = 0;
@@ -278,17 +300,103 @@ public final class EffectRuntime {
             type = in.type;
             in.capped = kept > types[type].maxInstances();
         }
+        budget();
         for (int slot = 0; slot < slots; slot++) {
             Instance in = instances[slot];
-            if (in.id != 0) {
+            if (in.id != 0 && !effects.variantAt(slot)) {
                 cull(slot, in);
+                int variant = effects.placementAt(slot) && !in.culled ? effects.variantSlotOf(slot) : -1;
+                if (variant >= 0) {
+                    instances[variant].nearest = Math.min(instances[variant].nearest, in.distance);
+                }
             }
         }
+        for (int slot = 0; slot < slots; slot++) {
+            Instance in = instances[slot];
+            if (in.id != 0 && effects.variantAt(slot)) {
+                levels(slot, in, in.nearest); // culled when no placement of it is shown
+                in.far |= in.nearest == Double.POSITIVE_INFINITY;
+                cull(slot, in);
+            } else if (in.id != 0 && effects.placementAt(slot)) {
+                place(slot, in);
+            }
+        }
+    }
+
+    /** The distance, culling by distance and level of detail of the effect in {@code slot}, {@code distance} away. */
+    private void levels(int slot, Instance in, double distance) {
+        EffectType type = types[in.type];
+        in.distance = distance;
+        double widen = 1 + type.hysteresis();
+        in.far = distance > type.maxDistance() * (in.far ? 1 : widen);
+        int lod = in.lod;
+        while (lod + 1 < type.lodCount() && distance > type.lod(lod + 1).distance() * widen) {
+            lod++;
+        }
+        while (lod > 0 && distance < type.lod(lod).distance()) {
+            lod--;
+        }
+        in.lod = lod;
+        in.key = type.significance() == EffectType.Significance.AGE ? effects.timeAt(slot)
+            : in.culled ? distance : distance / widen;
+    }
+
+    /**
+     * The budget: the candidates kept by their caps, by priority and significance, spawn at half their scale past
+     * {@link #BUDGET_SOFT} of it and are culled past all of it.
+     */
+    private void budget() {
+        int kept = 0;
+        for (int i = 0; i < candidates; i++) {
+            Instance in = instances[order[i]];
+            in.budgetScale = 1;
+            if (!in.capped) {
+                order[kept++] = order[i];
+            }
+        }
+        if (budget == Long.MAX_VALUE) {
+            return;
+        }
+        candidates = kept;
+        byPriority = true;
+        sortCandidates();
+        long used = 0;
+        long soft = (long) (BUDGET_SOFT * budget);
+        for (int i = 0; i < candidates; i++) {
+            Instance in = instances[order[i]];
+            if (in.cost < 0) {
+                in.cost = effects.placementAt(order[i]) ? 0 : cost.bytes(effects.dataAt(order[i]));
+            }
+            used += in.cost;
+            in.capped = used > budget;
+            in.budgetScale = used > soft ? 0.5f : 1;
+        }
+    }
+
+    /**
+     * A placement shown near a viewer gets a simulation of its own (its type's hysteresis applies), and the share of
+     * its variant it draws fades out (and back in when far again) over its effect's lingering, as it does once
+     * stopped.
+     */
+    private void place(int slot, Instance in) {
+        EffectData data = effects.dataAt(slot);
+        double near = data.nearDistance() * (effects.nearAt(slot) ? 1 + data.type().hysteresis() : 1);
+        boolean own = !in.culled && in.distance < near;
+        if (own != effects.nearAt(slot)) {
+            effects.near(slot, own);
+        }
+        float target = own || effects.stopAt(slot) != Long.MAX_VALUE ? 0 : 1;
+        double fade = Math.max(data.lingering(), FADE);
+        in.weight = (float) (in.weight < target ? Math.min(target, in.weight + seconds / fade)
+            : Math.max(target, in.weight - seconds / fade));
     }
 
     private void cull(int slot, Instance in) {
         in.culled = in.far || in.capped;
         in.capped = false;
+        float target = in.culled ? 0 : types[in.type].lod(in.lod).drawnFraction();
+        in.drawn = in.drawn < 0 ? target : (float) (in.drawn < target ? Math.min(target, in.drawn + seconds / FADE)
+            : Math.max(target, in.drawn - seconds / FADE));
         switch (types[in.type].whenCulled()) {
             case KILL -> {
                 if (in.culled) {
@@ -368,7 +476,13 @@ public final class EffectRuntime {
     private boolean before(int a, int b) {
         Instance x = instances[a];
         Instance y = instances[b];
-        if (x.type != y.type) {
+        if (byPriority) {
+            int px = types[x.type].priority();
+            int py = types[y.type].priority();
+            if (px != py) {
+                return px > py;
+            }
+        } else if (x.type != y.type) {
             return x.type < y.type;
         }
         if (x.key != y.key) {
@@ -382,14 +496,14 @@ public final class EffectRuntime {
     private void spawn(int slot) {
         Instance in = instances[slot];
         in.records.clear();
-        if (in.id == 0) {
-            return;
+        if (in.id == 0 || effects.placementAt(slot)) {
+            return; // placements draw their variant's particles
         }
         EffectData data = effects.dataAt(slot);
         EffectType type = data.type();
         long now = effects.timeAt(slot);
         boolean emit = !in.culled || type.whenCulled() == EffectType.Culled.SIMULATE;
-        float scale = type.spawnScale(quality) * type.lod(in.lod).spawnScale();
+        float scale = type.spawnScale(quality) * type.lod(in.lod).spawnScale() * in.budgetScale;
         int seed = effects.seedAt(slot);
         List<EmitterData> emitters = data.emitters();
         for (int e = 0; e < emitters.size(); e++) {
@@ -636,11 +750,31 @@ public final class EffectRuntime {
         return updated(effect).distance;
     }
 
-    /** What {@code effect}'s spawns are multiplied by: its type's scale at the quality, times its level's. */
+    /**
+     * What {@code effect}'s spawns are multiplied by: its type's scale at the quality, times its level's, times a half
+     * near the budget.
+     */
     public float spawnScale(long effect) {
         Instance in = updated(effect);
         EffectType type = types[in.type];
-        return type.spawnScale(quality) * type.lod(in.lod).spawnScale();
+        return type.spawnScale(quality) * type.lod(in.lod).spawnScale() * in.budgetScale;
+    }
+
+    /**
+     * The fraction of {@code effect}'s particles drawn as it fades towards {@link #drawnFraction}: over {@link #FADE}
+     * seconds of the world clock, each particle kept or faded by its hash against it.
+     */
+    public float drawn(long effect) {
+        return updated(effect).drawn;
+    }
+
+    /**
+     * The share of its variant placement {@code effect} draws: 1 while it shares, fading to 0 while it simulates on its
+     * own near a viewer or once it stopped; 0 for effects that are not placements.
+     */
+    public float placementWeight(long effect) {
+        Instance in = updated(effect);
+        return effects.placementAt(effects.slot(effect)) ? in.weight : 0;
     }
 
     /** The fraction of {@code effect}'s particles drawn: its level's, 0 while culled. */
@@ -676,6 +810,11 @@ public final class EffectRuntime {
         int type;
         double distance;
         double key;
+        double nearest;
+        float drawn;
+        float weight;
+        float budgetScale = 1;
+        long cost;
         /** Fractions per spawn entry, in fixed point. */
         long[] accumulators = new long[4];
         /** Particles spawned per emitter. */
@@ -694,6 +833,10 @@ public final class EffectRuntime {
             capped = false;
             culled = false;
             lod = 0;
+            drawn = -1; // drawn as decided at once on its first update
+            weight = 1;
+            cost = -1;
+            budgetScale = 1;
             records.clear();
             if (data == null) {
                 return;
