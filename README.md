@@ -26,6 +26,7 @@ example, takes core, world and collision without any render data.
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
 | `scene-animation` | animation clips and their sampling, skeletons, animators posing scene nodes                | milestone 6 |
+| `scene-effects`   | particle effects as data, the effects playing in a scene                                   | milestone 7 |
 | `scene-render`    | renderables on nodes, materials, textures and models; a PNG/JPEG importer                 | milestone 5 |
 | `scene-gltf`      | glTF 2.0 and GLB import: models, meshes, materials, embedded images                        | milestone 5 |
 
@@ -531,6 +532,54 @@ renderables.changesSince(since, (node, changes) -> ...);    // ADDED, REMOVED, M
 - **Changes, not the whole scene:** renderables log their changes on the scene's clock, as the scene graph does, so a
   renderer follows both with one cursor and uploads only what changed.
 
+### Effects
+
+`scene-effects` describes particle effects as data and keeps the effects playing in a scene; the engine simulates and
+draws them ([docs/effects.md](docs/effects.md)). An `EffectData` is emitters, user parameters with defaults and an
+`EffectType` (its budget class). Each emitter has a target (the GPU by default, or the CPU for particles gameplay
+reads), a space (world or local), timing (delay, loops, prewarm), spawns (rates, bursts, per metre, from events),
+initializers and updaters (modules by name, as materials name their parameters), events into other emitters, and
+renderers:
+
+```java
+static final EffectParameter.Float INTENSITY = EffectParameter.ofFloat("intensity");
+static final EffectType IMPACTS = EffectType.builder("impacts").maxDistance(80).maxInstances(64).build();
+
+EffectData sparks = EffectData.builder(IMPACTS)
+    .parameter(INTENSITY, 1)
+    .emitter("sparks", e -> e.duration(0.2).spawn(Spawn.burst(0, Bind.param(INTENSITY).times(150)))
+        .init(Shape.cone(0.5f, 0.02f), Init.lifetime(Bind.random(0.3f, 0.8f)), Init.speed(Bind.random(4, 11)))
+        .update(Forces.gravity(), Forces.drag(0.6f), Over.size(FloatCurve.of(0, 1, 1, 0)))
+        .event(ParticleEvent.onDeath("embers", Bind.constant(1)).chance(0.3f))
+        .render(Renderer.billboard(Renderer.Facing.VELOCITY).additive()))
+    .emitter("embers", e -> e.capacity(200).spawn(Spawn.fromEvents()).init(Init.lifetime(Bind.random(0.8f, 1.5f))))
+    .build();                                  // checked: every problem at once, with "did you mean"
+AssetRef<EffectData> SPARKS = sparks.ref();    // equal data, one asset
+
+Effects effects = new Effects(scene);
+Effect torch = effects.play(TORCH_FIRE, torchNode).offset(0, 0.4, 0);  // follows the node
+torch.set(INTENSITY, 0.8f);
+effects.burst(sparks, x, y, z, nx, ny, nz, surface);   // into the shared instance of its cell
+// each frame, after scene.update():
+effects.advance(dt);                                   // effect time in ticks; ended effects go
+effects.changesSince(since, (effect, changes) -> ...); // ADDED, STOPPED, REMOVED, PARAMETERS, TIME, MOVED, SEED
+```
+
+- **Checked when built:** unknown modules and fields with suggestions, fields of the wrong kind, modules at the wrong
+  stage or on a target without them (`ModuleRegistry.BUILT_IN.with(...)` adds a plugin's types), parameters missing or
+  of the wrong kind, spawn amounts that differ per particle, bursts after their loop's end, event cycles and nesting
+  deeper than 4 (`maxEventDepth`), events into emitters that do not spawn from them or from the GPU into the CPU, and
+  capacities below demand (rates times lifetime plus bursts; estimated when not given).
+- **Curves and gradients** are keys (step, linear or cubic per key, at most 32), evaluated where they are used, never
+  baked; bindings take a module input from a constant, a parameter, a curve over age, of a parameter or of speed, or a
+  random range.
+- **Handles of ended effects are inert:** an effect ends by itself when its last particle has died at the latest, known
+  from the data (`EffectData.end()`, and `lingering()` after a stop), so `set`, `stop` and `kill` on an ended effect
+  do nothing and `alive()` says so; ids carry a generation, so a reused slot is never touched.
+- **Time** is whole ticks (microseconds); each effect's time is the world's delta times its own and the global time
+  scale, carried exactly in fixed point, so the same ticks give the same times however frames split them. `pause`
+  stops it, per effect or for all.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -549,6 +598,7 @@ dependencies {
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
     implementation("com.truesim.scene:scene-animation:0.42.0") // clips, rigs and animators (from 0.35.0)
+    implementation("com.truesim.scene:scene-effects:0.44.0")   // particle effects as data (from 0.44.0)
 }
 ```
 

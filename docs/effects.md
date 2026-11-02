@@ -1358,3 +1358,50 @@ re-read). E1 to E22 are unchanged; reviewer notes sit under the decision table.
 - Re-read in the review (2026-11-02): Niagara's ray-traced collision page (one frame late; falls back to distance
   fields), Unity's six-way lighting page (the two maps' channels), Niagara's lightweight emitters and data channels
   pages (islands: one listener system per bounded region).
+
+## 8. As built
+
+Details the steps settled where sections 2 and 5 left them open.
+
+### Step 1: `scene-effects` data (scene 0.44.0)
+
+- **Built-in modules** (`ModuleRegistry.BUILT_IN`, both targets, no capability): initializers `shape.point`,
+  `shape.sphere` (radius, thickness: 1 the whole ball, 0 its surface), `shape.box` (x, y, z), `shape.cone` (angle,
+  radius), `shape.disc` (radius), `init.lifetime`, `init.speed` (along the shape's direction), `init.velocity` (x, y,
+  z), `init.size`, `init.color`; updaters `force.gravity` (scale of 9.81 m/s² down), `force.drag` (linear, per second),
+  `over.size` (a curve), `over.color` (a gradient). Every field has a fallback in its `ModuleType`, so a module may
+  leave fields out. Plugins add types with `ModuleRegistry.BUILT_IN.with(type)` and build effects against that
+  registry. Module values are `Binding`, `ColorBinding`, `FloatCurve` or `ColorGradient`; each field declares one.
+- **Bindings:** float inputs from a constant, a float parameter, a curve over normalized age, a curve of a float
+  parameter, a curve of speed or a random range, times a scale; color inputs from a constant, a color parameter, a
+  gradient over age or a random point of a gradient. Spawn amounts take only those fixed for the instance at a time
+  (constant, parameter, curve of a parameter, random range drawn per loop).
+- **Curves:** cubic keys are Hermite segments with Catmull-Rom slopes (one-sided at the ends); the slopes are stored
+  with the keys, so the GPU encodes them as they are. Times strictly increase; at most 32 keys, refused when the curve
+  is made.
+- **Timing:** delay, duration (infinite by default: until stopped), loops (0 forever, 1 by default), loop delay and
+  prewarm per emitter. Bursts at or after the loop's duration are refused.
+- **Capacity** when not given: the ceiling of rate × longest lifetime, plus each burst times the loops whose particles
+  can be alive at once (`ceil(lifetime / (duration + loop delay))`, at most the loop count); with parameters at their
+  defaults. Spawning per metre or from events needs an authored capacity. An emitter whose demand is 0 is refused.
+- **Ends:** an emitter's particles are all dead by `delay + loops × duration + (loops − 1) × loop delay − prewarm +
+  longest lifetime`; an emitter spawned by events, by its parents' end plus its own lifetime. `EffectData.end()` is the
+  latest (infinite when anything loops forever), `lingering()` the longest chain of lifetimes after a stop, and
+  `burstEnd()` the last burst after its delay plus the lingering, for shared instances.
+- **Validation** collects every problem into one `InvalidEffectException`: unknown modules, fields and parameters (with
+  "did you mean" by edit distance), fields and parameters of the wrong kind, modules at the wrong stage or on a target
+  without them, spawn amounts bound per particle, late bursts, missing or short capacities, emitters spawning nothing,
+  duplicate names, events into unknown emitters, into emitters not spawning from events, or from a GPU emitter into a
+  CPU one, event cycles (named in order) and nesting deeper than `maxEventDepth` (4 by default).
+- **`Effects`** takes the scene only (`new Effects(scene)`); the game's `ParticleWorld` goes to `CpuSimulation`
+  (step 3), which is what collides. `play(data, node)` and `play(data, x, y, z)` make instances of their own and return
+  an `Effect` handle; `burst(...)` returns the shared instance's id, so a burst allocates nothing. A shared instance
+  sits at its cell's center; each burst into it fires its emitters' bursts after their delays as if the effect started
+  then (rates do not run in shared instances), and it ends `burstEnd()` after its last burst. Burst calls stay in
+  `Effects` (position, normal, payload, time) until the runtime drops them.
+- **Time:** ticks of a microsecond. Each effect's time moves by the world delta times its own and the global time scale
+  (16.16 fixed point, the remainder carried), not clamped: late joiners and replays compute the same times from the
+  start tick. The simulation's integration step is what gets clamped (step 3). An effect whose node is removed stays at
+  the node's last position, detached, and stops.
+- **Change log** flags: `ADDED`, `STOPPED`, `REMOVED` (ended or killed), `PARAMETERS`, `TIME` (scale or pause), `MOVED`
+  (offset, position, attachment, inherited velocity), `SEED`. Default seeds are the PCG hash of a play counter.
