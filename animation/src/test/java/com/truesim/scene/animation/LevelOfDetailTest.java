@@ -71,4 +71,26 @@ class LevelOfDetailTest {
         assertThat(first.updated()).isTrue();
         assertThatIllegalArgumentException().isThrownBy(() -> first.updateEvery(0));
     }
+
+    @Test
+    void listenersFindTheAnimatorAndItsJointsByTheNodeTheyHearOf() {
+        Rig.Builder r = Rig.builder(RigTest.body());
+        Joint hand = r.joint("hand");
+        Clip walk = r.clip(SyncTest.walking(2, false)).event(0.25, RigTest.STEP);
+        Rig.Layer base = r.layer();
+        Rig rig = r.build();
+        List<Long> hands = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            long root = scene.create();
+            long arm = scene.create(root);
+            animators.add(rig, new long[] {root, arm, scene.create(arm)}).layer(base).play(walk);
+        }
+        Animator second = animators.add(rig, new long[] {scene.create(), scene.create(), scene.create()});
+        animators.listen(RigTest.STEP, (node, event, weight) -> hands.add(animators.animator(node).node(hand)));
+        animators.update(0.3);
+        assertThat(hands).hasSize(2).doesNotHaveDuplicates();
+        assertThat(animators.animator(second.node(0))).isSameAs(second);
+        assertThat(second.node(hand)).isEqualTo(second.node(hand.index()));
+        assertThat(animators.animator(second.node(1))).as("not a first node").isNull();
+    }
 }

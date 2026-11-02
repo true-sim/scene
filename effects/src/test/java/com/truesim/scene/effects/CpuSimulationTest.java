@@ -201,6 +201,122 @@ class CpuSimulationTest {
         assertThat(cursor.z()).isCloseTo(0, within(1e-6));
     }
 
+    @Test
+    void forcesActInTheWorldOnWorldSpaceParticlesAndInTheFrameOnLocalOnes() {
+        long node = scene.create();
+        scene.setTranslation(node, 3, 0, 0);
+        scene.setRotation(node, Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // a quarter turn about +X: its down is +Z
+        scene.update();
+        EffectData falling = EffectData.builder()
+            .emitter("world", e -> e.target(Target.CPU).spawn(Spawn.burst(0, 1)).init(Init.lifetime(10))
+                .update(Forces.gravity()))
+            .emitter("local", e -> e.target(Target.CPU).space(Space.LOCAL).spawn(Spawn.burst(0, 1))
+                .init(Init.lifetime(10)).update(Forces.gravity()))
+            .build();
+        long effect = effects.play(falling, node).id();
+        frame(1L);
+        frame(100_000L);
+        double drop = -0.5 * Forces.G * 0.1 * 0.1;
+        simulation.particles(effect, 0, cursor);
+        cursor.next();
+        assertThat(cursor.y()).as("along world -Y, the frame turned").isCloseTo(drop, within(1e-5));
+        assertThat(cursor.x()).isCloseTo(3, within(1e-6));
+        assertThat(cursor.z()).isCloseTo(0, within(1e-6));
+        assertThat((double) cursor.vy()).isCloseTo(-Forces.G * 0.1, within(1e-5));
+        simulation.particles(effect, 1, cursor);
+        cursor.next();
+        assertThat(cursor.y()).as("world down too, through its frame").isCloseTo(drop, within(1e-5));
+        assertThat(cursor.z()).isCloseTo(0, within(1e-6));
+    }
+
+    @Test
+    void worldSpaceParticlesInheritTheirEffectsVelocity() {
+        long node = scene.create();
+        scene.update();
+        EffectData puffs = EffectData.builder()
+            .emitter("world", e -> e.target(Target.CPU).spawn(Spawn.rate(10)).init(Init.lifetime(10)))
+            .emitter("local", e -> e.target(Target.CPU).space(Space.LOCAL).spawn(Spawn.rate(10))
+                .init(Init.lifetime(10)))
+            .build();
+        Effect moving = effects.play(puffs, node).inheritVelocity(0.5f);
+        frame(1L);
+        scene.setTranslation(node, 0.4, 0, 0); // 4 m/s over the next tenth of a second
+        scene.update();
+        frame(100_000L);
+        simulation.particles(moving.id(), 0, cursor);
+        assertThat(cursor.next()).isTrue();
+        assertThat((double) cursor.vx()).as("half of 4 m/s").isCloseTo(2, within(1e-4));
+        simulation.particles(moving.id(), 1, cursor);
+        assertThat(cursor.next()).isTrue();
+        assertThat((double) cursor.vx()).as("local ones move with it already").isZero();
+        // Bursts into shared instances inherit nothing.
+        EffectData hits = EffectData.builder().emitter("hit", e -> e.target(Target.CPU).spawn(Spawn.burst(0, 1))
+            .init(Init.lifetime(10))).build();
+        long shared = effects.burst(hits, 1, 0, 0, 0, 1, 0, 0);
+        effects.play(hits, 0, 0, 0).inheritVelocity(1); // born in its first, empty frame: no velocity yet
+        frame(0L);
+        simulation.particles(shared, 0, cursor);
+        assertThat(cursor.next()).isTrue();
+        assertThat((double) cursor.vx()).isZero();
+    }
+
+    @Test
+    void farFromTheirOriginWorldSpaceParticlesRebaseKeepingTheirPlaces() {
+        long node = scene.create();
+        scene.update();
+        EffectData trail = EffectData.builder()
+            .emitter("world", e -> e.target(Target.CPU).spawn(Spawn.burst(0, 1)).init(Init.lifetime(100)))
+            .emitter("local", e -> e.target(Target.CPU).space(Space.LOCAL).spawn(Spawn.burst(0, 1))
+                .init(Init.lifetime(100)))
+            .emitter("gpu", e -> e.spawn(Spawn.burst(0, 1)).init(Init.lifetime(100)))
+            .build();
+        long effect = effects.play(trail, node).id();
+        frame(1L);
+        double r = CpuSimulation.REBASE_DISTANCE;
+        // Each axis alone past the distance from the origin, and all within it.
+        for (double[] at : new double[][] {{1000, 0, 0}, {r + 1, 0, 0}, {0, r + 1, 0}, {0, r + 1, r + 2},
+            {r, r, r}, {r, 2 * r + 2, r}, {3 * r, 0, 3 * r}}) {
+            scene.setTranslation(node, at[0], at[1], at[2]);
+            scene.update();
+            frame(1L);
+            simulation.particles(effect, 0, cursor);
+            cursor.next();
+            assertThat(cursor.x()).as("the particle stays where born").isCloseTo(0, within(1e-3));
+            assertThat(cursor.y()).isCloseTo(0, within(1e-3));
+            assertThat(cursor.z()).isCloseTo(0, within(1e-3));
+        }
+        // Born out there, it is as precise as at the origin, however far its effect then goes.
+        scene.setTranslation(node, 7_000_000.25, 0, 0);
+        scene.update();
+        long far = effects.play(trail, node).id();
+        frame(1L);
+        scene.setTranslation(node, 7_000_000.25 + 2 * CpuSimulation.REBASE_DISTANCE, 0, 0);
+        scene.update();
+        frame(1L);
+        simulation.particles(far, 0, cursor);
+        cursor.next();
+        assertThat(cursor.x()).isEqualTo(7_000_000.25);
+        simulation.particles(far, 1, cursor);
+        cursor.next();
+        assertThat(cursor.x()).as("local ones are in the frame")
+            .isEqualTo(7_000_000.25 + 2 * CpuSimulation.REBASE_DISTANCE);
+    }
+
+    @Test
+    void replacedEffectsStartTheirParticlesOver() {
+        EffectData one = cpu(e -> e.spawn(Spawn.burst(0, 1)).init(Init.lifetime(10)));
+        EffectData three = cpu(e -> e.spawn(Spawn.burst(0, 3)).init(Init.lifetime(10)));
+        long effect = effects.play(one, 0, 0, 0).id();
+        frame(1L);
+        frame(1_000L);
+        assertThat(simulation.count(effect, 0)).isOne();
+        effects.replace(one, three);
+        frame(1L);
+        assertThat(simulation.count(effect, 0)).as("the old particles gone, the new burst fired").isEqualTo(3);
+        assertThat(runtime.spawned(effect, 0)).isEqualTo(3);
+        assertThat(runtime.effects()).isSameAs(effects);
+    }
+
     /** {@code count} particles of an emitter with {@code shape}, moving at 1 m/s along its directions. */
     private ParticleCursor shaped(Module shape, int count) {
         EffectData data = cpu(e -> e.spawn(Spawn.burst(0, count)).init(shape, Init.speed(Bind.constant(1))));

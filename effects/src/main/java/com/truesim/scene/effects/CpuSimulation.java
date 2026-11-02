@@ -27,8 +27,10 @@ import java.util.Objects;
  * <p>Motion is integrated exactly for constant forces: with gravity {@code a} and linear drag {@code k} over a step
  * {@code h}, {@code v' = a/k + (v - a/k) e^(-kh)} and {@code p' = p + h a/k + (v - a/k)(1 - e^(-kh))/k} ({@code p +
  * vh + ah^2/2} without drag), so positions do not depend on how frames split time. World-space particles are float
- * offsets from their effect's origin, its position when it started; local-space ones live in the emitter's frame and
- * move with it. Random values are {@link Hash#random} of the particle's seed and a salt: 16 per module, by its place
+ * offsets from their effect's origin, its position when it started, moved to where the effect is once it is
+ * {@value #REBASE_DISTANCE} m away (rebasing); they are born with the effect's {@link Effect#inheritVelocity inherited}
+ * share of its velocity over the frame. Local-space ones live in the emitter's frame and move with it. Forces act in
+ * the world: gravity pulls along world down, which local-space particles take turned into their frame. Random values are {@link Hash#random} of the particle's seed and a salt: 16 per module, by its place
  * in its list ({@value #UPDATE_SALTS} on for updaters), its fields first in alphabetical order, then its own
  * draws from 8 on.
  */
@@ -38,6 +40,11 @@ public final class CpuSimulation {
     public static final float MAX_STEP = 0.1f;
     /** Updaters' salts start here, initializers' at 0. */
     public static final int UPDATE_SALTS = 4096;
+    /**
+     * How far, in metres, an effect moves from the origin of its world-space particles before the origin moves to it
+     * (rebasing): float offsets stay precise to a millimetre within it.
+     */
+    public static final double REBASE_DISTANCE = 4096;
 
     // Module operations.
     private static final int POINT = 0;
@@ -181,8 +188,9 @@ public final class CpuSimulation {
     private void simulate(int slot) {
         Slot s = slots[slot];
         long id = effects.effectAt(slot);
-        if (id != s.id) {
+        if (id != s.id || id != 0 && effects.restartsAt(slot) != s.restarts) {
             s.reset(id, id == 0 ? null : effects.dataAt(slot), effects, slot);
+            s.restarts = id == 0 ? 0 : effects.restartsAt(slot);
         }
         if (!s.cpu) {
             return;
@@ -192,6 +200,7 @@ public final class CpuSimulation {
         float dt = (float) Math.min(MAX_STEP, frame);
         float[] parameters = effects.parametersAt(slot);
         s.frame(effects, slot);
+        rebase(s);
         int seed = effects.seedAt(slot);
         SpawnRecords records = runtime.spawns();
         for (int e = 0; e < s.particles.length; e++) {
@@ -211,6 +220,34 @@ public final class CpuSimulation {
         s.px = s.x;
         s.py = s.y;
         s.pz = s.z;
+    }
+
+    /**
+     * Moves the origin of the effect's world-space particles to where it is, once it is {@link #REBASE_DISTANCE} away
+     * along an axis, shifting them by the difference: their world positions stay.
+     */
+    private static void rebase(Slot s) {
+        if (Math.abs(s.x - s.ox) <= REBASE_DISTANCE && Math.abs(s.y - s.oy) <= REBASE_DISTANCE
+            && Math.abs(s.z - s.oz) <= REBASE_DISTANCE) {
+            return;
+        }
+        double sx = s.ox - s.x;
+        double sy = s.oy - s.y;
+        double sz = s.oz - s.z;
+        for (int e = 0; e < s.particles.length; e++) {
+            Particles p = s.particles[e];
+            if (p == null || s.programs[e].local) {
+                continue;
+            }
+            for (int i = 0; i < p.count; i++) {
+                p.px[i] = (float) (p.px[i] + sx);
+                p.py[i] = (float) (p.py[i] + sy);
+                p.pz[i] = (float) (p.pz[i] + sz);
+            }
+        }
+        s.ox = s.x;
+        s.oy = s.y;
+        s.oz = s.z;
     }
 
     /** Ages and moves the particles by {@code dt}; the dead leave, the others keep their order (the survivor copy). */
@@ -349,6 +386,12 @@ public final class CpuSimulation {
         p.vx[i] = (float) s.rx;
         p.vy[i] = (float) s.ry;
         p.vz[i] = (float) s.rz;
+        if (call < 0 && s.inherit != 0 && frame > 0) { // the emitter's velocity over the frame, in part
+            double scale = s.inherit / frame;
+            p.vx[i] += (float) ((s.x - s.px) * scale);
+            p.vy[i] += (float) ((s.y - s.py) * scale);
+            p.vz[i] += (float) ((s.z - s.pz) * scale);
+        }
     }
 
     /** Moves particle {@code i} on by {@code h} seconds under the updaters, then applies those over its life. */
@@ -360,9 +403,13 @@ public final class CpuSimulation {
         for (Op op : program.update) {
             if (op.code == GRAVITY) {
                 double g = Forces.G * value(op, 0, parameters, p.seed[i], p, i);
-                ax += s.downX * g;
-                ay += s.downY * g;
-                az += s.downZ * g;
+                if (program.local) { // world down, turned into the emitter's frame
+                    ax += s.downX * g;
+                    ay += s.downY * g;
+                    az += s.downZ * g;
+                } else {
+                    ay -= g; // forces act in the world
+                }
             } else if (op.code == DRAG) {
                 k += value(op, 0, parameters, p.seed[i], p, i);
             }
@@ -615,6 +662,8 @@ public final class CpuSimulation {
     /** The simulator's state of one effect slot, and the scratch its thread uses. */
     private static final class Slot {
         long id;
+        /** The effect's restarts ({@link Effects#restarts}) when it was set up. */
+        int restarts;
         EffectData data;
         boolean cpu;
         long time;
@@ -631,6 +680,8 @@ public final class CpuSimulation {
         double x;
         double y;
         double z;
+        /** How much of its velocity world-space particles inherit at birth. */
+        float inherit;
         /** Its rotation now, and world down in its frame. */
         double qx;
         double qy;
@@ -686,6 +737,7 @@ public final class CpuSimulation {
             y = effects.positionAt(slot, 1);
             z = effects.positionAt(slot, 2);
             long effect = effects.effectAt(slot);
+            inherit = effects.inheritVelocity(effect);
             qx = effects.rotation(effect, 0);
             qy = effects.rotation(effect, 1);
             qz = effects.rotation(effect, 2);

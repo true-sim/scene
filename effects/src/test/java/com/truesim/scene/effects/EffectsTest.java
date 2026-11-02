@@ -294,6 +294,58 @@ class EffectsTest {
     }
 
     @Test
+    void replacedEffectsRestartWithTheNewDataKeepingTheirHandles() {
+        long node = scene.create();
+        scene.update();
+        EffectData old = puff();
+        EffectParameter.Float heat = EffectParameter.ofFloat("heat");
+        EffectData edited = EffectData.builder().parameter(INTENSITY, 5).parameter(heat, 7)
+            .parameter(EffectParameter.ofFloat("tint"), 3) // the same name, another kind: not carried over
+            .emitter("puff", e -> e.duration(3).spawn(Spawn.rate(10)).init(Init.lifetime(1))).build();
+        Effect torch = effects.play(old, node).offset(0, 1, 0).inheritVelocity(0.5f).timeScale(2);
+        torch.seed(42).set(INTENSITY, 0.25f).stop();
+        Effect other = effects.play(fire(), 0, 0, 0);
+        long shared = effects.burst(old, 1, 2, 3, 0, 1, 0, 0);
+        effects.advance(0.25);
+        long since = scene.clock().stamp();
+        assertThat(effects.restarts(torch.id())).isZero();
+        assertThat(effects.replace(old, edited)).isOne();
+        long id = torch.id();
+        assertThat(torch.alive()).isTrue();
+        assertThat(effects.data(id)).isSameAs(edited);
+        assertThat(effects.restarts(id)).isOne();
+        assertThat(effects.time(id)).isZero();
+        assertThat(effects.start(id)).isEqualTo(effects.now());
+        assertThat(torch.stopped()).as("playing again").isFalse();
+        assertThat(effects.end(id)).isEqualTo(Effects.ticks(4));
+        assertThat(effects.node(id)).isEqualTo(node);
+        assertThat(effects.offset(id, 1)).isEqualTo(1);
+        assertThat(effects.seed(id)).isEqualTo(42);
+        assertThat(effects.inheritVelocity(id)).isEqualTo(0.5f);
+        assertThat(effects.timeScaleOf(id)).isEqualTo(2);
+        assertThat(torch.get(INTENSITY)).as("carried over").isEqualTo(0.25f);
+        assertThat(torch.get(heat)).as("the new one's default").isEqualTo(7);
+        assertThat(effects.parameter(id, edited.parameterOffset("tint"))).isEqualTo(3);
+        assertThat(effects.alive(shared)).as("shared bursts of the old end").isFalse();
+        assertThat(effects.data(other.id())).isEqualTo(fire());
+        assertThat(effects.restarts(other.id())).isZero();
+        assertThat(changes(since)).as("in slot order").containsExactly(Long.toHexString(id) + ":" + Effects.REPLACED,
+            Long.toHexString(shared) + ":" + Effects.REMOVED);
+        assertThat(effects.replace(old, edited)).as("none left").isZero();
+        // Followers start a restarted effect over; empty slots stay empty.
+        EffectRuntime runtime = new EffectRuntime(effects);
+        CpuSimulation simulation = new CpuSimulation(runtime, null);
+        other.kill();
+        for (int i = 0; i < 2; i++) {
+            runtime.update(1L);
+            simulation.update();
+        }
+        // A slot played again starts with no restarts.
+        torch.kill();
+        assertThat(effects.restarts(effects.play(old, 0, 0, 0).id())).isZero();
+    }
+
+    @Test
     void manyEffectsGrowTheSlots() {
         List<Effect> played = new ArrayList<>();
         for (int i = 0; i < 40; i++) {

@@ -204,6 +204,11 @@ public final class Animator {
         return nodes[node];
     }
 
+    /** The scene node posed for {@code joint}: a socket effects and props attach to. */
+    public long node(Joint joint) {
+        return nodes[joint.index()];
+    }
+
     /**
      * Updates the pose only every {@code n}th update of its animators (1: every update): for instances far away or out
      * of sight. Its clock adds up the time between, so it keeps time; events and root motion come on its updates, for

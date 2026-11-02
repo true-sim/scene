@@ -362,7 +362,7 @@ of rendering, so a server replicates which effects play and runs CPU emitters ga
   ranges in chunks of 64 slots per emitter instance (`RangeAllocator`, deterministic first fit). It can grow like
   `GeometryPool` (doubled, copied on the GPU next frame, the old buffer retired through frame slots), but a copy of a
   large pool is a visible hitch, so the budget is set for the content and growth is reported.
-- `[HostLayout] struct Particle` in `particles/common.slang`. The Java layout is generated (`slang.javaPackage`), so
+- `[HostLayout] struct Particle` in `particles/particle.slang` (named so in step 4: see §8). The Java layout is generated (`slang.javaPackage`), so
   Java and Slang share one source (pitfalls: "a layout computed twice").
 - `EmitterTable`: a record per emitter instance (`RecordBuffer`, a few change per frame): its range, module program
   offset, its effect instance's origin (two floats per axis), transform and previous transform, time scale (0 paused),
@@ -404,7 +404,7 @@ better in effect code. `scene-effects` does not depend on `scene-animation`.
 
 ```slang
 [HostLayout]
-public struct Particle            // 64 bytes; offsets from the instance's origin (world) or in its frame (local)
+public struct Particle            // 80 bytes; offsets from the instance's origin (world) or in its frame (local)
 {
     public float3 position;  public float age;        // seconds since birth
     public float3 velocity;  public float lifetime;   // age >= lifetime: dead (or the DEAD flag)
@@ -426,7 +426,7 @@ public struct Particle            // 64 bytes; offsets from the instance's origi
   - **Shared bursts** (E22) have an origin per cell (§2.7).
 - **Extra attributes** for emitters that need them (normal, angular velocity, mesh particle orientation, previous
   position, a GPU emitter's accumulator, trail history) live in side arrays laid out per emitter range and copied with
-  the survivors, so the common particle stays 64 bytes.
+  the survivors, so the common particle stays 80 bytes.
 - **Random numbers:** `rand(seed, salt)` is a PCG hash on 32-bit integers, and a float is its top 24 bits times 2⁻²⁴,
   so Java and Slang draw the same values bit for bit. The seed is fixed per particle at birth, and each module has its
   own salt. Values do not depend on the slot, the thread count, the order of atomics, or the order of modules.
@@ -869,8 +869,8 @@ lists*, never as flags inside one module, and they map to a small, fixed set of 
   chaotic ones (bounces, curl noise over seconds) diverge visibly over time. So: *alike, not identical*. Step 4
   checks GPU against Java within tolerances per module.
 - Cost: every built-in CPU-capable module twice. The reviewer note on E1 keeps it bounded.
-- CPU emitters suit small counts (hundreds to a few thousand per emitter): the upload is 64 bytes per particle per
-  frame, a million CPU particles would be 64 MB a frame.
+- CPU emitters suit small counts (hundreds to a few thousand per emitter): the upload is 80 bytes per particle per
+  frame, a million CPU particles would be 80 MB a frame.
 
 **Emitter state on the GPU (particles as emitters).** Built, as the reviewer note on E2 recommends, from what exists:
 - A parent emitter lists an **emit** updater (`Emit.rate(Range.of(20, 30)).into("trail")`, `Emit.perMetre(...)`,
@@ -908,14 +908,14 @@ lists*, never as flags inside one module, and they map to a small, fixed set of 
 
 ### 2.11 Budgets and costs
 
-**Memory per particle slot:** 64 B × 2 copies = 128 B; side arrays as used (orientation 16 B, previous position 12 B,
+**Memory per particle slot:** 80 B × 2 copies = 160 B; side arrays as used (orientation 16 B, previous position 12 B,
 trail history 12 × N B, each × 2); sort keys and indices 8 B × 2 per sorted particle, per pair of eyes or view; events
 12 B per event slot. Emitter records about 256 B each; curve keys a few hundred bytes per effect.
 
 | Target | Pool budget (default) | Alive particles in a heavy scene | Notes |
 |---|---|---|---|
-| RX 9070 XT, desktop 1920 × 1080 to 4K | 256 MB (2M slots) | 1M | `ParticleBenchmark` sets the real numbers in step 18. |
-| Quest 3 through Quest Link or SteamVR, same GPU, 2 × 2064 × 2208 at 90 Hz | 128 MB (1M slots) | 250k to 500k | 11.1 ms a frame for everything; the link's encoder needs headroom. |
+| RX 9070 XT, desktop 1920 × 1080 to 4K | 256 MB (1.6M slots) | 1M | `ParticleBenchmark` sets the real numbers in step 18. |
+| Quest 3 through Quest Link or SteamVR, same GPU, 2 × 2064 × 2208 at 90 Hz | 128 MB (0.8M slots) | 250k to 500k | 11.1 ms a frame for everything; the link's encoder needs headroom. |
 | lavapipe (CI) | 4 MB | 10k | Software: tests keep counts small; same code paths, async off. |
 
 **Overdraw on the headset.** Two eyes of 2064 × 2208 are 9.1 Mpixels a frame. A blended layer over the whole of both
@@ -923,8 +923,8 @@ eyes reads and writes RGBA16F: about 146 MB a frame, so eight full-screen layers
 1.8 ms at the RX 9070 XT's 640 GB/s before any shading. Per-pixel lighting multiplies the shading on top. Hence the
 size caps, half-resolution emitters and the LOD above, and a budget of about four full-screen layers on average in VR.
 
-**Simulation.** A particle's update reads and writes 64 B plus its side arrays: a million particles move about 128 MB a
-frame, about 0.2 ms of bandwidth on the RX 9070 XT, plus the modules' arithmetic. The sort of 1M keys (4 passes of
+**Simulation.** A particle's update reads and writes 80 B plus its side arrays: a million particles move about 160 MB a
+frame, about 0.25 ms of bandwidth on the RX 9070 XT, plus the modules' arithmetic. The sort of 1M keys (4 passes of
 4 bits on 16-bit keys, 8 on 32-bit) is the next cost; it runs once per pair of eyes, not per eye.
 
 **Standalone Quest 3 (Adreno 740)** is not a target: engine-xr drives PC runtimes, and the engine has no Android build.
@@ -1042,7 +1042,7 @@ emitting particles through events (§2.9).
 **P5. Pool management**
 1. **Order-preserving compaction (count → scan → update and scatter, ping-pong)** (recommended). Pros: dense alive
    ranges (simple draws and dispatches); spawn order kept (ribbons, stable LOD subsets); deterministic order; the
-   update writes each particle once either way. Cons: two buffers (2 × 64 B × capacity); a small scan pass.
+   update writes each particle once either way. Cons: two buffers (2 × 80 B × capacity); a small scan pass.
 2. Dead list plus alive list (AMD, Wicked). Pros: one buffer, particles never move. Cons: alive-list order is
    atomic-order (nondeterministic); ribbons need a sort; free-list maintenance.
 3. Also later: stateless analytic emitters (Niagara lightweight) as a second emitter kind for ambient effects. Pros:
@@ -1479,3 +1479,63 @@ Details the steps settled where sections 2 and 5 left them open.
 - **`ParticleCursor`** reads one CPU emitter's particles in spawn order, positions and velocities in the world; made
   once, refilled by `simulation.particles(effect, emitter, cursor)`. **`ParticleWorld`** (heights and raycasts, with a
   reusable `Hit`) is taken by `CpuSimulation` and unused until collision (step 12).
+
+### Step 4: GPU simulation (engine 0.140.0)
+
+- The particle record is **80 bytes**: §2.3's field list adds up to 80, not the 64 its comment said (fixed above). It
+  lives in `particles/particle.slang` (module `particle`), not `common.slang`: the constants generator names classes by
+  the file's last segment, and `meshlets/common` already makes `CommonConstants`. Its layouts and constants are
+  generated (`ParticleLayout`, `ParticleEmitterLayout`, `ParticleSpawnLayout`, `ParticleConstants`).
+- The emitter table, chunk list, spawn ring and parameter blocks are `FrameBuffer`s rewritten each frame (every live
+  instance's step and transform change every frame), not `RecordBuffer`s. One group per chunk; count and update run
+  over every reserved chunk (idle ones exit at once), not indirectly over live ones. All passes on the graphics queue.
+- Attributes over life multiply the size and color at birth, kept in the emitter's side range (two 16-byte units per
+  particle) only where its program has an over-life module. A newborn already dead at the frame's end takes its slot
+  for that frame, flagged `DEAD`.
+- The pool does not grow; an emitter without room is counted (`Particles.unplaced()`). GPU bounds per instance are
+  atomic min/max of ordered ints. Curves are not baked: 8 curves of 8 keys cost 0.007 ms more than of 2 keys at 1M
+  particles (the reviewer note on E18 does not apply).
+
+### Step 5: `ParticleDraw` (engine 0.141.0)
+
+- A cull pass (each instance's GPU box against the frustum, writing its indirect draw) and a draw pass, one indirect
+  draw per emitter renderer, emitters back to front by their effect's position. One pipeline per renderer kind and
+  color format; facing, soft fade, flipbooks and alpha to add are branches on per-renderer values.
+- The opaque depth is tested in the fragment shader (it samples it for the soft fade too), so particles get no early
+  depth test. View-plane billboards face each eye's plane until the pairs of eyes of step 10; `FREE` faces the
+  position until particles have normals.
+- Renderer settings by name: `texture`, `stretch`, `soft`, `volume`, `flipbook.columns`, `flipbook.rows`,
+  `flipbook.frames`, `flipbook.fps`, `flipbook.blend`. Textures are bindless slots given by `particles.texture(ref,
+  slot)`; without one a renderer draws a round sprite.
+
+### Step 6: CPU emitters on the GPU side (engine 0.142.0)
+
+- CPU emitters take ranges like GPU ones and are listed flagged `EMITTER_CPU`; each frame their particles (as
+  `CpuSimulation` left them, or as the game wrote them through `particles.writer(effect, emitter)`) are written to a
+  per-frame buffer as world offsets from their effect's origin, whatever their space, and copied into their range by a
+  compute pass ("particle upload"). Their box is computed on the CPU.
+
+### Step 7: ribbons, trails and beams (engine 0.143.0)
+
+- Ribbons join an emitter's particles in spawn order with the emitter's position as head; several strands (`ribbons`
+  = k: particle i in strand i % k until step 19 writes ribbon ids) are ordered by a stable counting sort per emitter.
+  Strided LOD (`stride`, `lodDistance`) for one strand. CPU emitters draw ribbons without a head and no trails.
+- Trails keep each particle's last points in its side range, copied with the survivors; emitters with trails are
+  capped at 65,536 particles. Beams go from the emitter to an end given per frame (`particles.beamEnd`; from step 8 a
+  node through `EffectSync.beamEnd`) or up their `length`.
+- Settings: `ribbons`, `stride`, `lodDistance`, `width.tail`, `width.head`, `tile`, `points`, `segments`, `noise`,
+  `width`, `length`, `color.r/g/b/a`.
+
+### Fixes from steps 4 to 7 (scene 0.47.0)
+
+- `CpuSimulation` pulled world-space particles along their effect frame's down; forces act in the world, so gravity
+  pulls world-space particles along world -Y and only local-space ones along world down turned into their frame, as
+  the GPU does.
+- `EffectRuntime.effects()` is public (the engine's `Particles` and `EffectSync` follow the runtime's effects).
+- For step 8: world-space particles inherit `Effect.inheritVelocity` times their effect's velocity over the frame at
+  birth (not burst calls'); `CpuSimulation` rebases the origin of world-space particles once its effect is
+  `REBASE_DISTANCE` (4,096 m) away along an axis; `effects.replace(old, new)` restarts every instance of `old` with
+  `new` keeping ids, nodes, seeds, scales and the parameters both have (`Effects.REPLACED`, `restarts(effect)` for
+  followers; shared burst instances of `old` end).
+- For step 9 (scene-animation): `Animator.node(Joint)`, and `Animators.animator(node)` finds the animator a listener
+  heard of by its first node.
