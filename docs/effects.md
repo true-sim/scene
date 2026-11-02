@@ -588,8 +588,12 @@ threads.
 - **Distortion** (heat haze, shockwaves) draws offsets into a half-resolution buffer and a pass offsets `SCENE_COLOR`
   reads. It comes later; it cannot reuse `SceneBehind` (opaque only, so glass would vanish behind the haze), it reads a
   copy taken after transparency.
-- **Lights from particles** come later: a GPU-written light range in `Lights` (count from the GPU) that
-  `ClusteredLights` bins; today it takes `lights.count()` from the CPU. **Decals** come with a decal system.
+- **Lights from particles** (step 17b): a light module per emitter (every particle, a fraction or the brightest N;
+  radius; intensity times the particle's color and alpha, so a fading spark dims its light) appends point lights to a
+  GPU-written light range in `Lights` (count from the GPU) that `ClusteredLights` bins; today it takes
+  `lights.count()` from the CPU. A budget per emitter and a global one keep the brightest when full. They cast no
+  shadows (a shadowed light on the effect's node serves a torch), and everything the clustered lights reach sees them:
+  both shading techniques, every view, lit particles. **Decals** come with a decal system.
 - **Volumetric look:** six-way smoke now. Voxelizing particles into froxels (Frostbite) when the engine gets volumetric
   fog.
 
@@ -977,7 +981,7 @@ layers), but half-resolution particles and depth history copies would need rethi
   (`g.history`), made only when an emitter collides with depth.
 - **Ray tracing:** the ray-query collision variant reads the frame's top level after its build (`TopLevel`); mesh
   particles stay out of it (above).
-- **`Lights`** (later): a GPU-written light range for particle lights; `ClusteredLights` reads a GPU count instead of
+- **`Lights`** (step 17b): a GPU-written light range for particle lights; `ClusteredLights` reads a GPU count instead of
   `lights.count()`.
 - **Per-instance custom data** (tint, alpha per mesh particle): the "buffers by id" README promises.
 - **`SceneSync`'s interpolation** (D91, when built) and `EffectSync` share the blend factor and previous transforms, so
@@ -1214,11 +1218,12 @@ and are device-free; engine steps depend on the scene release that has their typ
 | 15 | engine | Mesh and skinned emission: static surface, vertices, volume by alias tables over the finest level; the deformed copy of a skinned mesh, ordered after deformation; emission from bones; texture and density masks | Particles uniform over a mesh's area (histogram test); fire on BrainStem's or the Fox's skin as they move |
 | 16 | engine | Mesh particles (E15): `GpuScene` GPU-written range, kept out of ray tracing (mask 0), the early group on the graphics queue before culling, previous transforms per slot, shadows per emitter | Debris rocks casting shadows; `VisibilityBufferShading` and forward draw the same image; occlusion over 3+ frames; the top level unchanged while particles move; the main group still on the async queue |
 | 17 | engine | Lighting per emitter (E14): per-vertex light list and sun shadow; per-pixel normal-mapped; six-way lightmaps; lowered by quality | 1,024 point lights screenshot (`Screenshots.renderLights` style); smoke lit from one side; cost on both shading techniques |
+| 17b | engine | Particle lights: the light module, a GPU-written range in `Lights`, `ClusteredLights` binning a GPU count, budgets per emitter and global (brightest kept), no shadows | Sparks lighting the ground and a rock beside them (screenshot); a burst over the global budget keeps the brightest and stays within it; `ClusteredForwardShading` and `VisibilityBufferShading` draw the same light; no CPU readback |
 | 18 | both | Scalability: effect types enforced, budgets in bytes, LOD transitions (faded fractions, hysteresis, extrapolated reduced rates), half-resolution particles with depth-aware upsample per eye, `effects.quality`; the main group on the async queue measured against the graphics queue; debug views | `ParticleBenchmark` (1M particles: update, sort, draw; an overdraw scene of large smoke sprites) on the RX 9070 XT and at Quest 3 eye size through `StereoBench`; README tables dated |
 | 19 | engine | Emitter state on the GPU (E2) as emitting particles: the emit updater, fixed-point accumulators, child ranges per parent, ribbons per parent | 100,000 sparks each with a trail; counts against `EffectRuntime`'s closed forms for one parent; stop and LOD of the parent reach the children |
 | 20 | engine | Plugin modules: `[ParticleModule]` Slang structs registered like material types (generated records, name ids), a generated kernel variant; `modify(PARTICLES)` techniques; optional Java twins for CPU emitters | A game's own force module in a test project, as `CustomPassTest` does for passes |
 | 21 | engine | Glass order (open question 1): before and split; reactive mask and mesh-particle motion vectors when TAA lands | A fire behind a window tinted by it; sparks in front of it untinted; with TAA, no ghosting behind sparks |
-| later | engine | Distortion, particle lights, decals, neighbour grids and simulation stages, SDF collision and emission, stateless emitters, froxel injection, smoke shadows, variable rate shading for particles | Each with its own design note when the engine has the system it depends on |
+| later | engine | Distortion, decals, neighbour grids and simulation stages, SDF collision and emission, stateless emitters, froxel injection, smoke shadows, variable rate shading for particles | Each with its own design note when the engine has the system it depends on |
 
 Each engine step keeps `docs/pitfalls.md` in mind:
 - per-frame Vulkan calls go through `Commands`;
