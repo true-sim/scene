@@ -303,6 +303,20 @@ class CpuSimulationTest {
     }
 
     @Test
+    void aSpeedBeforeAnyShapeMovesNothing() {
+        EffectData data = cpu(e -> e.spawn(Spawn.burst(0, 3)).init(Init.speed(Bind.constant(2)), Shape.point(),
+            Init.lifetime(10)));
+        long effect = effects.play(data, 0, 0, 0).id();
+        frame(1L);
+        simulation.particles(effect, 0, cursor);
+        while (cursor.next()) {
+            assertThat((double) cursor.vx()).as("no direction yet, whatever the particle before").isZero();
+            assertThat((double) cursor.vy()).isZero();
+            assertThat((double) cursor.vz()).isZero();
+        }
+    }
+
+    @Test
     void replacedEffectsStartTheirParticlesOver() {
         EffectData one = cpu(e -> e.spawn(Spawn.burst(0, 1)).init(Init.lifetime(10)));
         EffectData three = cpu(e -> e.spawn(Spawn.burst(0, 3)).init(Init.lifetime(10)));
