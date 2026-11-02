@@ -166,6 +166,7 @@ version: games drive layers and fades in code; a state machine helper comes late
 | A11 | **Influences**: the four largest per vertex, renormalized; an eight-influence attribute later, where a model needs it. |
 | A12 | **IK**: two-bone, look-at/aim and foot placement first; a FABRIK chain solver with joint limits next, on the same `PoseModifier` hook. |
 | A13 | **Ground probes** for foot placement run in the serial part of `ANIMATE` until collision queries are verified thread-safe, then in the parallel part. |
+| A14 | **`KHR_animation_pointer`** (step 11): generic pointer tracks (`Track.Property.POINTER`, an `AnimationPointer` naming a material's data field, a light's or camera's value, or a node's visibility, with its rest value), blended as curves from their rests and handed to a `PointerSink` while the animator plays. Materials are animated as the asset (glTF's meaning: every instance of the material follows the last animator writing it), not per instance; lights and cameras are the game's (it reads the sink or `Animator.value`); visibility through layers (`NodeVisibility`). |
 
 ## What changes in existing code
 

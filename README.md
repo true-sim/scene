@@ -366,7 +366,8 @@ assets.acquire(rock);
   Extensions: every `KHR_materials_*` as a material feature (clearcoat by the engine's names, the rest by glTF's, so
   the renderer can take them up one by one; emissive strength scales the emissive color; spec-gloss also approximated
   as metallic-roughness), `KHR_texture_transform` per texture, `KHR_lights_punctual` and `KHR_node_visibility` on the
-  model (`ModelData.lights()`, hidden nodes on no layer), `KHR_mesh_quantization`, meshopt-compressed buffers
+  model (`ModelData.lights()`, hidden nodes on no layer), `KHR_animation_pointer` (materials, lights, cameras and node
+  visibility as pointer tracks, see Animation), `KHR_mesh_quantization`, meshopt-compressed buffers
   (`KHR_meshopt_compression` and its draft, through meshoptimizer), WebP images (`EXT_texture_webp`; `ImageImporter`
   reads WebP through the TwelveMonkeys ImageIO plugin). A file requiring another extension fails, as glTF asks. Checked against the Khronos sample models
   (`./gradlew :scene-gltf:test -PgltfSamples=<glTF-Sample-Assets/Models>`): all 270 files import, and the meshopt
@@ -419,6 +420,26 @@ assets.acquire(rock);
   FABRIK chains of any length with cone limits per joint (`r.fabrik(tailRoot, tailTip).limit(joint, 0.3)`, then
   `a.fabrik(tail).target(x, y, z).weight(1)`) solve after two-bone chains; modifiers read and set world rotations and
   local transforms on the `Pose` too.
+
+  Pointer tracks animate what is not a node, as glTF's `KHR_animation_pointer`: a material's value (by its data's
+  field name: `baseColor`, `emissive`, `baseColorTextureOffset`, `clearcoat:strength`), a light's or a camera's, or
+  whether a node shows. They are blended as curves are, from their rest values, and handed to a `PointerSink` as poses
+  are written; `a.value(pointer, component)` reads them. A `NodeVisibility` (scene-render) applies visibility, hiding
+  a node with everything under it on no layer and giving the layers back:
+
+  ```java
+  NodeVisibility visibility = new NodeVisibility(scene);
+  long[] nodes = model.spawn(scene, renderables, root, visibility);   // hidden nodes hidden by it
+  animators.pointerSink(visibility.andThen(renderer).andThen((animator, pointer, values, offset, count) -> {
+      if (pointer.target() == AnimationPointer.Target.LIGHT) lamps.set(animator, pointer, values[offset]);
+  }));
+  ```
+
+  The importer maps glTF pointers at `/materials/N/...` (the metallic-roughness factors, emissive, normal scale, the
+  occlusion strength where it is packed with metallic-roughness, `KHR_materials_*` factors, texture transforms of the
+  textures it reads), `/extensions/KHR_lights_punctual/lights/N/{color,intensity,range,spot/...ConeAngle}`,
+  `/cameras/N/{perspective,orthographic}/...` and `/nodes/N/extensions/KHR_node_visibility/visible`; pointers at a
+  node's translation, rotation, scale or weights are its node tracks. Others are skipped.
 
   Far away or out of sight, `a.updateEvery(4)` updates an animator's pose every fourth update only, animators taking
   turns so the work spreads; its clock adds up the time between, events and root motion arrive on its turns.

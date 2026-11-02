@@ -3,6 +3,7 @@ package com.truesim.scene.gltf;
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.scene.animation.AnimationAssets;
 import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.AnimationPointer;
 import com.truesim.scene.animation.Track;
 import com.truesim.scene.assets.AssetInput;
 import com.truesim.scene.assets.AssetLoader;
@@ -46,8 +47,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * the model's nodes beside their meshes. Skins are read (their joints the model's nodes, a skinned mesh's vertices
  * naming the four joints weighing most, of up to eight, through a palette of the joints it uses), and morph targets
  * (named by the mesh's {@code extras.targetNames}, nodes taking their own weights, else their mesh's). Animations are
- * clips the model names, their tracks finding nodes by the model's index and name (channels of another target, as
- * {@code KHR_animation_pointer}'s, are skipped). Cameras are read, perspective and orthographic. Extensions: every
+ * clips the model names, their tracks finding nodes by the model's index and name; {@code KHR_animation_pointer}'s
+ * channels animate nodes as their own do, and materials, lights, cameras and node visibility through pointer tracks
+ * (what of them is read: {@code GltfPointers}; the rest is skipped). Cameras are read, perspective and orthographic. Extensions: every
  * {@code KHR_materials_*} as a feature of the material (clearcoat by the engine's names, the others by glTF's; emissive
  * strength scales the emissive color; spec-gloss also as a metallic-roughness approximation), {@code
  * KHR_texture_transform} per texture, {@code KHR_lights_punctual} and {@code KHR_node_visibility} on the model,
@@ -206,15 +208,33 @@ public final class Gltf {
         List<Track> tracks = new ArrayList<>();
         for (Map<String, Object> channel : GltfDocument.list(animation, "channels")) {
             Map<String, Object> target = GltfDocument.object(channel, "target");
-            Track.Property property = switch (String.valueOf(target.get("path"))) {
+            String targetPath = String.valueOf(target.get("path"));
+            int node = GltfDocument.integer(target, "node", -1);
+            String pointer = null;
+            String[] parts = null;
+            if (targetPath.equals("pointer")) {
+                Object named = extension(target, "KHR_animation_pointer").get("pointer");
+                parts = GltfPointers.parts(named);
+                if (parts == null) {
+                    continue; // no pointer: nothing it animates
+                }
+                pointer = (String) named;
+                String nodePath = GltfPointers.nodeTarget(parts);
+                if (nodePath != null) { // a node's own: as its channel's path
+                    targetPath = nodePath;
+                    node = Integer.parseInt(parts[1]);
+                    pointer = null;
+                }
+            }
+            Track.Property property = switch (targetPath) {
                 case "translation" -> Track.Property.TRANSLATION;
                 case "rotation" -> Track.Property.ROTATION;
                 case "scale" -> Track.Property.SCALE;
                 case "weights" -> Track.Property.WEIGHTS;
-                default -> null; // another target, as KHR_animation_pointer's
+                case "pointer" -> Track.Property.POINTER;
+                default -> null; // another target, of an extension not read
             };
-            int node = GltfDocument.integer(target, "node", -1);
-            if (property == null || node < 0) {
+            if (property == null || property != Track.Property.POINTER && node < 0) {
                 continue;
             }
             Map<String, Object> sampler = samplers.get(GltfDocument.integer(channel, "sampler", 0));
@@ -228,10 +248,43 @@ public final class Gltf {
             };
             int perKey = interpolation == Track.Interpolation.CUBIC_SPLINE ? 3 : 1;
             int weights = values.length / Math.max(1, perKey * times.length);
+            if (property == Track.Property.POINTER) {
+                AnimationPointer animated = pointer(document, path.file(), pointer, parts, values, perKey, weights,
+                    modelIndex);
+                if (animated != null) {
+                    tracks.add(new Track(animated, interpolation, times, values));
+                }
+                continue;
+            }
             String name = String.valueOf(document.get("nodes", node).getOrDefault("name", ""));
             tracks.add(new Track(name, modelIndex[node], property, interpolation, times, values, weights));
         }
         return new AnimationClip(String.valueOf(animation.getOrDefault("name", "")), tracks);
+    }
+
+    /**
+     * What {@code pointer} animates, its {@code values} ({@code perKey} of {@code components} each per key) scaled in
+     * place as the importer scales what it points at; null where it is not read ({@link GltfPointers}).
+     */
+    private AnimationPointer pointer(GltfDocument document, AssetPath file, String pointer, String[] parts,
+        float[] values, int perKey, int components, int[] modelIndex) {
+        if (components < 1 || components > 4) {
+            return null;
+        }
+        double[] firstKey = new double[components];
+        int offset = perKey == 3 ? components : 0; // a cubic spline's first value after its in-tangent
+        for (int c = 0; c < components; c++) {
+            firstKey[c] = values[offset + c];
+        }
+        double[] scale = new double[1];
+        AnimationPointer animated = GltfPointers.of(document, pointer, parts, firstKey, modelIndex,
+            material -> paths.ref(RenderAssets.MATERIAL, file.fragment("material/" + material)), scale);
+        if (animated != null && scale[0] != 1) {
+            for (int i = 0; i < values.length; i++) {
+                values[i] *= (float) scale[0];
+            }
+        }
+        return animated;
     }
 
     /** Skin {@code skin}, its joints as the model's node indices ({@code modelIndex}). */

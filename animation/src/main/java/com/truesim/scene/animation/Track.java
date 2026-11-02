@@ -6,8 +6,10 @@ import java.util.Objects;
 
 /**
  * One animated property of one node: key times and values, sampled as glTF's animation samplers are. Values per key:
- * 3 for a translation or a scale, 4 for a rotation (a quaternion x, y, z, w), one per morph target for weights; a cubic
- * spline holds three times as many (in-tangent, value, out-tangent). Immutable; sampling allocates nothing.
+ * 3 for a translation or a scale, 4 for a rotation (a quaternion x, y, z, w), one per morph target for weights, its
+ * pointer's components for a pointer track (a material's, a light's or a camera's value, a node's visibility: what
+ * glTF's {@code KHR_animation_pointer} animates); a cubic spline holds three times as many (in-tangent, value,
+ * out-tangent). Immutable; sampling allocates nothing.
  */
 public final class Track {
 
@@ -17,7 +19,9 @@ public final class Track {
         ROTATION(4),
         SCALE(3),
         /** Morph target weights: one value per target. */
-        WEIGHTS(0);
+        WEIGHTS(0),
+        /** What a pointer names ({@link Track#pointer()}): its components. */
+        POINTER(0);
 
         private final int components;
 
@@ -43,6 +47,7 @@ public final class Track {
     private final float[] times;
     private final float[] values;
     private final int components;
+    private final AnimationPointer pointer;
 
     /**
      * A track of node {@code node} (its index in the model it was made for, or -1), called {@code nodeName} (how other
@@ -52,11 +57,31 @@ public final class Track {
     @AllowAllocation("clips are made when they load")
     public Track(String nodeName, int node, Property property, Interpolation interpolation, float[] times,
         float[] values, int weights) {
+        this(nodeName, node, property, null, interpolation, times, values, weights);
+        if (property == Property.POINTER) {
+            throw new IllegalArgumentException("A pointer track is made with its pointer");
+        }
+    }
+
+    /**
+     * A track of {@code pointer}'s value (no node's), by {@code interpolation} through {@code times} (seconds,
+     * ascending) and {@code values}, its components per key.
+     */
+    @AllowAllocation("clips are made when they load")
+    public Track(AnimationPointer pointer, Interpolation interpolation, float[] times, float[] values) {
+        this("", -1, Property.POINTER, Objects.requireNonNull(pointer, "pointer"), interpolation, times, values,
+            pointer.components());
+    }
+
+    @AllowAllocation("clips are made when they load")
+    private Track(String nodeName, int node, Property property, AnimationPointer pointer, Interpolation interpolation,
+        float[] times, float[] values, int weights) {
         this.nodeName = Objects.requireNonNull(nodeName, "nodeName");
         this.node = node;
         this.property = Objects.requireNonNull(property, "property");
+        this.pointer = pointer;
         this.interpolation = Objects.requireNonNull(interpolation, "interpolation");
-        this.components = property == Property.WEIGHTS ? weights : property.components;
+        this.components = property.components == 0 ? weights : property.components;
         if (components < 1) {
             throw new IllegalArgumentException("A weights track animates targets: " + weights);
         }
@@ -90,11 +115,16 @@ public final class Track {
         return property;
     }
 
+    /** What a {@link Property#POINTER} track animates; null for a node's track. */
+    public AnimationPointer pointer() {
+        return pointer;
+    }
+
     public Interpolation interpolation() {
         return interpolation;
     }
 
-    /** Values per sample: 3, 4, or the morph target count. */
+    /** Values per sample: 3, 4, the morph target count, or the pointer's components. */
     public int components() {
         return components;
     }

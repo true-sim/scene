@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 import com.truesim.common.jobs.TaskScheduler;
 import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.animation.AnimationClip;
+import com.truesim.scene.animation.AnimationPointer;
 import com.truesim.scene.animation.Animators;
 import com.truesim.scene.animation.Skeleton;
 import com.truesim.scene.animation.Track;
@@ -18,6 +19,7 @@ import com.truesim.scene.render.ImageImporter;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.render.MaterialData;
 import com.truesim.scene.render.ModelData;
+import com.truesim.scene.render.NodeVisibility;
 import com.truesim.scene.render.RenderAssets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,6 +53,7 @@ class SampleModelsSweep {
         int morphed = 0;
         int clips = 0;
         int tracks = 0;
+        Map<AnimationPointer.Target, Integer> pointers = new java.util.EnumMap<>(AnimationPointer.Target.class);
         for (Path file : files) {
             try (TaskScheduler tasks = new TaskScheduler(); AssetCache cache = new AssetCache(tasks)) {
                 PathAssets paths = new PathAssets(cache);
@@ -111,7 +114,14 @@ class SampleModelsSweep {
                     tracks += clip.tracks().size();
                     Skeleton skeleton = m.skeleton();
                     for (Track track : clip.tracks()) {
-                        if (track.node() < 0 && skeleton.find(track.nodeName()) < 0) {
+                        AnimationPointer pointer = track.pointer();
+                        if (pointer != null) {
+                            pointers.merge(pointer.target(), 1, Integer::sum);
+                            String problem = pointerProblem(m, pointer, cache, tasks, name, failures);
+                            if (problem != null) {
+                                failures.put(name + " pointer " + pointer.path(), problem);
+                            }
+                        } else if (track.node() < 0 && skeleton.find(track.nodeName()) < 0) {
                             failures.put(name + " clip " + clip.name(), "a track of no node: " + track.nodeName());
                         }
                     }
@@ -121,6 +131,19 @@ class SampleModelsSweep {
                         nodes[n] = skeleton.parent(n) < 0 ? scene.create() : scene.create(nodes[skeleton.parent(n)]);
                     }
                     Animators animators = new Animators(scene);
+                    // Pointer values arrive as wide as their pointers, finite; visibility shows and hides nodes
+                    NodeVisibility visibility = new NodeVisibility(scene);
+                    String clipName = name + " clip " + clip.name();
+                    animators.pointerSink(visibility.andThen((animator, pointer, values, offset, count) -> {
+                        for (int c = 0; c < count; c++) {
+                            if (!Double.isFinite(values[offset + c]) && pointer.rest(c) != Double.POSITIVE_INFINITY) {
+                                failures.put(clipName, pointer.path() + " is " + values[offset + c]);
+                            }
+                        }
+                        if (count != pointer.components()) {
+                            failures.put(clipName, pointer.path() + ": " + count + " values");
+                        }
+                    }));
                     animators.add(skeleton, nodes).play(clip).loop(false);
                     try {
                         for (int step = 0; step <= 64; step++) {
@@ -134,10 +157,48 @@ class SampleModelsSweep {
             }
         }
         System.out.println("glTF samples: " + files.size() + " files, " + parts + " parts, " + skinned
-            + " skinned nodes, " + morphed + " morphing nodes, " + clips + " clips of " + tracks + " tracks, "
-            + failures.size() + " failures");
+            + " skinned nodes, " + morphed + " morphing nodes, " + clips + " clips of " + tracks + " tracks, pointer"
+            + " tracks " + pointers + ", " + failures.size() + " failures");
         failures.forEach((what, why) -> System.out.println("  FAIL " + what + ": " + why));
         assertThat(files).isNotEmpty();
+    }
+
+    /**
+     * What is wrong with {@code pointer} of model {@code m}, or null: a light, camera or node it names is the model's;
+     * a material's value is one its data has, or a texture transform of a texture it has, or a feature's it shows.
+     */
+    private static String pointerProblem(ModelData m, AnimationPointer pointer, AssetCache cache, TaskScheduler tasks,
+        String file, TreeMap<String, String> failures) throws InterruptedException {
+        switch (pointer.target()) {
+            case LIGHT:
+                return pointer.index() < m.lights().size() ? null : "no light " + pointer.index();
+            case CAMERA:
+                return pointer.index() < m.cameras().size() ? null : "no camera " + pointer.index();
+            case VISIBILITY:
+                return pointer.index() < m.nodes().size() ? null : "no node " + pointer.index();
+            default:
+                break;
+        }
+        if (!(load(tasks, cache, pointer.asset(), file, failures) instanceof MaterialData material)) {
+            return "its material did not load";
+        }
+        String property = pointer.property();
+        MaterialData.Values values = material.values();
+        int colon = property.indexOf(':');
+        if (colon >= 0) {
+            values = material.feature(property.substring(0, colon));
+            property = property.substring(colon + 1);
+            if (values == null) {
+                return "the material shows no " + pointer.property().substring(0, colon);
+            }
+        }
+        for (String part : List.of("Offset", "Rotation", "Scale")) {
+            if (property.endsWith("Texture" + part)) {
+                String texture = property.substring(0, property.length() - part.length());
+                return values.texture(texture) != null ? null : "the material has no " + texture;
+            }
+        }
+        return values.has(property) ? null : "the material has no " + property;
     }
 
     private static Object load(TaskScheduler tasks, AssetCache cache, AssetRef<?> ref, String file,

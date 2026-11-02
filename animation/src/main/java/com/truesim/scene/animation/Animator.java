@@ -26,6 +26,10 @@ import java.util.Objects;
  * double blink = a.curve(BLINK);
  * }</pre>
  *
+ * <p>Pointer tracks (a material's color, a light's intensity, whether a node shows) are blended as curves are, from
+ * their rest values, and handed to the animators' {@link Animators#pointerSink pointer sink} as poses are written;
+ * {@link #value} reads them.
+ *
  * <p>After the layers, in order: overrides of joints ({@link #override}), two-bone inverse kinematics ({@link #ik}),
  * look-ats ({@link #lookAt}) and the rig's pose modifiers; targets in world coordinates. Joints the game takes over
  * ({@link #release}) are left to it.
@@ -162,6 +166,7 @@ public final class Animator {
         rigVersion = rig.version();
         int scalarCount = rig.scalarCount();
         scalars = Arrays.copyOf(scalars, scalarCount);
+        restPointers(); // the layout may have moved them: at rest until the next update
         belowScalars = new double[scalarCount];
         accScalars = new double[scalarCount];
         sampleScalars = new double[scalarCount];
@@ -173,6 +178,17 @@ public final class Animator {
             }
         }
         scratch = new double[widest];
+    }
+
+    /** Puts every pointer's value at its rest. */
+    private void restPointers() {
+        for (int p = 0; p < rig.pointerCount(); p++) {
+            AnimationPointer pointer = rig.pointer(p);
+            int offset = rig.pointerOffset(p);
+            for (int c = 0; c < pointer.components(); c++) {
+                scalars[offset + c] = pointer.rest(c);
+            }
+        }
     }
 
     public Rig rig() {
@@ -350,6 +366,16 @@ public final class Animator {
     /** How many morph weights the rig's clips set on skeleton node {@code node}: 0 when none. */
     public int weightCount(int node) {
         return rig.weightCount(node);
+    }
+
+    /**
+     * Component {@code component} of {@code pointer}'s value as of the last update, blended as the clips keying it
+     * are; its rest value if none of the rig's clips does. Allocates nothing.
+     */
+    public double value(AnimationPointer pointer, int component) {
+        Objects.checkIndex(component, pointer.components());
+        int slot = rig.pointerSlot(pointer);
+        return slot < 0 ? pointer.rest(component) : scalars[rig.pointerOffset(slot) + component];
     }
 
     /** Morph weight {@code target} of skeleton node {@code node}, as of the last update. */
@@ -667,6 +693,7 @@ public final class Animator {
             }
         }
         Arrays.fill(scalars, 0);
+        restPointers();
         for (Playback playback : layers) {
             if (playback.count > 0 && playback.weight > 0) {
                 playback.sample();
@@ -1676,8 +1703,11 @@ public final class Animator {
         v[2] = z;
     }
 
-    /** Writes the pose to the scene: on the scene's thread, one animator after another. */
-    void write(SceneGraph scene, Animators.MorphSink morphs) {
+    /**
+     * Writes the pose to the scene, morph weights to {@code morphs} and pointers' values to {@code pointers} (each may
+     * be null): on the scene's thread, one animator after another.
+     */
+    void write(SceneGraph scene, Animators.MorphSink morphs, Animators.PointerSink pointers) {
         if (!due) {
             return;
         }
@@ -1697,6 +1727,12 @@ public final class Animator {
             }
             if (rig.weightCount(j) > 0 && morphs != null) {
                 morphs.weights(nodes[j], scalars, rig.weightOffset(j), rig.weightCount(j));
+            }
+        }
+        if (pointers != null) {
+            for (int p = 0; p < rig.pointerCount(); p++) {
+                AnimationPointer pointer = rig.pointer(p);
+                pointers.value(this, pointer, scalars, rig.pointerOffset(p), pointer.components());
             }
         }
     }
