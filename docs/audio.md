@@ -18,7 +18,8 @@ sets (sources in section 8), and a reading of engine `README.md`, `CLAUDE.md`, `
 reviewed at high effort against the code and the cited sources (section 7 lists what the review changed, the risks
 left and the open questions).
 
-Nothing here is built. The decisions are AU1 to AU16. Sections 2 and 3 are written for them; section 5 keeps the
+Steps 1 to 7 of section 6 are built (section 9 says how, and where the code differs); the rest is not. The decisions
+are AU1 to AU16. Sections 2 and 3 are written for them; section 5 keeps the
 options weighed (Q1 to Q16, one per decision) with the reasons, and marks where the decision differs from the first
 recommendation.
 
@@ -41,7 +42,7 @@ recommendation.
 | AU13 | **Occlusion chosen per sound:** none; game rays through an `AudioWorld` interface (physics, or the engine's ray tracing structures); propagation later. | Differs: per sound, and the ray tracing structures as a second implementation; Steam Audio's simulation dropped with AU6. |
 | AU14 | **Sample rate: the device's native rate.** | As recommended. A device whose rate changes is handled in §2.17. |
 | AU15 | **Audio thread waits by polling SDL's queue with about a 1 ms park.** | As recommended. See the reviewer note: Windows timer resolution. |
-| AU16 | **Bindings in engine-app's `Audio` plugin as `AudioBindings`**, next to `EffectBindings`. | As recommended. `EffectBindings` is itself still a plan (effects step 9); `AudioBindings` does not need it. |
+| AU16 | **Bindings in engine-app's `Audio` plugin as `AudioBindings`**, next to `EffectBindings`. | As recommended. `EffectBindings` exists now, in engine-scene; the `Audio` plugin lives in engine-audio (§9, step 6). |
 
 **Reviewer notes on decisions** (for the user to reconsider; the design follows the decisions as they stand):
 
@@ -1597,6 +1598,185 @@ table.
 The reviewer's refinements are adopted with the decisions they refine: the high-resolution waitable timer for AU15's
 polling, a `Spatializer` interface keeping Steam Audio as a documented fallback for AU6, reduced mixes for rendering
 listeners (AU12), and block-size changes applied at an output restart with goldens pinned to 256 frames (AU4).
+
+---
+
+## 9. As built
+
+Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the code differs from the text above
+(marked **deviation**). Built on local branches `audio` of common-math, scene and engine; not released yet.
+
+### Step 1: the hashed random moves (common-math, scene)
+
+- `com.truesim.common.math.random.Hash` (`pcg`, `combine`, `unit`, `random`) in common-math, with the effects' vectors
+  CSV copied unchanged into its tests (26 vectors pass). scene-effects' `Hash` keeps its name and delegates, so its
+  simulator, the Slang kernel's vectors and the engine's particle tests are untouched.
+
+### Step 2: `scene-audio` data (scene)
+
+- **Clips:** `AudioClip` holds 16-bit or float PCM in a shared arena (closed by the cache's default `unload`), loop
+  points, markers and the loudness fields (NaN and gain 1 until step 9 measures them). `streamed()` is always false:
+  streaming is step 8. `WavReader` reads RIFF WAVE: PCM 8 (as 16-bit), 16, 24 and 32 bits, float 32 and 64, plain or
+  `WAVE_FORMAT_EXTENSIBLE`, 1 to 8 channels, the first `smpl` loop (end inclusive in the file), `cue` points named by
+  `LIST adtl labl` (`cue<id>` without), odd chunks with their pad byte, and a `data` chunk whose size was never
+  patched. `WavImporter.INSTANCE` registers for `.wav`; the `AudioImporters` of `scene-audio-codecs` come with step 8.
+- **Sounds:** the nodes are records (`Play`, `Random`, `Sequence`, `Switch`, `Layer`, `Blend`, `Segments`, `Scatter`,
+  `Patch`) sharing a `Shaping` (random volume and pitch, delay, volume and pitch curves by parameter). `Sequence`
+  concatenates (each child starts as the one before ends). `Random`'s component is `shuffled` (a record accessor named
+  `shuffle` would clash with the builder method: pitfalls, Java). `Sound` resolves its defaults where the decisions
+  say so: time scaling none and Doppler 0 for 2D sounds and the UI, voice and music buses, else pitch and 1
+  (decision 4). Release fade 50 ms, max start delay 100 ms.
+- **Deviation:** effect records are `AudioEffect.named(name).set(field, value)`, not `Effect`, which would clash with
+  scene-effects' handle in a game importing both; the factories of §3 (`Eq`, `Compressor`, `Reverb`, `Distortion`)
+  come with their DSP in step 9. `AudioEffectTypes.builtIn()` names the built-in nodes and their fields for
+  validation ("did you mean"); plugins add theirs.
+- **Attenuation:** `Curve.INVERSE` is min / d rolled off to reach 0 at the maximum (so culling there is silent), and
+  `Curve.LINEAR`; a points curve is gain by metres. The low-pass interpolates in octaves from near to far; the spread
+  is the part of the field a source of the given radius fills (`spread(radius, least)`); the cone is data only (the
+  renderer needs the emitter's orientation, step 16's occlusion work or later).
+- **Buses:** `Bus` is a record by name, parent and aux flag, so a game's `Bus.of("sfx")` is `Bus.SFX`; the standard
+  master, sfx, music, voice, ui and ambience buses are constants and `BusLayout.DEFAULT`. A layout orders its buses
+  feeders first, the master last, and reports send loops, unknown targets and effects. `Snapshot` targets are
+  `Bus.VOLUME`, `Bus.LOW_PASS` and `Bus.HIGH_PASS`, checked against a layout with `check`.
+
+### Step 3: the stores (scene)
+
+- **`Sounds`** follows `Effects` as built: slots and generations, `play` (a `SoundInstance`) and `fire` (an id), the
+  scene's clock and owner check, ticks in microseconds, flags `ADDED`, `STOPPED`, `REMOVED`, `PARAMETERS` (also volume
+  and pitch), `TIME`, `MOVED`, `SEED`, `SWITCHES`, `INPUT`, and `changesSince` returning false after an overflow.
+- **Plans:** each instance's voices are planned from its seed once, at the first `advance` or read after it was
+  played, in the order played, so switches set right after `play` count; later switch changes do not re-plan. Each
+  sound is flattened once per store (its nodes numbered in walk order, each draw salted by its node), and `Random`
+  keeps its no-repeat window and shuffle round per store. Planning allocates nothing after a sound's first play.
+- **Ending:** the store ends an instance when the engine reports its voices ended (`ended`), when killed, after a stop
+  fade (without an outro), or at its max duration; it does not know clip lengths, so one-shots end by the engine's
+  report (a server's store keeps them until killed). The max start delay is the sync's (step 6), through `drop`.
+- **Concurrency at start:** a group at its cap kills the instance its rule picks (the engine fades it over 10 ms), or
+  with `REJECT_NEW` (and within a retrigger time) the play is rejected: `fire` returns 0 and the handle is inert.
+  `QUIETEST` and `FARTHEST` measure from the nearest device listener.
+- **Listeners:** `Listeners` (device and rendering, ids with generations) and the listener graph, rebuilt each
+  `advance`: an edge M → L for each sound playing M's mix within L's reach and on a bus L hears; a depth-first search
+  marks edges closing cycles as delayed and the reverse finishing order is the rendering order; edges past a chain of
+  4 are cut. `ReverbZones`: boxes (oriented by their node) and spheres with a fade distance, `weight` and
+  `strongest`. `Sounds.ui()` has no scene and refuses places, pause and time scale.
+- **Deviation:** instances on nodes have no offset (effects have one): place a child node instead.
+
+### Step 4: music (scene)
+
+- `Music` writes frame-stamped commands (`START` from an offset, `STOP` with a fade, `GAIN` with a ramp, `PAUSE`,
+  `RESUME`, `STINGER` with its duck) for the music renderer of step 11; nothing plays them yet. Bars, beats, markers and
+  transitions reach listeners at heard time from the clock, on the game thread.
+- A segment has one tempo (a score's, or its own); positions are bars and beats from its clip's start, so an entry at
+  `Bar.of(1, 3)` leaves two beats of pickup. The first segment starts with its pickup from the schedule point; a
+  destination's pickup plays before the sync point when there is room, else it starts late into the clip.
+- `state()` reports the requested state once its transition is scheduled. The transition without a rule is on the
+  next bar with a one-beat cross-fade at the entry. Priming covers the destination's first segment and the transition
+  segment, not every reachable state. `END` needs the clip's length from `MusicClips` (the exit cue while unknown).
+- After a gap longer than whole segments (a hitch, a test's jump), segments that would be over are skipped, keeping
+  time; segments shorter than the half-second look-ahead are scheduled several an update.
+- A pause shifts the timeline after it by its length; the renderer has to do the same with what it holds (step 11).
+
+### Step 5: the offline renderer (engine)
+
+- `AudioRenderer` takes commands through `commands()` (a single-producer ring of 32,768 fixed records: opcode, slot,
+  frame, tag, eight doubles, two references) and returns events (`ENDED`) through `poll`; `render(out, offset,
+  frames)` takes any length (whole blocks are rendered, the rest kept). Voices are slots the producer picks first fit.
+- Voices: Catmull-Rom cubic Hermite resampling at clip rate / output rate × pitch, gain ramps of 64 samples at least,
+  an envelope for stops, kills (10 ms), pauses (10 ms) and starts from an offset (20 ms), equal-power pan (a balance
+  for stereo clips in 2D), loops across the clip's loop region.
+- The bus graph has volume, mute, sends (pre or post) and parents, ramped per block; effect chains and ducks are step
+  9. A voice on a bus the layout lacks plays into the master. A layout swaps at a block boundary.
+- **Deviation:** the limiter is a sample-peak look-ahead limiter (1.5 ms, −1 dBFS, the gain falling at most 1/72 a
+  sample so it has reached the need when the peak comes out), not true-peak: inter-sample overs of up to about 0.7 dB
+  stay inside the margin. Its delay is compensated: a voice stamped at output frame F starts 72 mix frames early, so
+  it is heard at sample F.
+- `RenderClock` publishes frames rendered, the time and the queue under a seqlock; the schedule point is rendered
+  plus the scheduling latency. `Fft` is a radix-2 complex transform with a real transform through it (the split
+  trick); it matches a double DFT to 1e-4 √N for N = 4 to 2,048.
+- Goldens (`golden_click`, `golden_pitched_loop`, `golden_two_buses`: float WAVs of 9,984 frames at 256-frame blocks)
+  compare bit for bit; `-Ptruesim.audio.goldens=write` regenerates them.
+
+### Step 6: the device, the sync and the plugin (engine, platform, app)
+
+- **Deviation:** the `Audio` plugin lives in engine-audio (as `EffectsPlugin` lives in engine-scene), since
+  engine-app depends on nothing of the scene or SDL. It needs `audio.assets(cache)` before `ui()` and `sounds(scene)`,
+  and advances its stores by the frame's delta before syncing them (as `EffectsPlugin` does). `music()` comes with its
+  renderer (step 11), `bindings()` with step 14. Device listeners are the game's to add (no API gives players' views
+  yet, D131).
+- `Platform.startAudio(driver)` starts SDL's audio on the platform's thread (hints: driver, stream role "Game");
+  `PlatformListener` has `audioDeviceAdded`, `audioDeviceRemoved` and `audioDeviceFormatChanged`, forwarded by
+  `Desktop`. Without a desktop, `SdlOutput.startSdlAudio` starts it on the caller's thread.
+- `SdlOutput` opens the device in its own format (float32), asks `SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES` for a block,
+  calls `SDL_PutAudioStreamData` and `SDL_GetAudioStreamQueued` through kept downcall handles, renders 200 blocks
+  before resuming the device, prefills the queue to its low mark before resuming (else the device's first pulls play
+  silence), registers MMCSS "Pro Audio" and sleeps on a high-resolution waitable timer on Windows.
+- **Deviation:** the queue's low mark is at least the device's buffer plus a block. SDL's device thread takes a
+  whole device buffer from the stream at once: 1,024 frames on the dummy driver and on this machine's WASAPI device,
+  which ignored the sample-frames hint. With the design's 2 blocks (512 frames) the guard raised the mark to 5 blocks
+  within 0.1 s on the dummy driver; with the floor it stays at 2 with no underrun.
+- **Deviation:** the scheduling latency is the limiter's look-ahead plus 4 blocks (22.8 ms at the defaults), not the
+  queue's high mark: frames rendered are already the queue ahead of the ear, so adding it counted it twice.
+- An underrun is counted when the queue is empty and more time passed since the last push than that push and the
+  device's buffer covered (an empty queue alone happens whenever the device takes a buffer the size of the queue).
+  Two within a minute, or an oversleep 99.9th percentile over half a block, raise the low mark a block (to 6).
+- A chosen device going away reopens the default device in the renderer's format (SDL converts if it differs). A
+  format change is logged; restarting at the new rate (decision 6) is not built.
+- `AudioSync` follows each store's log (rebuilding after an overflow), acquires an instance's clips, starts its voices
+  when they are loaded (a sequence's next voice from the one before's start and length), drops and counts instances
+  whose clips miss their max start delay, sends gains, pitches (with the time scale), pauses and stops (an outro
+  starts as the loop fades over 30 ms; `Release` kinds other than that are step 8), frees slots on `ENDED` and ends
+  instances whose voices all ended or failed to load. Inputs, patches and scatters are skipped (their steps).
+- The collector check sets the low mark to 4 blocks without ZGC; the demo's `run` task uses `-XX:+UseZGC`.
+- Settings group "audio": the five player volumes, `audio.device` and `audio.background` (`LOWER` is −12 dB) at the
+  basic tier; `audio.block`, `audio.queue` (0 automatic), `audio.voices` and `audio.driver` hidden.
+- Demo: `KnockingRocks` drops six rocks ahead of the camera; each landing faster than 1 m/s fires a knock made in code
+  (a thump, a body and a click from hashed noise) at the landing place, louder for harder landings, heard from the
+  camera. A 12 s run on this machine: 54 knocks, 0 underruns.
+
+### Step 7: 3D (engine)
+
+- `AudioSync` picks each placed instance's nearest device listener (keeping its own unless another is 10 % nearer),
+  computes the listener-relative position in doubles and the Doppler ratio from the change of distance over the
+  frame (c / (c + radial speed), clamped to [0.5, 2], scaled by the sound's amount; none after a jump over 50 m or a
+  change of listener), and sends them with the attenuation each frame.
+- **Deviation:** positions go as `SPATIAL` commands each frame, not through a triple-buffered snapshot interpolated
+  over the frame; the renderer ramps gain and pan over a block (50 ms after a change of listener) and the Doppler
+  ratio over 50 ms. Placed voices are mixed to mono, attenuated, low-passed by a one-pole filter at the attenuation's
+  cutoff, and panned: equal power by the sine of the azimuth in stereo (front and back alike: the high shelf behind
+  is not built), pairwise VBAP on the ring of quad, 5.1 and 7.1 (LFE left out), with the spread blending towards an
+  even spread.
+- Every 4 blocks the renderer chooses the real voices: audibility is the target gain, envelope target, attenuation and
+  bus gain times the priority's weight (1/16 to 16); below −60 dB virtual, back above −57 dB; the most audible within
+  the budget (`commands().budget(n)`, 64 by default; a quickselect, no allocation), the highest priority always but
+  counted in the budget. Going virtual fades over 10 ms, then the voice keeps time (a loop wraps) or ends (`KILL`,
+  and `KILL_IF_FINITE` for one-shots); a stopping voice going virtual ends at once; coming back fades in over 20 ms
+  where it would be. Paused voices go virtual and hold.
+- The renderer's slots are the logical voices (1,024 by default); the 512 logical per world of AU7 is not enforced
+  per store.
+
+### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
+
+- **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
+  cubic resampling, panned, two buses: median 170 us, p99 210 us, max 269 us (3.2 % of the 5,333 us block). 1,000
+  placed loops with attenuation, low-pass and spread, 64 of them real: median 210 us, p99 350 us, max 450 us.
+- **Allocation:** `assertAllocationFree` passes for `AudioRenderer.render` with 64 voices, `AudioSync.update` with 20
+  placed loops (with the render), `Sounds.fire` and `advance`, `Music.update` and `Fft.forward`. The demo allocates
+  nothing new per frame for its knocks after the clip loaded (not measured with JFR).
+- **Latency:** the device's buffer is 1,024 frames (21.3 ms; the sample-frames hint was ignored), so the low mark is
+  1,280 frames (26.7 ms); the schedule point is 1,096 frames (22.8 ms) ahead of the rendered frame, and a rendered
+  frame is heard at most 2,560 frames (53.3 ms) later: a command reaches the ear in at most about 76 ms, most of it the
+  device's buffer.
+- **Underruns:** 0 in 600 s under G1 (112,487 blocks; the low mark forced to 2 blocks), 0 in 30 s under ZGC with a
+  thread allocating 4 KiB arrays as fast as it can, 0 in 60 s with the probe's only window minimised. The
+  high-resolution timer and MMCSS registration both took.
+- **Oversleep** (how much later than asked the thread woke, 99.9th percentile, 50 us steps): 750 us in the 600 s run,
+  850 us under garbage, 800 us minimised: the waitable timer keeps its resolution with the window minimised, where
+  `parkNanos` would ride the 15.6 ms system timer (that alternative was not measured).
+- **Not measured** (needs a person): unplugging headphones while playing (the default device is followed by SDL, the
+  chosen-device reopen is tested only as code), listening to the renders beyond the files below, and the demo's
+  sound in VR.
+- **Renders to listen to** (`ListeningProofs`, `-Ptruesim.audio.proofs=<dir>`): knocking rocks, a car passing at
+  30 m/s with Doppler and panning, 400 loops for 64 voices as the listener walks through them.
 
 ---
 

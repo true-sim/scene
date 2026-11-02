@@ -671,7 +671,7 @@ dependencies {
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
     implementation("com.truesim.scene:scene-animation:0.42.0") // clips, rigs and animators (from 0.35.0)
     implementation("com.truesim.scene:scene-effects:0.46.0")   // effects as data, runtime, CPU particles (from 0.44.0)
-    implementation("com.truesim.scene:scene-audio:0.47.0")     // sounds as data, the sounds of a world, music (from 0.47.0)
+    implementation("com.truesim.scene:scene-audio:0.58.0")     // sounds as data, the sounds of a world, music (from 0.58.0)
 }
 ```
 
