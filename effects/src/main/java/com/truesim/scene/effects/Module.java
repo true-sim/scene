@@ -1,6 +1,7 @@
 package com.truesim.scene.effects;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.scene.assets.AssetRef;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -16,8 +17,8 @@ import java.util.Objects;
  * }</pre>
  *
  * @param type its module type's name
- * @param values its fields' values by name: {@link Binding}s, {@link ColorBinding}s, {@link FloatCurve}s and
- *     {@link ColorGradient}s
+ * @param values its fields' values by name: {@link Binding}s, {@link ColorBinding}s, {@link FloatCurve}s,
+ *     {@link ColorGradient}s and {@link AssetRef}s
  */
 public record Module(String type, Map<String, Object> values) {
 
@@ -55,6 +56,11 @@ public record Module(String type, Map<String, Object> values) {
 
     /** This module with gradient field {@code field}. */
     public Module with(String field, ColorGradient value) {
+        return put(field, value);
+    }
+
+    /** This module with asset field {@code field}: a texture, a mesh. */
+    public Module with(String field, AssetRef<?> value) {
         return put(field, value);
     }
 

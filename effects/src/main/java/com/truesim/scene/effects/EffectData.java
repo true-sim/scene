@@ -402,6 +402,11 @@ public final class EffectData {
                 if (type.capability().compareTo(needed) > 0) {
                     needed = type.capability();
                 }
+                for (ModuleType.Field field : type.fields().values()) {
+                    if (field.kind() == ModuleType.Kind.ASSET && module.value(field.name()) == null) {
+                        problems.add(e.name + ": " + module.type() + " needs its " + field.name() + ".");
+                    }
+                }
                 for (Map.Entry<String, Object> value : module.values().entrySet()) {
                     ModuleType.Field field = type.fields().get(value.getKey());
                     String where = e.name + ": " + module.type() + "." + value.getKey();

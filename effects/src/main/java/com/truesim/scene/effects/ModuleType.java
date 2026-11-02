@@ -1,6 +1,7 @@
 package com.truesim.scene.effects;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.scene.assets.AssetRef;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -44,7 +45,9 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
         /** A {@link FloatCurve}. */
         CURVE,
         /** A {@link ColorGradient}. */
-        GRADIENT;
+        GRADIENT,
+        /** An {@link AssetRef}: a texture (a vector field's), a mesh. */
+        ASSET;
 
         /** The kind of {@code value}. */
         static Kind of(Object value) {
@@ -52,6 +55,7 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
                 case Binding b -> BINDING;
                 case ColorBinding c -> COLOR;
                 case FloatCurve c -> CURVE;
+                case AssetRef<?> a -> ASSET;
                 default -> GRADIENT;
             };
         }
@@ -134,6 +138,11 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
         /** A gradient field. */
         public Builder field(String field, ColorGradient fallback) {
             return add(field, Kind.GRADIENT, fallback);
+        }
+
+        /** An asset field: modules must give it ({@code fallback} stands for none, e.g. {@link Forces#NO_FIELD}). */
+        public Builder field(String field, AssetRef<?> fallback) {
+            return add(field, Kind.ASSET, fallback);
         }
 
         private Builder add(String field, Kind kind, Object fallback) {

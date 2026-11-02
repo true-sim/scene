@@ -30,9 +30,12 @@ import java.util.Objects;
  * offsets from their effect's origin, its position when it started, moved to where the effect is once it is
  * {@value #REBASE_DISTANCE} m away (rebasing); they are born with the effect's {@link Effect#inheritVelocity inherited}
  * share of its velocity over the frame. Local-space ones live in the emitter's frame and move with it. Forces act in
- * the world: gravity pulls along world down, which local-space particles take turned into their frame. Random values are {@link Hash#random} of the particle's seed and a salt: 16 per module, by its place
- * in its list ({@value #UPDATE_SALTS} on for updaters), its fields first in alphabetical order, then its own
- * draws from 8 on.
+ * the world: gravity pulls along world down and wind blows along the world's wind, which local-space particles take
+ * turned into their frame. Forces that depend on where a particle is (curl noise, vortices, attractors) are taken as
+ * constant over a step, from where it was at its start; orbits turn it about their axis exactly; the speed limit comes
+ * last ({@link Forces}). Random values are {@link Hash#random} of the particle's seed and a salt: 16 per module, by its
+ * place in its list ({@value #UPDATE_SALTS} on for updaters), its fields first in alphabetical order, then its own
+ * draws from 8 on; noise (curl, gusts) takes {@code Hash.combine(emitter seed, salt + 8)} as its seed.
  */
 public final class CpuSimulation {
 
@@ -61,7 +64,18 @@ public final class CpuSimulation {
     private static final int DRAG = 11;
     private static final int OVER_SIZE = 12;
     private static final int OVER_COLOR = 13;
+    private static final int WIND = 14;
+    private static final int CURL = 15;
+    private static final int VORTEX = 16;
+    private static final int POINT_FORCE = 17;
+    private static final int LINE = 18;
+    private static final int ORBIT = 19;
+    private static final int SPEED_LIMIT = 20;
     private static final float TAU = (float) Maths.TAU;
+    /** How fast gusts of wind change: noise cells per second. */
+    static final float GUST_RATE = 0.5f;
+    /** Below this, a distance or a length is none: no direction to push along. */
+    private static final double TINY = 1e-6;
 
     private final EffectRuntime runtime;
     private final Effects effects;
@@ -200,6 +214,7 @@ public final class CpuSimulation {
         float dt = (float) Math.min(MAX_STEP, frame);
         float[] parameters = effects.parametersAt(slot);
         s.frame(effects, slot);
+        s.seconds = (float) (now * 1e-6);
         rebase(s);
         int seed = effects.seedAt(slot);
         SpawnRecords records = runtime.spawns();
@@ -209,10 +224,11 @@ public final class CpuSimulation {
                 continue;
             }
             Program program = s.programs[e];
-            survive(s, p, program, parameters, dt);
+            int emitterSeed = EffectRuntime.emitterSeed(seed, e);
+            survive(s, p, program, parameters, dt, emitterSeed);
             for (int r = recordFrom[slot]; r < recordTo[slot]; r++) {
                 if (records.emitter(r) == e) {
-                    spawn(s, p, program, parameters, records, r, EffectRuntime.emitterSeed(seed, e), frame);
+                    spawn(s, p, program, parameters, records, r, emitterSeed, frame);
                 }
             }
         }
@@ -251,7 +267,8 @@ public final class CpuSimulation {
     }
 
     /** Ages and moves the particles by {@code dt}; the dead leave, the others keep their order (the survivor copy). */
-    private static void survive(Slot s, Particles p, Program program, float[] parameters, float dt) {
+    private static void survive(Slot s, Particles p, Program program, float[] parameters, float dt,
+            int emitterSeed) {
         int kept = 0;
         for (int i = 0; i < p.count; i++) {
             if (p.age[i] + dt >= p.lifetime[i]) {
@@ -260,7 +277,7 @@ public final class CpuSimulation {
             if (kept != i) {
                 p.move(i, kept);
             }
-            step(s, p, kept, program, parameters, dt);
+            step(s, p, kept, program, parameters, dt, emitterSeed);
             kept++;
         }
         p.count = kept;
@@ -288,7 +305,7 @@ public final class CpuSimulation {
                 continue; // dead before the end of the frame
             }
             place(s, p, i, records, r, age, frame, program.local);
-            step(s, p, i, program, parameters, age);
+            step(s, p, i, program, parameters, age, emitterSeed);
             p.count++;
         }
     }
@@ -395,24 +412,108 @@ public final class CpuSimulation {
         }
     }
 
-    /** Moves particle {@code i} on by {@code h} seconds under the updaters, then applies those over its life. */
-    private static void step(Slot s, Particles p, int i, Program program, float[] parameters, float h) {
+    /**
+     * Moves particle {@code i} on by {@code h} seconds under the updaters (forces, then orbits and limits), then
+     * applies those over its life. Fields are read by their index in alphabetical order of their names.
+     */
+    private static void step(Slot s, Particles p, int i, Program program, float[] parameters, float h,
+            int emitterSeed) {
         double ax = 0;
         double ay = 0;
         double az = 0;
         double k = 0;
+        boolean local = program.local;
+        boolean kill = false;
+        int seed = p.seed[i];
+        // Where the emitter is in its particles' space: its frame's origin, or its offset from theirs
+        double cx = local ? 0 : s.x - s.ox;
+        double cy = local ? 0 : s.y - s.oy;
+        double cz = local ? 0 : s.z - s.oz;
+        double x = p.px[i];
+        double y = p.py[i];
+        double z = p.pz[i];
         for (Op op : program.update) {
-            if (op.code == GRAVITY) {
-                double g = Forces.G * value(op, 0, parameters, p.seed[i], p, i);
-                if (program.local) { // world down, turned into the emitter's frame
-                    ax += s.downX * g;
-                    ay += s.downY * g;
-                    az += s.downZ * g;
-                } else {
-                    ay -= g; // forces act in the world
+            switch (op.code) {
+                case GRAVITY -> {
+                    double g = Forces.G * value(op, 0, parameters, seed, p, i);
+                    if (local) { // world down, turned into the emitter's frame
+                        ax += s.downX * g;
+                        ay += s.downY * g;
+                        az += s.downZ * g;
+                    } else {
+                        ay -= g; // forces act in the world
+                    }
                 }
-            } else if (op.code == DRAG) {
-                k += value(op, 0, parameters, p.seed[i], p, i);
+                case DRAG -> k += value(op, 0, parameters, seed, p, i);
+                case WIND -> { // coupling, gusts, scale: a drag towards the wind, exact
+                    double coupling = value(op, 0, parameters, seed, p, i);
+                    CurlNoise.noise(s.seconds * GUST_RATE, 0, 0, Hash.combine(emitterSeed, op.salt + 8), s.noise);
+                    double pull = coupling * value(op, 2, parameters, seed, p, i)
+                        * (1 + value(op, 1, parameters, seed, p, i) * s.noise[0]);
+                    k += coupling;
+                    ax += pull * (local ? s.windX : s.windWorldX);
+                    ay += pull * (local ? s.windY : s.windWorldY);
+                    az += pull * (local ? s.windZ : s.windWorldZ);
+                }
+                case CURL -> { // frequency, octaves, speed, strength
+                    int octaves = Math.max(1, Math.min(4, Math.round(value(op, 1, parameters, seed, p, i))));
+                    CurlNoise.curl((float) x, (float) y, (float) z, value(op, 0, parameters, seed, p, i),
+                        s.seconds * value(op, 2, parameters, seed, p, i), octaves,
+                        Hash.combine(emitterSeed, op.salt + 8), s.noise, s.curl);
+                    double strength = value(op, 3, parameters, seed, p, i);
+                    ax += strength * s.curl[0];
+                    ay += strength * s.curl[1];
+                    az += strength * s.curl[2];
+                }
+                case VORTEX -> { // axis x, y, z, pull, strength
+                    s.axis(value(op, 0, parameters, seed, p, i), value(op, 1, parameters, seed, p, i),
+                        value(op, 2, parameters, seed, p, i), local);
+                    s.across(x - cx, y - cy, z - cz);
+                    double r = Maths.sqrt(s.rx * s.rx + s.ry * s.ry + s.rz * s.rz);
+                    if (r > TINY) {
+                        double around = value(op, 4, parameters, seed, p, i) / r;
+                        double in = -value(op, 3, parameters, seed, p, i) / r;
+                        ax += around * (s.uy * s.rz - s.uz * s.ry) + in * s.rx;
+                        ay += around * (s.uz * s.rx - s.ux * s.rz) + in * s.ry;
+                        az += around * (s.ux * s.ry - s.uy * s.rx) + in * s.rz;
+                    }
+                }
+                case POINT_FORCE -> { // kill radius, radius, strength, x, y, z
+                    s.axis(value(op, 3, parameters, seed, p, i), value(op, 4, parameters, seed, p, i),
+                        value(op, 5, parameters, seed, p, i), local, false);
+                    double dx = cx + s.ux - x;
+                    double dy = cy + s.uy - y;
+                    double dz = cz + s.uz - z;
+                    double d = Maths.sqrt(dx * dx + dy * dy + dz * dz);
+                    kill |= d < value(op, 0, parameters, seed, p, i);
+                    double pull = value(op, 2, parameters, seed, p, i) * falloff(d, value(op, 1, parameters, seed,
+                        p, i));
+                    if (d > TINY) {
+                        ax += pull * dx / d;
+                        ay += pull * dy / d;
+                        az += pull * dz / d;
+                    }
+                }
+                case LINE -> { // axis x, y, z, radius, strength, x, y, z
+                    s.axis(value(op, 5, parameters, seed, p, i), value(op, 6, parameters, seed, p, i),
+                        value(op, 7, parameters, seed, p, i), local, false);
+                    double ox = x - cx - s.ux;
+                    double oy = y - cy - s.uy;
+                    double oz = z - cz - s.uz;
+                    s.axis(value(op, 0, parameters, seed, p, i), value(op, 1, parameters, seed, p, i),
+                        value(op, 2, parameters, seed, p, i), local);
+                    s.across(ox, oy, oz);
+                    double d = Maths.sqrt(s.rx * s.rx + s.ry * s.ry + s.rz * s.rz);
+                    if (d > TINY) {
+                        double pull = -value(op, 4, parameters, seed, p, i)
+                            * falloff(d, value(op, 3, parameters, seed, p, i)) / d;
+                        ax += pull * s.rx;
+                        ay += pull * s.ry;
+                        az += pull * s.rz;
+                    }
+                }
+                default -> { // over life, orbits and limits: below
+                }
             }
         }
         double vx = p.vx[i];
@@ -439,9 +540,43 @@ public final class CpuSimulation {
             p.vz[i] = (float) (tz + (vz - tz) * decay);
         }
         p.age[i] += h;
+        for (Op op : program.update) {
+            if (op.code == ORBIT) { // axis x, y, z, speed: a turn about the axis, exact
+                s.axis(value(op, 0, parameters, seed, p, i), value(op, 1, parameters, seed, p, i),
+                    value(op, 2, parameters, seed, p, i), local);
+                double angle = value(op, 3, parameters, seed, p, i) * h;
+                double cos = Maths.cos(angle);
+                double sin = Maths.sin(angle);
+                s.turnAbout(p.px[i] - cx, p.py[i] - cy, p.pz[i] - cz, cos, sin);
+                p.px[i] = (float) (cx + s.rx);
+                p.py[i] = (float) (cy + s.ry);
+                p.pz[i] = (float) (cz + s.rz);
+                s.turnAbout(p.vx[i], p.vy[i], p.vz[i], cos, sin);
+                p.vx[i] = (float) s.rx;
+                p.vy[i] = (float) s.ry;
+                p.vz[i] = (float) s.rz;
+            } else if (op.code == SPEED_LIMIT) {
+                double limit = value(op, 0, parameters, seed, p, i);
+                double speed = Maths.sqrt(p.vx[i] * p.vx[i] + p.vy[i] * p.vy[i] + p.vz[i] * p.vz[i]);
+                if (speed > limit) {
+                    double scale = Math.max(0, limit) / speed;
+                    p.vx[i] = (float) (p.vx[i] * scale);
+                    p.vy[i] = (float) (p.vy[i] * scale);
+                    p.vz[i] = (float) (p.vz[i] * scale);
+                }
+            }
+        }
+        if (kill) {
+            p.lifetime[i] = p.age[i]; // within an attractor's kill radius: dead from now, gone at the next step
+        }
         if (program.overSize || program.overColor) {
             over(s, p, i, program, parameters);
         }
+    }
+
+    /** How much of an attractor's strength reaches {@code distance}: falling to 0 at {@code radius} (0: all of it). */
+    private static double falloff(double distance, double radius) {
+        return radius > 0 ? Math.max(0, 1 - distance / radius) : 1;
     }
 
     /** Sizes and colors at birth times the curves and gradients over the particle's normalized age. */
@@ -628,6 +763,13 @@ public final class CpuSimulation {
                     case Forces.DRAG -> DRAG;
                     case Over.SIZE -> OVER_SIZE;
                     case Over.COLOR -> OVER_COLOR;
+                    case Forces.WIND -> WIND;
+                    case Forces.CURL -> CURL;
+                    case Forces.VORTEX -> VORTEX;
+                    case Forces.POINT -> POINT_FORCE;
+                    case Forces.LINE -> LINE;
+                    case Forces.ORBIT -> ORBIT;
+                    case Forces.SPEED_LIMIT -> SPEED_LIMIT;
                     default -> throw new IllegalStateException("No Java implementation of " + module.type());
                 };
                 List<String> names = type.fields().keySet().stream().sorted().toList();
@@ -691,6 +833,20 @@ public final class CpuSimulation {
         double downX;
         double downY;
         double downZ;
+        /** The world's wind, and turned into the effect's frame; the effect's time in seconds. */
+        double windWorldX;
+        double windWorldY;
+        double windWorldZ;
+        double windX;
+        double windY;
+        double windZ;
+        float seconds;
+        // Scratch: an axis in the particles' space, noise and its curl.
+        double ux;
+        double uy;
+        double uz;
+        final float[] noise = new float[4];
+        final float[] curl = new float[3];
         // Scratch: a direction, a rotation (as a quaternion) and a rotated vector, a color.
         float dx;
         float dy;
@@ -748,6 +904,67 @@ public final class CpuSimulation {
             downX = rx;
             downY = ry;
             downZ = rz;
+            windWorldX = effects.wind(0);
+            windWorldY = effects.wind(1);
+            windWorldZ = effects.wind(2);
+            rotate(windWorldX, windWorldY, windWorldZ);
+            windX = rx;
+            windY = ry;
+            windZ = rz;
+        }
+
+        /** The unit axis ({@code x}, {@code y}, {@code z}) of the effect's frame in its particles' space. */
+        void axis(double x, double y, double z, boolean local) {
+            axis(x, y, z, local, true);
+        }
+
+        /**
+         * The vector ({@code x}, {@code y}, {@code z}) of the effect's frame in its particles' space (turned by its
+         * rotation for world-space ones), made unit length if {@code unit} (+Y if it has none): ux, uy, uz.
+         */
+        void axis(double x, double y, double z, boolean local, boolean unit) {
+            if (!local) {
+                double cx = 2 * (qy * z - qz * y);
+                double cy = 2 * (qz * x - qx * z);
+                double cz = 2 * (qx * y - qy * x);
+                double tx = x + qw * cx + qy * cz - qz * cy;
+                double ty = y + qw * cy + qz * cx - qx * cz;
+                double tz = z + qw * cz + qx * cy - qy * cx;
+                x = tx;
+                y = ty;
+                z = tz;
+            }
+            if (unit) {
+                double length = Maths.sqrt(x * x + y * y + z * z);
+                if (length > TINY) {
+                    x /= length;
+                    y /= length;
+                    z /= length;
+                } else {
+                    x = 0;
+                    y = 1;
+                    z = 0;
+                }
+            }
+            ux = x;
+            uy = y;
+            uz = z;
+        }
+
+        /** The part of ({@code x}, {@code y}, {@code z}) across the unit axis set: rx, ry, rz. */
+        void across(double x, double y, double z) {
+            double along = x * ux + y * uy + z * uz;
+            rx = x - along * ux;
+            ry = y - along * uy;
+            rz = z - along * uz;
+        }
+
+        /** ({@code x}, {@code y}, {@code z}) turned about the unit axis set by an angle of that cosine and sine. */
+        void turnAbout(double x, double y, double z, double cos, double sin) {
+            double along = (x * ux + y * uy + z * uz) * (1 - cos);
+            rx = x * cos + (uy * z - uz * y) * sin + ux * along;
+            ry = y * cos + (uz * x - ux * z) * sin + uy * along;
+            rz = z * cos + (ux * y - uy * x) * sin + uz * along;
         }
 
         /** A random unit direction, uniform on the sphere, from two draws from {@code salt} on. */

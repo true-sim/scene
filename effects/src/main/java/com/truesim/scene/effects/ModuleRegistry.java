@@ -19,7 +19,10 @@ import java.util.Set;
  */
 public final class ModuleRegistry {
 
-    /** The built-in modules: the shapes, initializers, forces and attributes over life both targets have. */
+    /**
+     * The built-in modules: the shapes, initializers, forces and attributes over life both targets have, and the
+     * vector field, which only GPU emitters have.
+     */
     public static final ModuleRegistry BUILT_IN = new ModuleRegistry(Map.of()).with(
         init(Shape.POINT).build(),
         init(Shape.SPHERE).field("radius", Bind.constant(1)).field("thickness", Bind.constant(1)).build(),
@@ -35,6 +38,21 @@ public final class ModuleRegistry {
         init(Init.COLOR).field("color", Bind.color(1, 1, 1, 1)).build(),
         update(Forces.GRAVITY).field("scale", Bind.constant(1)).build(),
         update(Forces.DRAG).field("coefficient", Bind.constant(1)).build(),
+        update(Forces.WIND).field("coupling", Bind.constant(1)).field("scale", Bind.constant(1))
+            .field("gusts", Bind.constant(0)).build(),
+        update(Forces.CURL).field("strength", Bind.constant(1)).field("frequency", Bind.constant(1))
+            .field("speed", Bind.constant(0)).field("octaves", Bind.constant(1)).build(),
+        axis(update(Forces.VORTEX)).field("strength", Bind.constant(1)).field("pull", Bind.constant(0)).build(),
+        update(Forces.POINT).field("strength", Bind.constant(1)).field("radius", Bind.constant(0))
+            .field("killRadius", Bind.constant(0)).field("x", Bind.constant(0)).field("y", Bind.constant(0))
+            .field("z", Bind.constant(0)).build(),
+        axis(update(Forces.LINE)).field("strength", Bind.constant(1)).field("radius", Bind.constant(0))
+            .field("x", Bind.constant(0)).field("y", Bind.constant(0)).field("z", Bind.constant(0)).build(),
+        axis(update(Forces.ORBIT)).field("speed", Bind.constant(1)).build(),
+        update(Forces.FIELD).targets(Target.GPU).field("field", Forces.NO_FIELD).field("strength", Bind.constant(1))
+            .field("sizeX", Bind.constant(1)).field("sizeY", Bind.constant(1)).field("sizeZ", Bind.constant(1))
+            .field("tile", Bind.constant(0)).build(),
+        update(Forces.SPEED_LIMIT).field("speed", Bind.constant(1)).build(),
         update(Over.SIZE).field("curve", FloatCurve.constant(1)).build(),
         update(Over.COLOR).field("gradient", ColorGradient.constant(1, 1, 1, 1)).build());
 
@@ -51,6 +69,11 @@ public final class ModuleRegistry {
 
     private static ModuleType.Builder update(String name) {
         return ModuleType.builder(name, ModuleType.Stage.UPDATE);
+    }
+
+    /** An axis in the emitter's frame: +Y unless given. */
+    private static ModuleType.Builder axis(ModuleType.Builder type) {
+        return type.field("axisX", Bind.constant(0)).field("axisY", Bind.constant(1)).field("axisZ", Bind.constant(0));
     }
 
     /** These module types and {@code more}; names are unique. */
