@@ -93,11 +93,16 @@ class ValidationTest {
             "sparks: death event spawns smoke, which does not spawn from events.",
             "sparks: death event: a GPU emitter cannot spawn into the CPU emitter shards.");
         assertThat(p.getMessage()).startsWith("The effect has 3 problems:\n  sparks: death event spawns no emitter");
-        // A CPU emitter may spawn into a GPU one.
+        // A CPU emitter spawns into CPU emitters only (into GPU ones: later).
+        assertThat(problems(EffectData.builder()
+            .emitter("shards", e -> e.target(Target.CPU).spawn(Spawn.burst(0, 4))
+                .event(ParticleEvent.onDeath("dust", Bind.constant(1))))
+            .emitter("dust", e -> e.capacity(8).spawn(Spawn.fromEvents()))).problems())
+            .containsExactly("shards: death event: a CPU emitter spawns into CPU emitters only, not dust.");
         EffectData mixed = EffectData.builder()
             .emitter("shards", e -> e.target(Target.CPU).spawn(Spawn.burst(0, 4))
                 .event(ParticleEvent.onDeath("dust", Bind.constant(1))))
-            .emitter("dust", e -> e.capacity(8).spawn(Spawn.fromEvents()))
+            .emitter("dust", e -> e.target(Target.CPU).capacity(8).spawn(Spawn.fromEvents()))
             .build();
         assertThat(mixed.eventDepth(1)).isOne();
         // Emitters may come before those spawning them.

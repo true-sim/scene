@@ -20,6 +20,13 @@ public final class Init {
     public static final String SIZE = "init.size";
     /** A particle's linear RGBA color. */
     public static final String COLOR = "init.color";
+    /**
+     * What a particle spawned by an event takes of its parent (VFX Graph's source attributes): {@code velocity} times
+     * the parent's added to its own, its color times the parent's where {@code color} is 1, its size times the
+     * parent's where {@code size} is 1. Every particle an event spawns starts where its parent was (its shapes about
+     * that point), with this module or without; on other particles it does nothing.
+     */
+    public static final String INHERIT = "init.inherit";
 
     private Init() {
     }
@@ -52,5 +59,15 @@ public final class Init {
     /** Particles take {@code color}. */
     public static Module color(ColorBinding color) {
         return Module.of(COLOR).with("color", color);
+    }
+
+    /** Particles spawned by events take their parent's color and size, and {@code velocity} of its velocity. */
+    public static Module inherit(float velocity) {
+        return Module.of(INHERIT).with("velocity", velocity).with("color", 1f).with("size", 1f);
+    }
+
+    /** Particles spawned by events take {@code velocity} of their parent's velocity, its color and size or not. */
+    public static Module inherit(float velocity, boolean color, boolean size) {
+        return Module.of(INHERIT).with("velocity", velocity).with("color", color ? 1 : 0).with("size", size ? 1 : 0);
     }
 }

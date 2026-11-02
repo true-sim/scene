@@ -36,6 +36,8 @@ public final class ModuleRegistry {
             .build(),
         init(Init.SIZE).field("size", Bind.constant(0.1f)).build(),
         init(Init.COLOR).field("color", Bind.color(1, 1, 1, 1)).build(),
+        init(Init.INHERIT).field("velocity", Bind.constant(0)).field("color", Bind.constant(0))
+            .field("size", Bind.constant(0)).build(),
         update(Forces.GRAVITY).field("scale", Bind.constant(1)).build(),
         update(Forces.DRAG).field("coefficient", Bind.constant(1)).build(),
         update(Forces.WIND).field("coupling", Bind.constant(1)).field("scale", Bind.constant(1))
