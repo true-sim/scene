@@ -193,6 +193,11 @@ class SharingTest {
         assertThat(runtime.decided(p)).isTrue();
         assertThat(runtime.decided(Long.MAX_VALUE)).isFalse();
         assertThat(new EffectRuntime(effects).decided(p)).as("never updated").isFalse();
+        long ended = effects.start(torch().build(), 0, 0, 0);
+        runtime.update(FRAME);
+        effects.kill(ended);
+        long reusing = effects.start(torch().build(), 0, 0, 0);
+        assertThat(runtime.decided(reusing)).as("its slot's last effect was decided, not it").isFalse();
         assertThat(effects.placement(own)).isFalse();
         assertThat(effects.seed(own)).isEqualTo(effects.seed(p));
         assertThat(runtime.placementWeight(p)).as("fading out").isLessThan(1);
