@@ -600,6 +600,55 @@ class CpuSimulationTest {
     }
 
     @Test
+    void javaTwinsRunAGamesModulesOnCpuEmitters() {
+        // An initializer tinting and sizing newborn by its field, and an updater pushing along +X by its field
+        ModuleType tint = ModuleType.builder("game.tint", ModuleType.Stage.INIT).field("blue", Bind.constant(1))
+            .twin(t -> {
+                t.color(0, 0, t.value(0), 1);
+                t.size(2 * t.size());
+                t.lifetime(t.lifetime() + 1);
+                assertThat(t.h()).isZero();
+                assertThat(t.salt()).isEqualTo(16); // its place among the initializers
+            }).build();
+        int[] seeds = new int[1];
+        ModuleType gust = ModuleType.builder("game.gust", ModuleType.Stage.UPDATE).field("strength", Bind.constant(1))
+            .twin(t -> {
+                float a = t.value(0);
+                t.position(t.x() + 0.5f * a * t.h() * t.h(), t.y(), t.z());
+                t.velocity(t.vx() + a * t.h(), t.vy(), t.vz());
+                seeds[0] = t.seed();
+                assertThat((double) t.time()).isCloseTo(t.age(), within(1e-3)); // born at the start
+                assertThat(t.color(2)).isEqualTo(0.5f);
+            }).build();
+        assertThat(gust.runsOn(Target.CPU)).isTrue();
+        ModuleRegistry modules = ModuleRegistry.BUILT_IN.with(tint, gust);
+        EffectData data = EffectData.builder().emitter("cpu", e -> e.target(Target.CPU).spawn(Spawn.burst(0, 1))
+            .init(Init.lifetime(100), Module.of("game.tint").with("blue", 0.5f))
+            .update(Module.of("game.gust").with("strength", 2))).build(modules);
+        assertThat(data.modules()).isSameAs(modules);
+        long effect = effects.play(data, 0, 0, 0).id();
+        frame(1L);
+        for (int i = 0; i < 10; i++) {
+            frame(100_000L);
+        }
+        simulation.particles(effect, 0, cursor);
+        cursor.next();
+        // A push of 2 m/s^2 for a second: x = a t^2 / 2, v = a t
+        assertThat(cursor.x()).isCloseTo(1, within(1e-4));
+        assertThat((double) cursor.vx()).isCloseTo(2, within(1e-4));
+        assertThat(cursor.color(2)).isEqualTo(0.5f);
+        assertThat(cursor.size()).isEqualTo(0.2f);
+        assertThat(cursor.lifetime()).isEqualTo(101);
+        assertThat(seeds[0]).isEqualTo(cursor.seed());
+    }
+
+    @Test
+    void twinsNeedACpuTarget() {
+        assertThatIllegalArgumentException().isThrownBy(() -> ModuleType.builder("game.x", ModuleType.Stage.UPDATE)
+            .twin(t -> { }).targets(Target.GPU).build()).withMessageContaining("CPU target");
+    }
+
+    @Test
     void theWorldIsTheGames() {
         ParticleWorld.Hit hit = new ParticleWorld.Hit();
         ParticleWorld flat = new ParticleWorld() {

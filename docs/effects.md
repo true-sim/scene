@@ -42,6 +42,7 @@ with the reasons, and marks where the decision differs from the first recommenda
 | E21 | A new module **`scene-effects`**. | As recommended. |
 | E22 | **Gameplay bursts chosen per call**: into one shared instance per asset (thousands of hits, one draw) or as instances of their own (each movable and stoppable). | Differs: choosable. Shared instances are per asset *and cell* (§2.7). |
 | E23 | **Shared simulations**: an effect whose modules don't depend on where it is simulates K variants (own seeds and time offsets) and draws them at many placements, each a transform and a variant; eligibility comes from its modules; near placements may keep simulations of their own (step 18a). | Added by the user after step 9. |
+| E24 | **Particle modules are generated from their Slang structs**: a module, built-in or a game's, is one `[ParticleModule("name")]` struct (its fields its parameters, its functions its stages), plus an optional Java twin; the build numbers every module of a project and its libraries and generates the kernel's dispatch, the opcodes and the Java listing. Slang is the source; scene-effects keeps a mirror of the built-in types for use without the engine, which the engine checks. | Added after step 20, which wired modules by hand. How: §2.13. |
 
 **Reviewer notes on decisions** (from the review; the user's answers to them are at the end of §6):
 
@@ -972,6 +973,87 @@ per placement) costs as before.
 - **Validation** reports, at build: unknown modules and fields with "did you mean…", modules not allowed on the target,
   event cycles and depth, curves over the key cap, capacities below rate × lifetime + bursts, collision chains with no
   method for the device.
+
+### 2.13 Particle modules from their Slang structs (E24)
+
+Step 20 left a module in up to five places that had to agree by index: its Slang code in the kernel's switch, an
+`OP_*` constant, the encoder's opcode switch, its `ModuleType` in scene-effects and, for a game's module, a
+hand-written `ParticleModules` dispatch. E24 makes the Slang struct the one place.
+
+**What a module is.** One Slang struct with `[ParticleModule("name")]`: its fields are its parameters (`float` a
+binding, `ModuleColor`, `ModuleCurve`, `ModuleGradient`, `ModuleTexture`; each initializer its fallback; read in
+alphabetical order, the salts' order), its functions its stages (`init`, then each step `force`, `after`, `collide`,
+`update`, `over`), `[ModuleCapability("RAY_QUERY")]` where it needs the device's ray queries, and `[BuiltInTwin]` or
+`[ModuleTwin("java.Class")]` where CPU emitters may have it. The build (truesim.slang, a collecting mode of the
+material-type generator, from the templates engine-render ships in `particle-modules`) numbers every module of the
+project and its libraries (the libraries' first, as their `particle-modules.index` numbers them), and generates the
+opcodes, a switch per stage whose cases read each field into the struct and call its function (the per-wave uniform
+interpreter of E4, no specialization constants), the `ModuleType`s and a Java class listing every module by opcode
+with its stages. A game's project also gets its kernel variants (base and rays) with the built-in modules and its own.
+Duplicate names, too many fields, unknown field types, a module without a stage function or with stages at both
+birth and step fail the build.
+
+**Where module types live.** Options weighed:
+
+| | For | Against |
+|---|---|---|
+| A. Slang is the source; the build generates the `ModuleType`s; scene-effects mirrors the built-in ones and the engine checks the mirror (chosen) | A game's module is one struct (and its twin); a GPU-only built-in is one struct; nothing to keep in step by index | The built-in types are written twice (Slang, scene-effects' `ModuleRegistry.BUILT_IN`); a mismatch is found by the engine (its `ParticleModules` refuses it, a test runs it), not by scene-effects' own build |
+| B. scene-effects is the source; the engine's build fails where the Slang disagrees | scene-effects alone defines the data | Every module, a game's included, needs a Java `ModuleType` and a Slang struct: two places, the brief's opposite; the build would have to load scene-effects' classes |
+| C. The built-in modules' Slang moves into scene-effects | One source for the built-ins | Their code needs the engine's modules (noise, pool meshes, bindless textures): it cannot live in scene |
+
+scene-effects must stay usable without the engine (servers build and validate effects, `CpuSimulation` runs the
+built-in twins), so it keeps knowing every built-in type: A keeps that mirror and checks it, at the cost of writing a
+built-in's fields twice. A built-in with a CPU twin needs scene-effects anyway (its Java code); a GPU-only built-in
+changes the mirror only so that scene-only users know it.
+
+**Java twins.** A game's module may have a `ModuleTwin` (scene-effects): `[ModuleTwin("com.example.GustTwin")]`
+makes its type run on both targets, and `CpuSimulation` runs the twin where the kernel runs the struct (at birth, or
+after the motion and collision), on a `TwinParticle` (the particle, its float fields evaluated, the step). Without
+one, the module is GPU only and CPU emitters naming it are refused, as before. The built-in twins stay inside
+`CpuSimulation` (`[BuiltInTwin]`).
+
+**Adding a module** (the test's `game.gust`, engine-render's test/particlegust.slang):
+
+```slang
+import particles.particle;
+
+/** Pushes particles along +X by its strength, in m/s^2. */
+[ParticleModule("game.gust")]
+[ModuleTwin("com.example.game.GustTwin")]   // optional: CPU emitters may have it
+public struct Gust
+{
+    public float strength = 1;               // a parameter: a binding, 1 where a module leaves it out
+
+    public void update(inout ParticleStep s, inout Particle p)   // its stage: each step, after the collision
+    {
+        p.velocity.x += strength * s.h;
+        p.position.x += 0.5 * strength * s.h * s.h;
+    }
+};
+```
+
+```java
+public final class GustTwin implements ModuleTwin {   // optional
+    public void run(TwinParticle p) {
+        float a = p.value(0);                         // fields in alphabetical order
+        p.position(p.x() + 0.5f * a * p.h() * p.h(), p.y(), p.z());
+        p.velocity(p.vx() + a * p.h(), p.vy(), p.vz());
+    }
+}
+```
+
+```kotlin
+slang { particleModules = "com.example.game.GameModules" }   // once per project: the generated listing
+```
+
+```java
+particles.modules(GameModules.MODULES);
+EffectData leaves = EffectData.builder().emitter("leaves", e -> e.update(Module.of("game.gust").with("strength", 2)))
+    .build(GameModules.MODULES.registry());
+```
+
+A built-in module is the same struct in engine-render's particles/modules, its type added to scene-effects'
+`ModuleRegistry.BUILT_IN` too (and its twin to `CpuSimulation`, if CPU emitters may have it).
 
 ---
 
@@ -1957,7 +2039,8 @@ Details the steps settled where sections 2 and 5 left them open.
   with the step, time, salt, frame's down and wind); initializers run in their place, updaters after the built-in
   motion. Effects naming them are built against `modules.registry()`. Deviations: no `[ParticleModule]` attribute and
   generated dispatch (the generators live in build-logic); the variant replaces the rays variant (no ray collision
-  with plugin modules); no Java twins (a CPU emitter naming a plugin module is refused by `CpuSimulation`).
+  with plugin modules); no Java twins (a CPU emitter naming a plugin module is refused by `CpuSimulation`). All three
+  done since, by E24 (below).
 - **`modify(PARTICLES)`:** a technique modifying `ParticleKeys.PARTICLES` runs after the simulation and before
   anything reading them (tested).
 - **Built-in modules** the showcase uses: `Init.rotation` (and `randomRotation()`), `Init.frame` (where a flipbook
@@ -1983,6 +2066,29 @@ Details the steps settled where sections 2 and 5 left them open.
 - Tests: `ParticleDrawTest.particlesBeforeGlassAreTintedByItAndThoseAfterItAreNot`, `theReactiveMaskCoversWhere
   ParticlesAre`. The showcase's `-Pglass=true` puts a window before the bonfire, its fire drawn before glass and
   sparks before the window after it.
+
+### Particle modules from Slang (E24; build-logic 0.15.0, scene 0.57.0, engine 0.158.0)
+
+- **Generator:** truesim.slang collects `[ParticleModule]` structs (the project's and its libraries', through
+  `particle-modules.index`) into `particle-modules/dispatch.slang`, included by particles/simulate.slang, and the
+  `slang.particleModules` Java class (`OWN`, its module types; `MODULES`, a `ParticleModules` of every module by
+  opcode). Templates: engine-render's `particle-modules` (`modules.properties`, `dispatch.slang.template`,
+  `Modules.java.template`, `entry.slang.template`, `entryRays.slang.template`).
+- **Built-in modules** as structs in particles/modules (shapes, birth, forces, collide, rays, overlife); the kernel's
+  hand-written switches are gone. An op word carries its module's stages (`op | words << 8 | stages << 16`), so a step
+  loops only over the stages its program has. `OP_*` and `PLUGIN_FIELDS` left particle.slang (and
+  `ParticleConstants`); the generated `OP_<NAME>` constants replace them (`OP_INIT_INHERIT` in `spawnChild`).
+- **Games:** `IParticleModule`, `ParticleModuleInput`, `PARTICLE_MODULES` and the hand-written `ParticleModules` record
+  are gone; a game's variants now include ray collision (step 20's variant replaced the rays variant).
+- **scene-effects:** `ModuleTwin`, `TwinParticle`, `ModuleType.twin` (`Builder.twin`), `EffectData.modules()` (the
+  registry an effect was built against, which `CpuSimulation` resolves twins from).
+- **Measured** (`ParticleBenchmark`, RX 9070 XT, ms, before / after, two runs each): gravity and drag update
+  0.275, 0.274 / 0.274, 0.273; with 8 curves of 8 keys 0.464, 0.465 / 0.459, 0.458; a million on the graphics queue,
+  update 0.279, 0.278 / 0.279, 0.278 and simulation 0.528, 0.528 / 0.528, 0.528; async simulation 0.565, 0.563 /
+  0.561, 0.564. Within noise.
+- Still by hand: a built-in module's mirror in `ModuleRegistry.BUILT_IN` and its twin in `CpuSimulation`; what
+  `spawnChild` reads of `init.inherit`; the name checks of `shape.mesh` and `shape.bones` (emission sources) and of
+  `collide.*` (chains) in the encoders.
 
 ### Folded in from steps 14 and 15
 

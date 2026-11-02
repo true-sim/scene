@@ -566,7 +566,8 @@ effects.changesSince(since, (effect, changes) -> ...); // ADDED, STOPPED, REMOVE
 ```
 
 - **Checked when built:** unknown modules and fields with suggestions, fields of the wrong kind, modules at the wrong
-  stage or on a target without them (`ModuleRegistry.BUILT_IN.with(...)` adds a plugin's types), parameters missing or
+  stage or on a target without them (`ModuleRegistry.BUILT_IN.with(...)` adds a game's types, which the engine's build
+  generates from their Slang structs; a type with a `ModuleTwin` runs on CPU emitters too), parameters missing or
   of the wrong kind, spawn amounts that differ per particle, bursts after their loop's end, event cycles and nesting
   deeper than 4 (`maxEventDepth`), events into emitters that do not spawn from them or from the GPU into the CPU, and
   capacities below demand (rates times lifetime plus bursts; estimated when not given).

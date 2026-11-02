@@ -10,13 +10,16 @@ import java.util.Set;
 
 /**
  * A kind of module, as the engine's registry knows it by name: when it runs (at birth or each frame), which targets
- * have it (the GPU kernel, the Java simulator, or both), what it needs of the device, and its fields with their kinds
- * and defaults. Effects name module types; building an effect checks its modules against them
- * ({@link ModuleRegistry}). Immutable.
+ * have it (the GPU kernel, the Java simulator, or both), what it needs of the device, its fields with their kinds
+ * and defaults, and for a module of a game's that CPU emitters may have, its Java twin. Effects name module types;
+ * building an effect checks its modules against them ({@link ModuleRegistry}). Immutable.
+ *
+ * <p>The engine's build generates them from the modules' Slang structs (effects.md E24); {@link ModuleRegistry#BUILT_IN}
+ * holds the built-in ones for use without the engine, and the engine checks that they agree.
  *
  * <pre>{@code
  * static final ModuleType WIND_GUST = ModuleType.builder("game.windGust", ModuleType.Stage.UPDATE)
- *     .targets(Target.GPU).field("strength", Bind.constant(1)).field("gusts", FloatCurve.constant(1)).build();
+ *     .twin(new WindGustTwin()).field("strength", Bind.constant(1)).field("gusts", FloatCurve.constant(1)).build();
  * }</pre>
  *
  * @param name its name, as modules give it
@@ -24,9 +27,10 @@ import java.util.Set;
  * @param targets the targets that have it
  * @param capability what it needs of the device
  * @param fields its fields by name
+ * @param twin what simulates a game's module on the CPU, or null: GPU only, or built into {@link CpuSimulation}
  */
 public record ModuleType(String name, Stage stage, Set<Target> targets, Capability capability,
-        Map<String, Field> fields) {
+        Map<String, Field> fields, ModuleTwin twin) {
 
     /** When a module runs. */
     public enum Stage {
@@ -79,6 +83,9 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
         if (targets.isEmpty()) {
             throw new IllegalArgumentException(name + " runs on no target");
         }
+        if (twin != null && !targets.contains(Target.CPU)) {
+            throw new IllegalArgumentException(name + " has a Java twin but no CPU target");
+        }
         targets = Set.copyOf(targets);
         fields = Map.copyOf(fields);
     }
@@ -102,6 +109,7 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
         private Set<Target> targets = EnumSet.allOf(Target.class);
         private Capability capability = Capability.NONE;
         private final Map<String, Field> fields = new LinkedHashMap<>();
+        private ModuleTwin twin;
 
         private Builder(String name, Stage stage) {
             this.name = name;
@@ -111,6 +119,13 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
         /** The targets that have it: both by default. */
         public Builder targets(Target first, Target... more) {
             targets = EnumSet.of(first, more);
+            return this;
+        }
+
+        /** Its Java twin, which CPU emitters run: it runs on both targets. */
+        public Builder twin(ModuleTwin twin) {
+            this.twin = Objects.requireNonNull(twin, "twin");
+            targets = EnumSet.allOf(Target.class);
             return this;
         }
 
@@ -151,7 +166,7 @@ public record ModuleType(String name, Stage stage, Set<Target> targets, Capabili
         }
 
         public ModuleType build() {
-            return new ModuleType(name, stage, targets, capability, fields);
+            return new ModuleType(name, stage, targets, capability, fields, twin);
         }
     }
 }

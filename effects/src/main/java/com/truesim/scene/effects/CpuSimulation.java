@@ -90,6 +90,8 @@ public final class CpuSimulation {
     private static final int INHERIT = 24;
     private static final int ROTATION = 25;
     private static final int FRAME = 26;
+    /** A game's module, run by its Java twin. */
+    private static final int TWIN = 27;
     private static final float TAU = (float) Maths.TAU;
     /** How fast gusts of wind change: noise cells per second. */
     static final float GUST_RATE = 0.5f;
@@ -556,6 +558,7 @@ public final class CpuSimulation {
             }
             case ROTATION -> p.rotation[i] = value(op, 0, parameters, seed, p, i);
             case FRAME -> p.frame[i] = value(op, 0, parameters, seed, p, i);
+            case TWIN -> twin(s, p, i, op, parameters, 0);
             default -> { // COLOR
                 color(op, parameters, seed, p, i, s.rgba);
                 for (int c = 0; c < 4; c++) {
@@ -621,6 +624,7 @@ public final class CpuSimulation {
         p.flags[i] &= ~COLLIDED;
         if ((p.flags[i] & STUCK) != 0) { // frozen where it hit: it only ages
             p.age[i] += h;
+            twins(s, p, i, program, parameters, h);
             if (program.overSize || program.overColor) {
                 over(s, p, i, program, parameters);
             }
@@ -780,9 +784,31 @@ public final class CpuSimulation {
         if (kill) {
             p.lifetime[i] = p.age[i]; // within an attractor's kill radius: dead from now, gone at the next step
         }
+        twins(s, p, i, program, parameters, h);
         if (program.overSize || program.overColor) {
             over(s, p, i, program, parameters);
         }
+    }
+
+    /** Runs the program's updaters that are Java twins on particle {@code i}, after its motion and collision. */
+    private static void twins(Slot s, Particles p, int i, Program program, float[] parameters, float h) {
+        for (Op op : program.update) {
+            if (op.code == TWIN) {
+                twin(s, p, i, op, parameters, h);
+            }
+        }
+    }
+
+    /** Runs module {@code op}'s Java twin on particle {@code i}, over a step of {@code h} (0 at birth). */
+    private static void twin(Slot s, Particles p, int i, Op op, float[] parameters, float h) {
+        TwinParticle t = s.twin;
+        t.p = p;
+        t.i = i;
+        t.op = op;
+        t.parameters = parameters;
+        t.h = h;
+        t.time = s.seconds;
+        op.twin.run(t);
     }
 
     /**
@@ -950,7 +976,7 @@ public final class CpuSimulation {
     }
 
     /** Field {@code field} of {@code op} for particle {@code i}: its binding evaluated. */
-    private static float value(Op op, int field, float[] parameters, int seed, Particles p, int i) {
+    static float value(Op op, int field, float[] parameters, int seed, Particles p, int i) {
         Binding b = op.bindings[field];
         return switch (b.kind()) {
             case CONSTANT -> b.value() * b.scale();
@@ -1088,8 +1114,8 @@ public final class CpuSimulation {
      * A module as the simulator runs it: an operation, its fields' bindings (with the parameter offsets they read),
      * its color, curve or gradient, and its salt.
      */
-    private record Op(int code, Binding[] bindings, int[] offsets, ColorBinding color, FloatCurve curve,
-            ColorGradient gradient, int salt) {
+    record Op(int code, Binding[] bindings, int[] offsets, ColorBinding color, FloatCurve curve,
+            ColorGradient gradient, int salt, ModuleTwin twin) {
     }
 
     /** An emitter's modules as operations, and the parameter offsets its events' counts read. */
@@ -1124,7 +1150,8 @@ public final class CpuSimulation {
                         chosen = true;
                         collides = true;
                     } else {
-                        update[m] = new Op(-1, op.bindings, op.offsets, op.color, op.curve, op.gradient, op.salt);
+                        update[m] = new Op(-1, op.bindings, op.offsets, op.color, op.curve, op.gradient, op.salt,
+                            null);
                     }
                 }
                 size |= op.code == OVER_SIZE;
@@ -1148,7 +1175,7 @@ public final class CpuSimulation {
             Op[] ops = new Op[modules.size()];
             for (int m = 0; m < ops.length; m++) {
                 Module module = modules.get(m);
-                ModuleType type = ModuleRegistry.BUILT_IN.type(module.type());
+                ModuleType type = data.modules().type(module.type());
                 int code = switch (module.type()) {
                     case Shape.POINT -> POINT;
                     case Shape.SPHERE -> SPHERE;
@@ -1178,7 +1205,12 @@ public final class CpuSimulation {
                     case Collide.HEIGHT -> HEIGHT;
                     case Collide.WORLD -> WORLD;
                     case Collide.DEPTH, Collide.RAYS -> -1; // GPU methods of a chain: left out here
-                    default -> throw new IllegalStateException("No Java implementation of " + module.type());
+                    default -> {
+                        if (type.twin() == null) {
+                            throw new IllegalStateException("No Java implementation of " + module.type());
+                        }
+                        yield TWIN;
+                    }
                 };
                 List<String> names = type.fields().keySet().stream().sorted().toList();
                 Binding[] bindings = new Binding[names.size()];
@@ -1204,7 +1236,7 @@ public final class CpuSimulation {
                         default -> gradient = (ColorGradient) value;
                     }
                 }
-                ops[m] = new Op(code, bindings, offsets, color, curve, gradient, salts + 16 * m);
+                ops[m] = new Op(code, bindings, offsets, color, curve, gradient, salts + 16 * m, type.twin());
             }
             return ops;
         }
@@ -1311,6 +1343,8 @@ public final class CpuSimulation {
         double windY;
         double windZ;
         float seconds;
+        /** What Java twins run on. */
+        final TwinParticle twin = new TwinParticle();
         // Scratch: an axis in the particles' space, noise and its curl.
         double ux;
         double uy;
