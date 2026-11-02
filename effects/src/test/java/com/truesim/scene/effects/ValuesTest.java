@@ -102,6 +102,13 @@ class ValuesTest {
         assertThat(Renderer.ribbon().kind()).isEqualTo(Renderer.Kind.RIBBON);
         assertThat(Renderer.trail(8).settings()).containsEntry("points", 8);
         assertThat(Renderer.beam().kind()).isEqualTo(Renderer.Kind.BEAM);
+        Renderer light = Renderer.light(2, 3);
+        assertThat(light.kind()).isEqualTo(Renderer.Kind.LIGHT);
+        assertThat(light.facing()).isNull();
+        assertThat(light.settings()).containsEntry("radius", 2f).containsEntry("intensity", 3f);
+        assertThatIllegalArgumentException().isThrownBy(() -> Renderer.light(0, 1));
+        assertThatIllegalArgumentException().isThrownBy(() -> Renderer.light(1, -1));
+        assertThatIllegalArgumentException().isThrownBy(() -> Renderer.light(Float.NaN, 1));
         assertThatIllegalArgumentException().isThrownBy(() -> Renderer.trail(1));
         assertThatIllegalArgumentException().isThrownBy(() -> Renderer.trail(33));
         assertThatIllegalArgumentException().isThrownBy(() -> sparks.alphaToAdd(2));
