@@ -1730,3 +1730,110 @@ Details the steps settled where sections 2 and 5 left them open.
   instance and one draw. Not built: dropping a full shared instance's oldest particles for new demand (overflow is
   counted instead).
 - The demo has fireworks.
+
+### Step 15: mesh, bone and mask shapes (scene 0.53.0, engine 0.152.0)
+
+- GPU-only initializers (`Shape`): `shape.mesh` (`mode`: `SURFACE`, `VERTICES`, `VOLUME`), `shape.bones` (`radius`)
+  and `shape.mask` (`mask` texture, `channel` 0 to 3 or `LUMINANCE`, `threshold`, `sizeX`, `sizeZ`). A shape sets the
+  position and the direction `init.speed` sends along: the surface's normal (interpolated vertex normals, the face's
+  without), outwards from the box's center in the volume, away from the chain for bones.
+- The engine names what each emitter emits from: `Particles.sources(provider)` is asked in every update for each
+  emitter whose program has a mesh or bone shape, before its record is written, and answers through
+  `particles.emitFrom(effect, emitter, poolMesh, data, worldRows)` and `particles.joints(effect, emitter, xyz, n)`
+  (at most 16 joints). `EffectSync` is that provider: mesh shapes emit from the renderable of the node their effect
+  follows as `sync.meshes(sceneSync)` draws it (`SceneSync.drawnMeshOf`: a skinned one's posed copy), bone shapes along
+  `sync.joints(effect, emitter, nodes...)`. `particles.meshes(renderer)` gives the geometry pool; the simulation then
+  requests `SceneData` and its spawn pass declares reads of the pool's buffers, so it runs after the scene upload and
+  the deformation pass. The frame's sources (336 bytes each: the mesh into the emitter's frame as a 3 x 4 matrix, the
+  alias tables' address, the joints in the emitter's frame) go behind `ParticleFrame.sources`; the emitter record's
+  last word names its entry.
+- Alias tables (`MeshTables`, Vose's method, deterministic) over the last level's triangles, built on the CPU from
+  the mesh's data the first time an emitter emits from it: one by area, one by the volume of each triangle's
+  tetrahedron to the box's center (so the volume is exact for meshes star-shaped about it). A copy uses its source's
+  tables; positions and normals come from the copy as posed, dequantized with its posed box. Freed when the mesh leaves
+  the pool. Vertices are drawn uniformly by index (no table).
+- Deviation: masks thin instead of drawing by an alias table over texels. A masked particle is kept with the
+  probability of the mask's channel at its texture coordinates (the mesh's UV0; else the position on the emitter's
+  XZ plane across `sizeX` by `sizeZ`), or only where it reaches `threshold`; the others are born dead, so a mask
+  lowers the count by its mean. No texel data is read on the CPU.
+- An emitter whose mesh is not drawn yet (not loaded, no renderable) or whose chain has no joints gives born-dead
+  particles rather than a heap at its origin.
+- Tests: `MeshShapesTest` (4,000 particles on two quads of areas 1 and 3: 25 % on the small one within 3 %, the large
+  one's six half-metre strips within 3 % of a sixth each; vertices; a cube's volume, half below its middle; a skinned
+  copy emits where it is posed; bones uniform by length; a threshold mask and a density mask);
+  `SceneSyncTest.particleMeshShapesEmitFromSkinnedRenderablesAsPosedAndBoneShapesAlongJoints` through `EffectSync`.
+  The demo burns the fox (`DemoEffects.SKIN_FIRE`, embers over its posed skin as it walks).
+
+### Step 16: mesh particles (engine 0.153.0)
+
+- `GpuScene.reserveGpuRange(n)` claims the lowest run of `n` free ids (one range; `releaseGpuRange`): they start as
+  holes, the CPU refuses to claim them (`set` throws, `remove` ignores them), the upload never scatters into them, and
+  they count to `highWater()`. `RayTracing`'s instance pass gives them mask 0 and the empty bottom level, so the top
+  level, skipped by `version()`, stands while particles move (checked where the device traces rays).
+- `particles.meshes(renderer, instances)` reserves the range (`meshes(renderer)` alone: mesh shapes, no range) and
+  notes `ParticleKeys.PARTICLES` as its writer (`GpuScene.writtenBy`). Emitters with a mesh renderer take a range of
+  their capacity from it (none left: simulated, not drawn, `meshUnplaced()`). Renderer settings `orient` (0: tumbling
+  about a random axis by how far the particle rolled, `rotation` advanced by speed over half the size in the update; 1:
+  along the velocity; 2: as the emitter), `scale` (per metre of size) and `layers`. `particles.mesh(meshRef, poolMesh,
+  materialBase)` registers what a renderer's `mesh` asset draws; unregistered, its particles draw nothing. The emitter
+  record grew to 208 bytes (its range, mesh word with `INSTANCE_LIVE` and, from `castsShadows`, `INSTANCE_CASTS_SHADOWS`,
+  first material, renderer word).
+- "particle instances" (after "particle args") writes an `Instance` per slot of each mesh emitter's range from the half
+  just written, holes past its live particles; ranges of ended (or warm) effects are cleared with a fill first.
+- Deviation (the early group): no second group. With mesh particles set up, the whole simulation is built before
+  culling: `MeshletCulling` and `ClassicLodGeometry` call `SceneData.written(g, renderer)`, which builds the producers
+  of `GpuScene.writtenBy` keys first, so the simulation's passes (after the scene upload and deformation, which it
+  requests) come before the culling's reads in the frame. All passes were on the graphics queue already (step 4), so
+  "the main group still on the async queue" has nothing to check until step 18 moves it.
+- Not built: previous transforms per slot (no motion vectors exist yet; with TAA, step 21); `EffectSync` resolving mesh
+  renderers' assets through `SceneResources` (the game registers them with `particles.mesh`); tint and alpha per mesh
+  particle (per-instance custom data).
+- Tests: `MeshParticlesTest` (a quad particle drawn in the frame it is born, over five frames of two-phase occlusion,
+  the same image by forward and visibility buffer shading within 4 pixels; shadow flags per emitter; the CPU's ids beside
+  the range; holes after the effects end; the top level not rebuilt over frames of moving particles). The demo throws
+  rocks every four seconds (`DemoEffects.DEBRIS`), tumbling, bouncing on the terrain, casting shadows.
+
+### Step 17: lit particles (engine 0.154.0)
+
+- Billboards only are lit (ribbons, trails and beams draw unlit); the lighting is the renderer's (`Renderer.lighting`)
+  as drawn: `particles.quality(q)` (from `EffectSync.quality`) draws per-pixel per vertex below high and six-way maps
+  per vertex at low. Deviation: the lowering is the engine's fixed rule, not a setting of the effect type.
+- All read the view's light list (`Keys.LIGHT_LIST`, any binning, through `ILightList`) and its shadow inputs: the sun's
+  cascades reach particles as surfaces, through `lights.slang`'s new `lightIrradiance` (the irradiance a light brings
+  to a point after its shadow, which `lightSurface` now uses too). Without a light list, the sun of shading.slang. The
+  sky's constant irradiance adds to all; no environment (indirect light) yet.
+- Per vertex: a "particle lighting" compute pass per view lights each particle at its center (its cluster from its
+  projected center), the same from every side, into four words per pool slot after the view's indirect draws (one
+  buffer, one pointer: the draw push is full); the vertex shader reads it. Compute rather than the vertex shader because
+  the graph has no access for sampling shadow maps in vertex shaders.
+- Per pixel: per fragment from the normal map (`normal` setting, in the billboard's frame) or a sphere's normal across
+  the quad, half-Lambert wrapped. Six-way: `texture` holds right, top, back and alpha, `texture.b` left, bottom, front
+  and emission; each light weighs them by its direction's squared components in the billboard's frame.
+- The draw record grew to 48 bytes (lighting, second texture, the light list's address); one pipeline per kind as
+  before, the lighting a branch per draw.
+- Cost (StereoBench, RX 9070 XT, 2064 x 2208 per eye, a column of smoke covering about a quarter of the view): "particle
+  draw" per eye unlit 0.072 ms forward and 0.067 ms visibility buffer; per vertex 0.073 ms plus 0.005 ms of "particle
+  lighting"; per pixel 0.164 ms forward and 0.155 ms visibility buffer.
+- Tests: `LitParticlesTest` (smoke lit per pixel from one side, more than twice as bright there; per vertex the puff
+  nearer the light; six-way maps lit only from their side; the sun without a light list; quality). The demo has lit
+  smoke and `-Plights=N` scatters N point lights about the middle.
+
+### Step 17b: particle lights (scene 0.54.0, engine 0.155.0)
+
+- `Renderer.light(radius, intensity)` (kind `LIGHT`), settings `max` (per emitter, 64 by default) and `fraction` (the
+  share of particles that light, by their seed). Intensity times the particle's color and alpha.
+- `Lights.gpuLights(capacity)`: a device-local buffer of a count, three words and the lights, shared by both queues;
+  `Lights.writtenBy(key)`. `ClusteredLights` builds the writers first, reads it in "light clusters", bins its lights
+  after the scene's (`lightCount` plus the GPU's count, read on the GPU) and copies them into the light list after the
+  slots (header `extra`, 128 bytes now), so shading reads one declared buffer; `handOut` gives them no shadows.
+- `particles.lights(lights, budget)`: "particle lights count" (clears, counts each light emitter's candidates in 64
+  buckets of a quarter octave of brightness), "particle lights threshold" (one thread: each emitter's threshold bucket
+  for its budget, then the frame's over what the emitters keep), "particle lights write" (the kept become point lights,
+  appended). At most 64 light emitters a frame. Nothing is read back.
+- Deviation: the brightest are kept to a bucket: within the threshold bucket, which of them take the last places
+  follows the atomics' order, so it may differ between runs (E11 holds for the particles, not for which of
+  equally-bright lights win), and the lights' order in the buffer differs too (shading sums them in another order).
+- Tests: `ParticleLightsTest` (a light over a floor lights it alike in forward and visibility buffer shading; 300
+  candidates in two emitters over a budget of 40: the bright emitter's 5, the dim one's 35 brightest, none dimmer
+  than 0.65 where the 35th of 200 uniform values is about 0.82). The demo's sparks light the ground and the rocks
+  beside them (`DemoEffects.LIT_SPARKS`).
