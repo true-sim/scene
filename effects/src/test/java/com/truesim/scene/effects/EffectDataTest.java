@@ -40,6 +40,8 @@ class EffectDataTest {
         assertThat(sparks.parameterIndex(TINT)).isOne();
         assertThat(sparks.parameterIndex(EffectParameter.ofFloat("tint"))).isEqualTo(-1);
         assertThat(sparks.parameterOffset(1)).isOne();
+        assertThat(sparks.parameterOffset("tint")).isOne();
+        assertThat(sparks.parameterOffset("heat")).isEqualTo(-1);
         assertThat(sparks.parameterFloats()).isEqualTo(5);
         float[] block = new float[6];
         sparks.defaults(block, 1);

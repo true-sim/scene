@@ -1405,3 +1405,35 @@ Details the steps settled where sections 2 and 5 left them open.
   the node's last position, detached, and stops.
 - **Change log** flags: `ADDED`, `STOPPED`, `REMOVED` (ended or killed), `PARAMETERS`, `TIME` (scale or pause), `MOVED`
   (offset, position, attachment, inherited velocity), `SEED`. Default seeds are the PCG hash of a play counter.
+
+### Step 2: `EffectRuntime` (scene 0.45.0)
+
+- **One entry point:** `runtime.update(ticks)` advances the `Effects` (so their ends and times move first), syncs its
+  state per slot (an effect new in a slot starts from scratch), decides significance on the calling thread, then
+  computes spawns per effect on the job system (each effect writes its own records) and gathers them in slot order.
+- **An emitter's own time** is its effect's time minus its delay plus its prewarm, in ticks. Loop k runs from
+  `k × (duration + loop delay)` for its duration, while `k` is below the loop count and before the stop. Rates spawn
+  `floor(rate × 2^32 × running ticks / (2^32 × 10^6))`, the remainder carried per spawn entry; rate × 2^32 is capped at
+  2^60 and accumulated in steps that cannot overflow. Births within a segment are evenly spaced, `1 / rate` apart, the
+  first where the fraction reaches one. Random rates and counts draw per loop, salted with the loop and the entry.
+- **Bursts** fire at `loop start + time`, in (previous, now] of the emitter's time, and at the very first tick on an
+  emitter's first update; counts are rounded, after the spawn scale.
+- **Per metre:** the effect's displacement over the frame times the fraction of the frame its emitter ran, in
+  micrometres, spawned through the same fixed point, births spread evenly over the frame.
+- **Prewarm:** on the first update, the emitter's past is (0, prewarm]; what is older than its longest lifetime only
+  uses up spawn indices, the rest spawns back-dated and flagged `PREWARM`.
+- **Records:** effect, emitter, count, first spawn index, the first birth's age at the end of the frame, the interval
+  between births (each next one younger), flags and, for shared instances, the burst call (its position, normal and
+  payload stay in `Effects` until the next update; calls whose bursts have all fired are dropped at the start of the
+  next update). A record holds at most the emitter's capacity: the youngest births; the skipped ones keep their
+  indices.
+- **Significance:** distance to the nearest viewer (0 without viewers). Culled beyond `maxDistance × (1 + hysteresis)`
+  while shown, shown again within `maxDistance`; levels go coarser beyond the next level's distance × (1 + hysteresis)
+  and finer below their own distance. Caps rank effects of a type by distance (shown ones at distance / (1 +
+  hysteresis)) or by age (youngest first), ties by slot, with an allocation-free heap sort. Culled effects of `KILL`
+  types are killed, of `PAUSE` types held still in time (the runtime holds them in `Effects`, not logged: culling is per
+  client), of `SIMULATE` types spawn on with a drawn fraction of 0. The type's priority is not used yet (budgets come in
+  step 18).
+- **Spawn scale** is the type's scale at the quality times the level's; emitters below their minimum quality spawn
+  nothing. Seeds: `emitterSeed = Hash.combine(effectSeed, emitter)`, `particleSeed = Hash.combine(emitterSeed,
+  spawnIndex)`.

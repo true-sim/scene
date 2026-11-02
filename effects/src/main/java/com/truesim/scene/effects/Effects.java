@@ -95,6 +95,8 @@ public final class Effects {
     private long[] remainders = new long[16];
     private int[] scales = new int[16];
     private boolean[] paused = new boolean[16];
+    /** Held by the runtime: culled and paused by its effect type. */
+    private boolean[] held = new boolean[16];
     private long[] ends = new long[16];
     private long[] stops = new long[16];
     private boolean[] shared = new boolean[16];
@@ -111,6 +113,8 @@ public final class Effects {
     private double[] burstPositions = new double[3 * 16];
     private float[] burstNormals = new float[3 * 16];
     private int[] burstPayloads = new int[16];
+    private int[] burstSerials = new int[16];
+    private int burstSerial;
     private int burstCount;
 
     // The change log: a ring of (stamp, effect, changes).
@@ -205,6 +209,7 @@ public final class Effects {
         burstNormals[3 * b + 1] = ny;
         burstNormals[3 * b + 2] = nz;
         burstPayloads[b] = payload;
+        burstSerials[b] = burstSerial++;
         return id(slot);
     }
 
@@ -248,6 +253,16 @@ public final class Effects {
         return burstPayloads[Objects.checkIndex(i, burstCount)];
     }
 
+    /** Burst call {@code i}'s serial number: burst calls are numbered as they are made, from 0. */
+    public int burstSerial(int i) {
+        return burstSerials[Objects.checkIndex(i, burstCount)];
+    }
+
+    /** The serial number the next burst call will get. */
+    int nextBurstSerial() {
+        return burstSerial;
+    }
+
     /** Forgets the oldest {@code count} burst calls, once nothing needs them. */
     public void dropBursts(int count) {
         Objects.checkFromIndexSize(0, count, burstCount);
@@ -257,6 +272,7 @@ public final class Effects {
         System.arraycopy(burstPositions, 3 * count, burstPositions, 0, 3 * kept);
         System.arraycopy(burstNormals, 3 * count, burstNormals, 0, 3 * kept);
         System.arraycopy(burstPayloads, count, burstPayloads, 0, kept);
+        System.arraycopy(burstSerials, count, burstSerials, 0, kept);
         burstCount = kept;
     }
 
@@ -268,6 +284,7 @@ public final class Effects {
         burstPositions = Arrays.copyOf(burstPositions, 3 * length);
         burstNormals = Arrays.copyOf(burstNormals, 3 * length);
         burstPayloads = Arrays.copyOf(burstPayloads, length);
+        burstSerials = Arrays.copyOf(burstSerials, length);
     }
 
     @AllowAllocation("a handle per effect played")
@@ -307,6 +324,7 @@ public final class Effects {
         remainders[slot] = 0;
         scales[slot] = ONE;
         paused[slot] = false;
+        held[slot] = false;
         ends[slot] = ticks(effect.end());
         stops[slot] = -1;
         shared[slot] = false;
@@ -344,6 +362,7 @@ public final class Effects {
         remainders = Arrays.copyOf(remainders, length);
         scales = Arrays.copyOf(scales, length);
         paused = Arrays.copyOf(paused, length);
+        held = Arrays.copyOf(held, length);
         ends = Arrays.copyOf(ends, length);
         stops = Arrays.copyOf(stops, length);
         shared = Arrays.copyOf(shared, length);
@@ -383,6 +402,56 @@ public final class Effects {
                 visitor.visit(id(slot));
             }
         }
+    }
+
+    // By slot, for the runtime.
+
+    /** One past the highest slot in use. */
+    int slots() {
+        return slots;
+    }
+
+    /** The playing effect in {@code slot}, or 0 for none. */
+    long effectAt(int slot) {
+        return states[slot] != FREE ? id(slot) : 0;
+    }
+
+    EffectData dataAt(int slot) {
+        return data[slot];
+    }
+
+    long timeAt(int slot) {
+        return times[slot];
+    }
+
+    /** When the effect in {@code slot} stopped, or {@link Long#MAX_VALUE} while it spawns. */
+    long stopAt(int slot) {
+        return states[slot] == STOPPING ? stops[slot] : Long.MAX_VALUE;
+    }
+
+    boolean sharedAt(int slot) {
+        return shared[slot];
+    }
+
+    int seedAt(int slot) {
+        return seeds[slot];
+    }
+
+    double positionAt(int slot, int axis) {
+        return positions[3 * slot + axis];
+    }
+
+    float[] parametersAt(int slot) {
+        return parameters[slot];
+    }
+
+    /** Holds the effect in {@code slot} still in time, or lets it go on: culled effects of pausing types. */
+    void hold(int slot, boolean hold) {
+        held[slot] = hold;
+    }
+
+    void killAt(int slot) {
+        end(slot);
     }
 
     /** The data a playing effect plays. */
@@ -680,7 +749,7 @@ public final class Effects {
                     }
                 }
             }
-            if (!pausedAll && !paused[slot]) {
+            if (!pausedAll && !paused[slot] && !held[slot]) {
                 long scaled = remainders[slot] + ticks * ((long) scales[slot] * scale >> SCALE_BITS);
                 times[slot] += scaled >> SCALE_BITS;
                 remainders[slot] = scaled & (ONE - 1);

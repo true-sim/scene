@@ -132,6 +132,16 @@ public final class EffectData {
         return offsets[index];
     }
 
+    /** Where the parameter called {@code name} starts in a parameter block, or -1 if it has none. */
+    public int parameterOffset(String name) {
+        for (int i = 0; i < offsets.length; i++) {
+            if (parameters.get(i).name().equals(name)) {
+                return offsets[i];
+            }
+        }
+        return -1;
+    }
+
     /** How many floats its parameters' values take, all together. */
     public int parameterFloats() {
         return defaults.length;
