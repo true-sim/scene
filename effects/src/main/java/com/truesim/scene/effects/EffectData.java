@@ -550,6 +550,9 @@ public final class EffectData {
                 if (e.target() == Target.GPU && t.target() == Target.CPU) {
                     problems.add(where + ": a GPU emitter cannot spawn into the CPU emitter " + t.name + ".");
                 }
+                if (e.target() == Target.CPU && t.target() == Target.GPU) {
+                    problems.add(where + ": a CPU emitter spawns into CPU emitters only, not " + t.name + ".");
+                }
                 parents.get(target).add(i);
             }
         }
