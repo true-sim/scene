@@ -408,8 +408,11 @@ public final class CpuSimulation {
                     break;
                 }
                 int i = p.count;
-                int seed = Hash.combine(Hash.combine(events.seed[v], events.salt[v]), c);
-                p.born(i, seed, s.eventIndex[e]++);
+                long index = s.eventIndex[e]++;
+                // An emitting parent's children each by their spawn index: its events come every frame, alike
+                int seed = Hash.combine(Hash.combine(events.seed[v], events.salt[v]), events.step[v] > 0 ? (int) index
+                    : c);
+                p.born(i, seed, index);
                 s.direction(0, 0, 0);
                 for (int m = 0; m < program.init.length; m++) {
                     init(s, p, i, program.init[m], parameters, seed);

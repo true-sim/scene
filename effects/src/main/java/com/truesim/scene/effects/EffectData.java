@@ -265,7 +265,7 @@ public final class EffectData {
 
     @Override
     public boolean equals(Object other) {
-        return other instanceof EffectData d && key.equals(d.key);
+        return other == this || other instanceof EffectData d && hash == d.hash && key.equals(d.key);
     }
 
     @Override

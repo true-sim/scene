@@ -184,7 +184,7 @@ public final class EmitterData {
 
     @Override
     public boolean equals(Object other) {
-        return other instanceof EmitterData e && key.equals(e.key);
+        return other == this || other instanceof EmitterData e && key.equals(e.key);
     }
 
     @Override
