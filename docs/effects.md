@@ -1837,3 +1837,168 @@ Details the steps settled where sections 2 and 5 left them open.
   candidates in two emitters over a budget of 40: the bright emitter's 5, the dim one's 35 brightest, none dimmer
   than 0.65 where the 35th of 200 uniform values is about 0.82). The demo's sparks light the ground and the rocks
   beside them (`DemoEffects.LIT_SPARKS`).
+
+### Step 18: scalability (scene 0.56.0, engine 0.157.0)
+
+- **Effect types enforced:** the levels of detail's drawn fraction and update rate reach the GPU (step 2 decided them,
+  nothing used them); a GPU emitter's range is placed at its capacity times its type's spawn scale at the quality
+  (at least a chunk; CPU emitters as authored, as they upload what they simulate).
+- **Budgets in bytes:** `EffectRuntime.budget(bytes, cost)`; `EffectSync` gives it the pool's bytes and
+  `Particles.bytes(effect)` (each emitter's range at its placed capacity, both halves, and side units). After the caps,
+  the effects shown rank by their types' `priority` (higher first), then their significance; past
+  `BUDGET_SOFT` (three quarters) of the budget they spawn at half their scale, past all of it they are culled as their
+  type says. Placements of shared effects cost nothing, variants count.
+- **LOD transitions:** `runtime.drawn(effect)` moves towards the level's drawn fraction over `FADE` (0.3 s of the
+  world clock), decided at once on an effect's first update. The draws keep a particle whose hash (salt `0x4c0d`)
+  is within the fraction and fade the next `0.08` of hashes out; the kept grow by `1 / sqrt(fraction)` (at most
+  twice), keeping the cover. Levels keep step 2's hysteresis. An emitter updating every n frames is held in the
+  others (`EMITTER_HELD`: its particles copied as they are, no events, no trail points) and moves by the time held
+  (clamped to n times `MAX_STEP`) on the next; draws and sorts place its particles moved on by their velocity for
+  the time held. Deviations: held per emitter, not per particle, so particles born while held age with the whole
+  step at the next update (late by under n frames); held frames send no events (birth events wait for the update).
+- **Half resolution:** a renderer's `half` 1, or every billboard at low quality. `ParticleDraw` draws those first:
+  "particle half depth" (the farthest of each 2 x 2 of the scene's depth, the depth pyramid's program), "particle
+  draw, half" into a cleared target of half the view's size, then "particle upsample" lays it over the scene, each
+  pixel taking the nearest-depth texel of the four about it. Per eye, as every view draws its own. Deviations: half
+  resolution particles are behind every full resolution one (composited first, not in the back-to-front order of
+  emitters); the half pass ignores dynamic resolution's render region.
+- **`effects.quality`:** low draws every billboard at half resolution, scales capacities as above and lowers lighting
+  (step 17).
+- **Async compute:** `new ParticleSimulation(particles).async(true)` marks every simulation pass async; the
+  particles' buffers are shared by the graphics and compute families. Frames with mesh particles, mesh shapes or ray
+  collision simulate on the graphics queue (their scene reads and writes order them about culling and the top
+  level): no early and main groups. `ParticleBenchmark` (RX 9070 XT, a million particles, no opaque work to overlap):
+  the frame's span 2.79 ms on the graphics queue and 2.60 ms async; the showcase (mesh particles) stays on graphics.
+- **Debug views:** `ParticleDraw.overdraw(true)` draws a heat map (a dim orange a layer, about ten to white);
+  statistics per emitter (alive, overflow) as before. Not built: bounds and emitter origins drawn as lines.
+- **Hot spots fixed** (measured in the showcase, RX 9070 XT): "particle lights threshold" runs on a group of 256
+  threads (a thread per light emitter, group-memory atomics for the frame's histogram): 0.189 to 0.010 ms; light
+  emitters at most 1,024 (from 64); candidates rank by brightness times radius (a far-reaching light outranks a near
+  one as bright; renderer setting `radius.size` scales a light's radius by its particle's size). Events of a frame
+  (at most `EVENT_SMALL`, 2,048) sort in one group in group memory ("particle events small", 0.012 ms); the 48 radix
+  passes are recorded only after a frame (from the statistics, 60 frames back) sent over 1,024, else further events
+  are dropped and counted for those frames. The view sort keeps 4 keys a thread (1,024 a group) and ranks each digit
+  with wave ballots (any wave of 4 to 128 lanes), writing keys straight to their places: a million 1.84 to 0.77 ms.
+  A dust play allocated its handle: `Effects.start` plays by id, and `EffectBindings.onEvent(...).burst()` bursts
+  into the shared instance of the cell (E22): the showcase's hundred foxes' footsteps are a few instances, not a
+  thousand emitters, and the sync's 1 % high went from 1.33 to 0.35 ms. `EffectData.equals` checks identity first.
+- **`ParticleBenchmark`** (RX 9070 XT, 2026-11-02; before is engine 0.156.0):
+
+  | | before | after |
+  |---|---|---|
+  | a million particles: update | 0.280 ms | 0.278 ms |
+  | the simulation's other passes | 0.528 ms | 0.528 ms |
+  | the view's sort | 1.668 ms | 0.729 ms |
+  | draw (unlit sparks, 1920 x 1080) | 1.367 ms | 1.392 ms |
+  | overdraw: 600 lit smoke puffs of 3 m, 2064 x 2208, full | 3.9 to 4.8 ms | 4.0 to 4.6 ms |
+  | the same at half resolution | | 1.34 to 1.47 ms |
+  | 1920 x 1080, full / half | 1.29 to 1.60 ms | 1.75 / 0.50 ms |
+
+  (Overdraw runs vary by about 20 % between runs.)
+- Tests: `ParticleDrawTest` (levels of detail drawing other, larger particles; half resolution as full within a
+  twentieth of the pixels, behind a nearer wall's edge; the overdraw heat map adding a layer at a time),
+  `ParticlesTest` (held emitters every other frame, never more than a frame behind; the async queue against the
+  reference), scene's `SharingTest` (budgets by priority, fades, plays by id), `ParticleSortTest`,
+  `ParticleLightsTest`, `EffectBindingsTest` (bursts).
+
+### Step 18a: shared simulations (scene 0.56.0, engine 0.157.0)
+
+- **`EffectData.Builder.shared(variants, nearDistance)`.** Eligibility from the modules: every emitter on the GPU in
+  local space, no collision, mesh or bone shapes, no mesh, light or beam renderers; otherwise the asset is simulated
+  per instance and `sharingRefusal()` says which emitter and why. Lights are per instance: the showcase's torch is a
+  shared fire and an unshared light effect.
+- **`Effects`:** playing a shared asset makes a placement (`placement(id)`), drawing variant `played % K` in turn
+  (`variantOf(id)`), started on demand at the origin, unrotated, seeded `Hash.combine(data.hashCode(), v)`. A variant
+  with no placement left stops (its particles live out, undrawn); a new placement then starts a new one. Placements
+  refuse parameters of their own and inherited velocity (`IllegalStateException`); they move with their nodes or
+  `moveTo` (the decision: placements may move, rigidly: right for local-space content), and `Effect.scale(s)` scales
+  one. Deviations: variants start together, de-phased by their seeds only (no time offsets, no variant picked by
+  phase); `effects.replace` ends placements and variants.
+- **Runtime:** placements take significance, caps and levels like any effect but spawn nothing; a variant is as near
+  as its nearest placement shown (culled when none is). Within `nearDistance` (with the type's hysteresis) a
+  placement gets a simulation of its own (`nearOf(id)`, an effect at its place with its seed) and its share of the
+  variant (`placementWeight`) fades to 0 over the asset's lingering; going far, its own stops and the variant fades
+  back in. A stopped placement fades out over its lingering, then ends.
+- **Engine:** placements have no instances; after the simulated emitters, `Particles` lists a record per placement
+  and variant emitter (`EMITTER_PLACEMENT`): the variant's record at the placement's origin, rotation and scale, its
+  fade and drawn fraction; draws, culling and the sort read them like any (the sort's room grows with them), the
+  simulation never does. Variants' own records are `EMITTER_HIDDEN`. Placements lit per vertex draw lit per pixel (a
+  slot's light is its variant's).
+- Measured: 1,000 torches in the showcase (`-Ptorches=1000`) are 6 simulations of 4 emitters (about 12,000 particles
+  alive in all) and 4,000 drawn records.
+- Tests: `SharingTest` (eligibility and refusals; variants in turn; placements ending, outliving their variant;
+  near placements' own simulations and fades; budgets), `ParticlesTest.sharedEffectsSimulateTheirVariantsOnly`
+  (40 placements, 3 variants), `ParticleDrawTest.placementsDrawTheirVariantsWhereTheyAreMovedScaledAndStoppedAlone`.
+
+### Step 19: emitter state on the GPU (scene 0.56.0, engine 0.157.0)
+
+- **`ParticleEvent.emit(target, perSecond)`:** after each step a parent adds `perSecond x step` to an accumulator in
+  16.16 fixed point (four a particle, `MAX_EMITS`, in a side unit after those over life: `PROGRAM_EMIT`), and sends
+  the whole children it owes (at most 255). Its children are spread back over the parent's step along its path, the
+  youngest last (age and position by the parent's velocity), seeded by their spawn index (an emitting parent's events
+  come every frame, alike). `CpuSimulation` does the same in Java; GPU and CPU match particle for particle.
+- **Ribbons per parent:** a ribbon renderer's `ribbons` 0. A particle's ribbon id is in `custom.y`: its spawn index
+  for emitters' own (strands as spawn index % ribbons), its parent's for children. Such emitters' particles are keyed
+  (the emitter's place, the low 20 bits of the id) and sorted by the view sort's radix passes, stably, into the ribbon
+  order ("particle ribbon keys", "particle ribbon sort", "particle ribbon order"); draws taper each ribbon by age.
+- Deviations: no child ranges per parent (children share their emitter's range, ordered by the sort); emitting starts
+  in the frame after a parent's birth; timing by the parent's age only through the rate's binding.
+- The showcase's rockets emit their trails (40 a second) instead of periodic events; `-Psparks=100000` throws
+  100,000 sparks each with a trail of its own (24 points a second, 0.18 s): about 440,000 particles.
+- Tests: `ParticlesTest.particlesAsEmittersMatchTheReferenceAndTheirRates` (15 children by half a second at 30 a
+  second, against the reference), `ribbonsPerParentKeepEachSparksTrailTogetherInSpawnOrder`.
+
+### Step 20: plugin modules (engine 0.157.0)
+
+- **`ParticleModules(shader, types)`**, given to `particles.modules(...)`: the game's module types (scene-effects'
+  `ModuleType`, at most 8 float fields) and its kernel variant, a Slang file defining `PARTICLE_MODULES` and a
+  `ParticleModules` type dispatching `IParticleModule.init` and `update` by index, then including
+  particles/simulate.slang. Module `i` is opcode `OP_PLUGIN + i`; it gets its fields evaluated (`ParticleModuleInput`,
+  with the step, time, salt, frame's down and wind); initializers run in their place, updaters after the built-in
+  motion. Effects naming them are built against `modules.registry()`. Deviations: no `[ParticleModule]` attribute and
+  generated dispatch (the generators live in build-logic); the variant replaces the rays variant (no ray collision
+  with plugin modules); no Java twins (a CPU emitter naming a plugin module is refused by `CpuSimulation`).
+- **`modify(PARTICLES)`:** a technique modifying `ParticleKeys.PARTICLES` runs after the simulation and before
+  anything reading them (tested).
+- **Built-in modules** the showcase uses: `Init.rotation` (and `randomRotation()`), `Init.frame` (where a flipbook
+  starts, a fraction of its frames; `randomFrame()`), and `Shape.mesh(mode, upward)` keeping a particle with the
+  chance `1 - upward + upward max(0, n.y)`. Rotation and frame have Java twins (`ParticleCursor.rotation()`,
+  `frame()`); the mesh weighting is GPU only. The showcase's flames start at random frames and its fox fire weights
+  its skin's upward faces (the texture mask is no longer needed).
+- Tests: `ParticleModulesTest` (a force and an initializer of the test's, test/particlegust.slang; a technique fading
+  a particle), `SharingTest.rotationsAndFlipbookStartsAreDrawnPerParticleOnTheCpu`.
+
+### Step 21: glass order and TAA hooks (engine 0.157.0)
+
+- **Glass order** per renderer (open question 1): `glass` 0 after (the default), 1 before: drawn by
+  `ParticleDraw.beforeGlass(particles, view, center)`, a technique at `TRANSPARENT` before `Transparency.ID`, so
+  blended glass tints them and `SceneBehind` holds them; 2 split, at a view's `ParticleKeys.GLASS_DEPTH` (the nearest
+  blended surface, which a transparency technique may provide): fragments behind it drawn before the glass, the rest
+  after. No transparency technique writes that depth yet, so split renderers draw after the glass. `EffectsPlugin.draw`
+  adds both techniques per view.
+- **TAA hooks**, as TAA does not exist: `ParticleKeys.REACTIVE`, an R8 image of the particles' coverage (alpha and
+  added light), drawn only where a technique requires it; `ParticleKeys.PREVIOUS_INSTANCES`, per slot of the mesh
+  particles' instance range, the instance a frame before (moved back by its velocity, tumbling turned back by its
+  roll), written by "particle instances".
+- Tests: `ParticleDrawTest.particlesBeforeGlassAreTintedByItAndThoseAfterItAreNot`, `theReactiveMaskCoversWhere
+  ParticlesAre`. The showcase's `-Pglass=true` puts a window before the bonfire, its fire drawn before glass and
+  sparks before the window after it.
+
+### Folded in from steps 14 and 15
+
+- `EffectsPlugin`: `collisionView(view)` (a `ParticleCollisionDepth`), `meshes(sceneSync, renderer, instances)`,
+  `lights(lights, budget)`, `rays(rayTracing, renderer)`, and `draw(views)` before and after glass.
+
+### The showcase (engine 0.156.0, updated in 0.157.0)
+
+- `./gradlew :engine-demo:showcase -Pcrowd=<Fox.gltf>`: 100 foxes in an arena at dusk with everything at once: a
+  layered bonfire and torches (core, flame tongues from a flipbook, embers, lit smoke, a flickering light), a tenth
+  of the foxes on fire over their posed skins, dust at every footstep (bursts into shared instances), fireworks waves
+  (rockets emitting trails, bursting into stars and sparkles, flashes lighting the ground), blasts of tumbling,
+  shadow-casting rocks, hail, sparks, swirls, a dust devil (half resolution), smoke in gusting wind, orbs with
+  ribbons and beams. Frames go to PNG files (`-Pout`, `-Pframes`, `-Pfirst`, `-Pevery`, `-Pstills`, `-Psize`,
+  `-Pcamera=orbit|keys:...|follow:...`), or `--args=measure` times the frames in stereo at a Quest 3's eye size.
+- Options: `-Ptorches=N` (torches in rings beyond the arena, all placements of six shared fires), `-Psparks=N`
+  (sparks with trails), `-Pglass=true` (a window), `-Pasync=true` (the simulation async where it may be).
+- Its fires belong to the effect type `FIRES` (levels at 22 and 40 m: drawn 0.6 and 0.35, the far one updated every
+  second frame); the torches are shared (6 variants, own simulations within 9 m).

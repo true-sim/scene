@@ -189,6 +189,10 @@ class SharingTest {
         runtime.update(FRAME);
         long own = effects.nearOf(p);
         assertThat(own).as("near: a simulation of its own").isNotZero();
+        assertThat(runtime.decided(own)).as("made by the update: the next decides it").isFalse();
+        assertThat(runtime.decided(p)).isTrue();
+        assertThat(runtime.decided(Long.MAX_VALUE)).isFalse();
+        assertThat(new EffectRuntime(effects).decided(p)).as("never updated").isFalse();
         assertThat(effects.placement(own)).isFalse();
         assertThat(effects.seed(own)).isEqualTo(effects.seed(p));
         assertThat(runtime.placementWeight(p)).as("fading out").isLessThan(1);

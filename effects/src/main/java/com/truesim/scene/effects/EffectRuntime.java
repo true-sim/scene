@@ -735,6 +735,15 @@ public final class EffectRuntime {
         return "No effect " + Long.toHexString(effect) + " was updated";
     }
 
+    /**
+     * Whether the last update decided {@code effect}: false for one played since, or made by it (a near placement's
+     * simulation of its own), which the next update decides.
+     */
+    public boolean decided(long effect) {
+        int slot = effects.slot(effect);
+        return slot >= 0 && slot < instances.length && instances[slot].id == effect;
+    }
+
     /** The level of detail of {@code effect} as of the last update: 0 for full detail. */
     public int lod(long effect) {
         return updated(effect).lod;
