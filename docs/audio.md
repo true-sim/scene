@@ -11,14 +11,14 @@ Decided with the user one question at a time (AU1 to AU16 below), after a survey
 Sound Cues, Quartz, Audio Modulation, submixes, attenuation, concurrency), Unity (AudioSource and Mixer, DSPGraph),
 Godot 4 (AudioServer, buses, AudioStreamGenerator, interactive music), FMOD Studio, Wwise, CRI ADX, Steam Audio, Meta
 XR Audio SDK, miniaudio, OpenAL Soft, SDL3 audio, LWJGL's audio bindings, Java's own options and public HRTF data
-sets (sources in section 8), and a reading of engine `README.md`, `CLAUDE.md`, `docs/application-api.md`,
+sets (sources in section 9), and a reading of engine `README.md`, `CLAUDE.md`, `docs/application-api.md`,
 `docs/pitfalls.md`, the `engine-app`, `engine-platform`, `engine-settings` and `engine-xr` sources, scene `README.md`,
 `docs/animation.md`, `docs/effects.md`, `scene-animation`, `scene-assets`, `scene-world`, `scene-collision`
 (`TerrainHeights`) and the `scene-effects` store (`Effects`, `Effect`, as built) that this design copies. Then
 reviewed at high effort against the code and the cited sources (section 7 lists what the review changed, the risks
 left and the open questions).
 
-Steps 1 to 7 of section 6 are built (section 9 says how, and where the code differs); the rest is not. The decisions
+Steps 1 to 7 of section 6 are built (section 8 says how, and where the code differs); the rest is not. The decisions
 are AU1 to AU16. Sections 2 and 3 are written for them; section 5 keeps the
 options weighed (Q1 to Q16, one per decision) with the reasons, and marks where the decision differs from the first
 recommendation.
@@ -42,7 +42,7 @@ recommendation.
 | AU13 | **Occlusion chosen per sound:** none; game rays through an `AudioWorld` interface (physics, or the engine's ray tracing structures); propagation later. | Differs: per sound, and the ray tracing structures as a second implementation; Steam Audio's simulation dropped with AU6. |
 | AU14 | **Sample rate: the device's native rate.** | As recommended. A device whose rate changes is handled in §2.17. |
 | AU15 | **Audio thread waits by polling SDL's queue with about a 1 ms park.** | As recommended. See the reviewer note: Windows timer resolution. |
-| AU16 | **Bindings in engine-app's `Audio` plugin as `AudioBindings`**, next to `EffectBindings`. | As recommended. `EffectBindings` exists now, in engine-scene; the `Audio` plugin lives in engine-audio (§9, step 6). |
+| AU16 | **Bindings in engine-app's `Audio` plugin as `AudioBindings`**, next to `EffectBindings`. | As recommended. `EffectBindings` exists now, in engine-scene; the `Audio` plugin lives in engine-audio (§8, step 6). |
 
 **Reviewer notes on decisions** (for the user to reconsider; the design follows the decisions as they stand):
 
@@ -1601,7 +1601,7 @@ listeners (AU12), and block-size changes applied at an output restart with golde
 
 ---
 
-## 9. As built
+## 8. As built
 
 Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the code differs from the text above
 (marked **deviation**). Built on local branches `audio` of common-math, scene and engine; not released yet.
@@ -1780,7 +1780,7 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
 
 ---
 
-## 8. Sources
+## 9. Sources
 
 Reached for this design (links inline above, collected here):
 - Unreal: [Quartz overview](https://dev.epicgames.com/documentation/unreal-engine/overview-of-quartz-in-unreal-engine),
