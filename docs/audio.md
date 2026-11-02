@@ -421,9 +421,9 @@ nothing of the engine; servers and tools use it):
   and reverb zones are therefore entries in stores keyed by node, as effects are, and gain a component form when D46
   is built.
 
-**scene, new module `scene-audio-codecs`** (scene-audio, LWJGL `stb` and `opus` with natives, jHDF; as
+**scene, new module `scene-audio-codecs`** (scene-audio, LWJGL `stb` and `opus` with natives; as
 `scene-meshbuild` takes meshoptimizer): importers registered by extension through `PathAssets.importers()`
-(`new AudioImporters(paths).register()`: `.wav`, `.ogg`, `.opus`, `.sofa`, later `.flac`), loudness measurement, the
+(`new AudioImporters(paths).register()`: `.wav`, `.ogg`, `.opus`, `.hrtf`, later `.flac`), loudness measurement, the
 `ClipDecoder`s (Vorbis through stb_vorbis's pull API; Opus through libopusfile, which LWJGL binds: `op_open_memory`,
 `op_read_float`, `op_pcm_seek`), and the SOFA reader producing an `HrtfSet` (§2.9).
 
@@ -625,9 +625,10 @@ one in memory.
 ### 2.9 HRTF in Java (AU6)
 
 **Data.** An `HrtfSet` asset (scene-audio) holds measured directions (azimuth, elevation, distance), one HRIR per
-ear per direction, and the rate. `.sofa` files import through jHDF (`SimpleFreeFieldHRIR`); a default set ships with
-the engine (open question 1: SADIE II's KU100 at 48 kHz, Apache 2.0, recommended). Players pick a set in the settings
-(`audio.hrtf.set`), and a game may ship its own.
+ear per direction, and the rate. `.sofa` files (`SimpleFreeFieldHRIR`) are converted at build time to a small
+format of our own (`.hrtf`: directions, minimum-phase HRIRs and ITDs, already prepared) by a converter tool, so the
+runtime needs no HDF5 reader; the default set ships converted with the engine (SADIE II's KU100 at 48 kHz, Apache
+2.0). Players pick a set in the settings (`audio.hrtf.set`), and a game may ship its own, converted.
 
 **Preparation** (once per set and output rate, on a background lane, never on the audio thread):
 1. resample the HRIRs to the output rate (windowed sinc, `Maths` for the window);
@@ -1507,7 +1508,7 @@ that use them; engine steps take the scene release with their types. "Engine" me
 | 14 | app | `AudioBindings`: animation events at joints with surface switches, curves to parameters, effect starts and bursts to sounds; demo: the Fox's footsteps on terrain materials | A footstep per foot-down event of the walk and run; the switch follows `materialAt`; an effect start plays its sound once |
 | 15 | scene, engine | Dialogue: `Line`, `Dialogue` rules (priority, interrupt, queue, expiry, cooldowns), WebVTT cues, viseme sidecars, envelope, captions and `indicators` | Cues at heard time in offline renders; interruption fades and reports; visemes interpolated at the heard time; indicators' directions for sources around the listener |
 | 16 | engine | Occlusion: `AudioWorld`, `CollisionAudioWorld`, the ray budget on the job system, smoothing, material transmission per band, obstruction versus occlusion, partial occlusion | A wall lowers level and cutoff as configured; the budget holds with 500 emitters; results independent of thread count |
-| 17 | scene, engine | HRTF: `HrtfSet`, the SOFA importer (jHDF), preparation (resample, minimum phase and ITD, triangulation), the default set, partitioned FFT convolution with interpolation, cross-fades and near field; the cap with panning fallback | ITD and ILD of rendered impulses against the set at measured directions; no click while a source circles the head; cap fallback; CPU per block within 0.6 ms for 16 voices; the listening checklist |
+| 17 | scene, engine | HRTF: `HrtfSet`, the build-time SOFA converter (a tool reading HDF5 at build time only) and the `.hrtf` importer, preparation (resample, minimum phase and ITD, triangulation), the default set, partitioned FFT convolution with interpolation, cross-fades and near field; the cap with panning fallback | ITD and ILD of rendered impulses against the set at measured directions; no click while a source circles the head; cap fallback; CPU per block within 0.6 ms for 16 voices; the listening checklist |
 | 18 | engine, xr | VR and ambisonics: the head as listener, the ambisonics bus with its SH-domain binaural decode for voices past the cap, `XR_OCULUS_audio_device_guid` matched by name where offered, headset idle and focus reported | Ambisonic directions; CPU flat in the number of ambisonic voices; Quest 3 through SteamVR plays on the headset (manual, `TRUESIM_XR=true`); idle lowers or mutes per the background rule |
 | 19 | engine | Many sounds: `Scatter`, sound fields (points, polyline, area) with nearest-k voices and a bed; the ray-tracing `AudioWorld` | A crowd of 5,000 points costs k voices; a listener walking along a river hears a continuous source; ray-traced occlusion matches physics on a test scene |
 | 20 | both | `AudioBenchmark` (voices, HRTF voices, rendering listeners, streams, patches; CPU per block percentiles), README tables dated, debug overlay (real and virtual voices, buses, meters, listener graph) | Numbers on the Ryzen 9 9950X3D; under 1.5 ms per block for the heavy scene |
@@ -1578,30 +1579,24 @@ table.
 - **Effects' change-log consumers** in engine-app do not exist yet (no `EffectBindings`), so `AudioBindings` is the
   first engine consumer of a scene store's log and sets the pattern.
 
-**Open questions** (recommended option first):
-1. **The default HRTF set to ship.** (a) **SADIE II KU100 at 48 kHz (Apache 2.0)**: a modern dense measurement at
-   the output rate, licence compatible with anything. (b) MIT KEMAR: small and familiar, 44.1 kHz only, older.
-   (c) None: players or games supply a SOFA file, panning until then.
-2. **How SOFA files are read.** (a) **jHDF at import, in scene-audio-codecs**: pure Java, MIT, any SOFA file at
-   runtime. (b) A build-time converter to our own small format: no HDF5 dependency at runtime, but no drag-in SOFA
-   files for players.
-3. **Where the hashed random lives.** (a) **Move `Hash` to common-math**, scene-effects delegating: one hash for
-   effects, audio and gameplay. (b) A copy in scene-audio: no cross-repo step, but two copies to keep identical.
-   (c) scene-audio depends on scene-effects: wrong direction.
-4. **Time scale for world sounds.** (a) **Pitch follows by default, per-sound opt-out (`TimeScaling.NONE`)**,
-   dialogue and 2D sounds off by default. (b) Nothing follows by default. (c) Granular stretch by default (pitch kept):
-   costly, later.
-5. **Focus and visibility.** (a) **A setting, default `PLAY`** (D127: nothing pauses by itself), with `LOWER` and
-   `MUTE`. (b) Default `MUTE` when minimised, as many PC games do.
-6. **When the device's rate changes.** (a) **Restart at the new rate** (AU14), SDL converting in the meantime.
-   (b) Keep the start rate for the session and let SDL convert: simpler, a second resampling and its latency.
-7. **Starting SDL's audio subsystem.** (a) **Through `Platform.startAudio()` on the platform thread**, events through
-   `PlatformListener`: keeps the platform's one-owner rule. (b) `engine-audio` calls `SDL_InitSubSystem` itself: fewer engine
-   changes, a second SDL owner.
-8. **Rendering listener channel layout.** (a) **Mono by default, stereo on request**: a TV or radio is a point
-   source. (b) Stereo by default, re-emitted as a pair of points.
-9. **Collector guidance.** (a) **Recommend ZGC; deepen the queue under other collectors automatically.** (b) Require
-   ZGC (refuse to start otherwise): too strict for a library. (c) Say nothing.
+**Decided with the user after the review:**
+1. **Default HRTF set:** SADIE II KU100 at 48 kHz (Apache 2.0).
+2. **SOFA files:** converted at build time to our own `.hrtf` format by a converter tool; no HDF5 reader at runtime
+   (differs from the recommendation: players can't drop in raw SOFA files, but converted sets load like any asset).
+3. **Hashed random:** `Hash` moves to common-math; scene-effects delegates.
+4. **Time scale:** world sounds follow it in pitch by default, with a per-sound opt-out; dialogue, 2D and UI sounds
+   don't follow by default.
+5. **Focus and visibility:** a setting, default `PLAY`, with `LOWER` and `MUTE`.
+6. **Device rate changes:** restart at the new rate.
+7. **SDL audio:** started through `Platform.startAudio()` on the platform thread.
+8. **Rendering listeners:** mono by default, stereo on request.
+9. **Collector:** recommend generational ZGC (set in the app launcher); under other collectors the queue deepens
+   automatically. The audio thread is garbage-free, but stop-the-world pauses freeze every Java thread, so the
+   collector still matters.
+
+The reviewer's refinements are adopted with the decisions they refine: the high-resolution waitable timer for AU15's
+polling, a `Spatializer` interface keeping Steam Audio as a documented fallback for AU6, reduced mixes for rendering
+listeners (AU12), and block-size changes applied at an output restart with goldens pinned to 256 frames (AU4).
 
 ---
 
