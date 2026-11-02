@@ -168,7 +168,7 @@ class ValuesTest {
         assertThat(ModuleRegistry.BUILT_IN.type(Shape.SPHERE).runsOn(Target.CPU)).isTrue();
         assertThatIllegalArgumentException().isThrownBy(() -> modules.with(rays)).withMessageContaining("already");
         assertThatIllegalArgumentException().isThrownBy(() -> new ModuleType("x", ModuleType.Stage.INIT,
-            java.util.Set.of(), Capability.NONE, Map.of())).withMessageContaining("no target");
+            java.util.Set.of(), Capability.NONE, Map.of(), null)).withMessageContaining("no target");
     }
 
     @Test

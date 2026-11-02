@@ -54,12 +54,14 @@ public final class EffectData {
     private final int variants;
     private final double near;
     private final String refusal;
+    private final ModuleRegistry modules;
     private final List<Object> key;
     private final int hash;
 
-    private EffectData(Builder b, List<EmitterData> emitters, int[] depths, double[] chains, double[] ends,
-            String refusal) {
+    private EffectData(Builder b, ModuleRegistry modules, List<EmitterData> emitters, int[] depths, double[] chains,
+            double[] ends, String refusal) {
         type = b.type;
+        this.modules = modules;
         this.refusal = refusal;
         variants = refusal == null ? b.variants : 0;
         near = b.near;
@@ -102,6 +104,11 @@ public final class EffectData {
         }
         key = List.of(type, parameters, values, this.emitters, maxEventDepth, b.variants, near);
         hash = key.hashCode();
+    }
+
+    /** The module types it was built against: CPU emitters run their modules' Java twins from them. */
+    public ModuleRegistry modules() {
+        return modules;
     }
 
     /** Sets up an effect of type {@code type}. */
@@ -431,7 +438,7 @@ public final class EffectData {
             for (int i = 0; i < n; i++) {
                 settle(i, built, chains, ends);
             }
-            return new EffectData(b, built, depths, chains, ends, b.variants == 0 ? null : refusal(built));
+            return new EffectData(b, modules, built, depths, chains, ends, b.variants == 0 ? null : refusal(built));
         }
 
         /** Why the effect cannot share simulations (effects.md §2.11's eligibility), or null. */
