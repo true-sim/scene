@@ -1,0 +1,31 @@
+# The PCG hash of scene-effects (com.truesim.scene.effects.Hash), as fixed vectors: the Java simulator and
+# the engine's Slang kernel are checked against the same values. Integers are unsigned 32-bit, in hex.
+#   pcg,<value>,,<pcg(value)>
+#   combine,<seed>,<salt>,<pcg(seed + pcg(salt))>
+#   random,<seed>,<salt>,<float bits of (combine(seed, salt) >>> 8) * 2^-24>
+pcg,00000000,,07bb2fe2
+pcg,00000001,,a8beea3c
+pcg,00000002,,7a7ecc88
+pcg,00000003,,7f0ef6bc
+pcg,0000002a,,48f432ff
+pcg,000000ff,,97d6451d
+pcg,00000100,,ca81f917
+pcg,0000ffff,,07d6f4f8
+pcg,7fffffff,,e99f49ce
+pcg,80000000,,21c72646
+pcg,deadbeef,,67299972
+pcg,ffffffff,,e62a4902
+pcg,075bcd15,,fea791ca
+combine,00000000,00000000,30be035e
+combine,00000001,00000002,7deda5d8
+combine,00000007,00000003,47a42b00
+combine,ffffffff,00000001,78f332c5
+combine,0000002a,00001000,5cc57d44
+combine,12345678,9abcdef0,49071dc7
+combine,80000000,7fffffff,8b32b94f
+random,00000000,00000000,3e42f80c
+random,00000007,00000003,3e8f4856
+random,0000002a,00000008,3ee543fe
+random,0000002a,00000009,3f00cac1
+random,deadbeef,00001000,3dc47048
+random,ffffffff,ffffffff,3ca1bf20

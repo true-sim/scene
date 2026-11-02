@@ -79,6 +79,10 @@ public final class EffectRuntime {
         this.jobs = jobs;
     }
 
+    Effects effects() {
+        return effects;
+    }
+
     /** The quality effects spawn at: effect types scale spawns by it, emitters may need more. HIGH by default. */
     public void quality(Quality quality) {
         this.quality = Objects.requireNonNull(quality, "quality");

@@ -26,7 +26,7 @@ example, takes core, world and collision without any render data.
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
 | `scene-animation` | animation clips and their sampling, skeletons, animators posing scene nodes                | milestone 6 |
-| `scene-effects`   | particle effects as data, the effects playing in a scene, the emitter runtime              | milestone 7 |
+| `scene-effects`   | particle effects as data, the emitter runtime, the CPU particle simulation                 | milestone 7 |
 | `scene-render`    | renderables on nodes, materials, textures and models; a PNG/JPEG importer                 | milestone 5 |
 | `scene-gltf`      | glTF 2.0 and GLB import: models, meshes, materials, embedded images                        | milestone 5 |
 
@@ -606,6 +606,28 @@ int lod = runtime.lod(torch.id());         // culled(), drawnFraction(), updateE
 - **Seeds:** an emitter's seed is `Hash.combine(effect seed, emitter)`, a particle's `Hash.combine(emitter seed, spawn
   index)`; random spawn amounts draw per loop (per burst call in shared instances).
 
+`CpuSimulation` simulates CPU emitters' particles in Java (the reference the engine's GPU kernel is tested against),
+so gameplay can read them; a server runs it too:
+
+```java
+CpuSimulation simulation = new CpuSimulation(runtime, world, jobs);   // world: the game's ParticleWorld, or null
+ParticleCursor shards = new ParticleCursor();                          // made once
+// each frame:
+runtime.update(dt);
+simulation.update();                       // survivors move on, the dead leave in order, records spawn
+simulation.particles(grenade.id(), 0, shards);
+while (shards.next()) damage(shards.x(), shards.y(), shards.z());
+```
+
+- **The first modules:** shapes (point, sphere and shell, box, cone, disc), lifetime, speed along the shape's direction,
+  velocity, size, color, gravity, linear drag, and size and color over life (the values at birth times a curve).
+- **Exact motion** for constant forces: gravity and drag integrate in closed form, so ballistic paths match the analytic
+  ones at any frame rate; a step is at most 0.1 s.
+- **Order and space:** the dead leave with the others' spawn order kept (the GPU's survivor copy); world-space particles
+  are float offsets from their effect's origin and stay where born, local-space ones move and turn with the node.
+- **Random values** are `Hash.random(particle seed, salt)`, the same bits as the Slang kernel's; the fixed vectors are
+  in `com/truesim/scene/effects/hash-vectors.csv` in the jar.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -624,7 +646,7 @@ dependencies {
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
     implementation("com.truesim.scene:scene-animation:0.42.0") // clips, rigs and animators (from 0.35.0)
-    implementation("com.truesim.scene:scene-effects:0.45.0")   // effects as data and the emitter runtime (from 0.44.0)
+    implementation("com.truesim.scene:scene-effects:0.46.0")   // effects as data, runtime, CPU particles (from 0.44.0)
 }
 ```
 
