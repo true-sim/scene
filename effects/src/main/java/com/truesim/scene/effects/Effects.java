@@ -24,6 +24,7 @@ import java.util.Objects;
  * // each frame, after scene.update():
  * effects.advance(seconds);                                     // the world clock's delta; ended effects go
  * effects.changesSince(since, (effect, changes) -> ...);        // ADDED, STOPPED, REMOVED, PARAMETERS, ...
+ * effects.replace(TORCH_FIRE, editedFire);                      // hot reload: its instances restart, handles kept
  * }</pre>
  *
  * <p>Effects are slots: an id names a slot and its generation, so an {@link Effect} handle of an effect that ended
@@ -53,6 +54,11 @@ public final class Effects {
     public static final int MOVED = 1 << 5;
     /** The effect's seed changed. */
     public static final int SEED = 1 << 6;
+    /**
+     * The effect restarted with new data ({@link #replace}, a hot reload), keeping its id: whoever follows it starts it
+     * over, as {@link #restarts} tells.
+     */
+    public static final int REPLACED = 1 << 7;
 
     /** Receives changed effects. */
     @FunctionalInterface
@@ -102,6 +108,7 @@ public final class Effects {
     private boolean[] shared = new boolean[16];
     private long[] cells = new long[3 * 16];
     private float[][] parameters = new float[16][];
+    private int[] restarts = new int[16];
     private long now;
     private int played;
     private int scale = ONE;
@@ -328,6 +335,7 @@ public final class Effects {
         ends[slot] = ticks(effect.end());
         stops[slot] = -1;
         shared[slot] = false;
+        restarts[slot] = 0;
         if (parameters[slot] == null || parameters[slot].length != effect.parameterFloats()) {
             parameters[slot] = new float[effect.parameterFloats()];
         }
@@ -368,6 +376,7 @@ public final class Effects {
         shared = Arrays.copyOf(shared, length);
         cells = Arrays.copyOf(cells, 3 * length);
         parameters = Arrays.copyOf(parameters, length);
+        restarts = Arrays.copyOf(restarts, length);
     }
 
     private static long id(int slot, int generation) {
@@ -443,6 +452,10 @@ public final class Effects {
 
     float[] parametersAt(int slot) {
         return parameters[slot];
+    }
+
+    int restartsAt(int slot) {
+        return restarts[slot];
     }
 
     /** Holds the effect in {@code slot} still in time, or lets it go on: culled effects of pausing types. */
@@ -533,6 +546,14 @@ public final class Effects {
     /** A playing effect's own time scale (the global one apart). */
     public float timeScaleOf(long effect) {
         return (float) scales[held(effect)] / ONE;
+    }
+
+    /**
+     * How many times a playing effect restarted with new data ({@link #replace}): followers keeping state per effect
+     * (the runtime, the simulators, the GPU side) start theirs over when it changes, as for a new id.
+     */
+    public int restarts(long effect) {
+        return restarts[held(effect)];
     }
 
     /** Whether a playing effect is paused (the global pause apart). */
@@ -683,6 +704,52 @@ public final class Effects {
         free[freeCount++] = slot;
         size--;
         log(id, REMOVED);
+    }
+
+    /**
+     * Replaces {@code old} by {@code replacement} (a hot reload: the asset edited in a tool, or loaded again): every
+     * instance of {@code old} restarts with it from time 0, keeping its id (so its handles), node, offset, position,
+     * seed, inherited velocity, time scale and pause, and the values of the parameters both have (same name and kind;
+     * the others take the replacement's defaults). Each is logged {@link #REPLACED}. Shared burst instances of
+     * {@code old} end instead; later bursts go into instances of the replacement. Returns how many restarted.
+     */
+    @AllowAllocation("a hot reload: parameter blocks of the new data")
+    public int replace(EffectData old, EffectData replacement) {
+        checkOwner();
+        Objects.requireNonNull(old, "old");
+        Objects.requireNonNull(replacement, "replacement");
+        int restarted = 0;
+        for (int slot = 0; slot < slots; slot++) {
+            if (states[slot] == FREE || !data[slot].equals(old)) {
+                continue;
+            }
+            if (shared[slot]) {
+                end(slot);
+                continue;
+            }
+            float[] block = new float[replacement.parameterFloats()];
+            replacement.defaults(block, 0);
+            for (EffectParameter parameter : old.parameters()) {
+                int index = replacement.parameterIndex(parameter);
+                if (index >= 0) {
+                    System.arraycopy(parameters[slot], old.parameterOffset(old.parameterIndex(parameter)), block,
+                        replacement.parameterOffset(index), parameter.size());
+                }
+            }
+            parameters[slot] = block;
+            data[slot] = replacement;
+            states[slot] = PLAYING;
+            starts[slot] = now;
+            times[slot] = 0;
+            remainders[slot] = 0;
+            held[slot] = false;
+            stops[slot] = -1;
+            ends[slot] = ticks(replacement.end());
+            restarts[slot]++;
+            log(id(slot), REPLACED);
+            restarted++;
+        }
+        return restarted;
     }
 
     private static int fixed(float timeScale) {

@@ -79,7 +79,8 @@ public final class EffectRuntime {
         this.jobs = jobs;
     }
 
-    Effects effects() {
+    /** The effects it runs: what the GPU side and the simulators follow. */
+    public Effects effects() {
         return effects;
     }
 
@@ -173,13 +174,14 @@ public final class EffectRuntime {
         callHeads = Arrays.copyOf(callHeads, instances.length);
     }
 
-    /** Follows the effect in {@code slot}: a new one starts from scratch. */
+    /** Follows the effect in {@code slot}: a new one, or one restarted with new data, starts from scratch. */
     private void sync(int slot) {
         Instance in = instances[slot];
         long id = effects.effectAt(slot);
-        if (id != in.id) {
+        if (id != in.id || id != 0 && effects.restartsAt(slot) != in.restarts) {
             in.reset(id, id == 0 ? null : effects.dataAt(slot));
             if (id != 0) {
+                in.restarts = effects.restartsAt(slot);
                 in.x = effects.positionAt(slot, 0);
                 in.y = effects.positionAt(slot, 1);
                 in.z = effects.positionAt(slot, 2);
@@ -661,6 +663,7 @@ public final class EffectRuntime {
     /** The runtime's state of one effect slot. */
     private static final class Instance {
         long id;
+        int restarts;
         long time;
         boolean first;
         double x;

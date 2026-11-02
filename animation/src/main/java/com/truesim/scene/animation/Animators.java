@@ -142,6 +142,19 @@ public final class Animators {
         return count;
     }
 
+    /**
+     * The animator posing {@code node} as its skeleton's first node (the node a {@link Listener} hears of), or null.
+     * Allocates nothing.
+     */
+    public Animator animator(long node) {
+        for (int i = 0; i < count; i++) {
+            if (animators[i].node(0) == node) {
+                return animators[i];
+            }
+        }
+        return null;
+    }
+
     /** Calls {@code listener} whenever an animator's playback passes {@code event}, after the poses are written. */
     @AllowAllocation("adding a listener")
     public void listen(AnimationEvent event, Listener listener) {
