@@ -91,6 +91,12 @@ public final class Effect {
         return this;
     }
 
+    /** Draws a placement of a shared effect at {@code scale} times its size (only placements draw scaled). */
+    public Effect scale(float scale) {
+        effects.scale(id, scale);
+        return this;
+    }
+
     /** Seeds it: equal seeds look alike, on every client. Played effects get distinct seeds of their own. */
     public Effect seed(int seed) {
         effects.seed(id, seed);

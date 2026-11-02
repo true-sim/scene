@@ -79,6 +79,12 @@ public final class Effects {
     private static final byte FREE = 0;
     private static final byte PLAYING = 1;
     private static final byte STOPPING = 2;
+    // Kinds of slots (E23): an effect of its own, a placement of a shared effect, a shared simulation (a variant) and
+    // a near placement's simulation of its own.
+    private static final byte OWN = 0;
+    private static final byte PLACEMENT = 1;
+    private static final byte VARIANT = 2;
+    private static final byte NEAR = 3;
 
     private final SceneGraph scene;
     private final ChangeClock clock;
@@ -109,6 +115,17 @@ public final class Effects {
     private long[] cells = new long[3 * 16];
     private float[][] parameters = new float[16][];
     private int[] restarts = new int[16];
+    private byte[] kinds = new byte[16];
+    /** A placement's variant and a near simulation's placement, by id. */
+    private long[] links = new long[16];
+    /** A variant's index among its effect's. */
+    private int[] variantIndex = new int[16];
+    /** A variant's placements. */
+    private int[] placements = new int[16];
+    /** A placement's near simulation, by id (0: none). */
+    private long[] nears = new long[16];
+    private float[] drawScales = new float[16];
+    private int placed;
     private long now;
     private int played;
     private int scale = ONE;
@@ -165,23 +182,68 @@ public final class Effects {
     /** Plays {@code effect} attached to {@code node}: it follows the node (a joint's node for a socket). */
     @AllowAllocation("a handle per effect played")
     public Effect play(EffectData effect, long node) {
-        if (!scene.contains(node)) {
-            throw new IllegalArgumentException("Not a node of the scene: " + NodeHandle.toString(node));
-        }
-        int slot = claim(effect);
-        nodes[slot] = node;
-        place(slot);
-        return added(slot);
+        return new Effect(this, start(effect, node));
     }
 
     /** Plays {@code effect} at the world position ({@code x}, {@code y}, {@code z}), unrotated. */
     @AllowAllocation("a handle per effect played")
     public Effect play(EffectData effect, double x, double y, double z) {
-        int slot = claim(effect);
+        return new Effect(this, start(effect, x, y, z));
+    }
+
+    /**
+     * {@link #play(EffectData, long)} without a handle: returns the effect's id, which the methods taking ids change
+     * ({@link #offset(long, double, double, double)}, {@link #set(long, EffectParameter.Float, float)}, ...).
+     * Allocates nothing once the slots have grown.
+     */
+    public long start(EffectData effect, long node) {
+        if (!scene.contains(node)) {
+            throw new IllegalArgumentException("Not a node of the scene: " + NodeHandle.toString(node));
+        }
+        int slot = claimPlayed(effect);
+        nodes[slot] = node;
+        place(slot);
+        return added(slot);
+    }
+
+    /** {@link #play(EffectData, double, double, double)} without a handle: returns the effect's id. */
+    public long start(EffectData effect, double x, double y, double z) {
+        int slot = claimPlayed(effect);
         positions[3 * slot] = x;
         positions[3 * slot + 1] = y;
         positions[3 * slot + 2] = z;
         return added(slot);
+    }
+
+    /**
+     * A slot for an effect played: of its own, or for a shared effect (E23) a placement of one of its variants, in
+     * turn, which is started (at the origin, unrotated) if it does not play.
+     */
+    private int claimPlayed(EffectData effect) {
+        int slot = claim(effect);
+        if (effect.variants() > 0) {
+            kinds[slot] = PLACEMENT;
+            int variant = variantSlot(effect, placed++ % effect.variants());
+            links[slot] = id(variant);
+            placements[variant]++;
+        }
+        return slot;
+    }
+
+    /** The slot of variant {@code v} of shared effect {@code effect}, started if it does not play. */
+    private int variantSlot(EffectData effect, int v) {
+        for (int slot = 0; slot < slots; slot++) {
+            if (states[slot] == PLAYING && kinds[slot] == VARIANT && variantIndex[slot] == v
+                && data[slot].equals(effect)) {
+                return slot;
+            }
+        }
+        int slot = claim(effect);
+        kinds[slot] = VARIANT;
+        variantIndex[slot] = v;
+        seeds[slot] = Hash.combine(effect.hashCode(), v);
+        log(id(slot), ADDED);
+        return slot;
     }
 
     /**
@@ -302,11 +364,10 @@ public final class Effects {
         burstSerials = Arrays.copyOf(burstSerials, length);
     }
 
-    @AllowAllocation("a handle per effect played")
-    private Effect added(int slot) {
+    private long added(int slot) {
         long id = id(slot);
         log(id, ADDED);
-        return new Effect(this, id);
+        return id;
     }
 
     /** A slot for a new effect of {@code effect}, set up to play from now. */
@@ -344,6 +405,11 @@ public final class Effects {
         stops[slot] = -1;
         shared[slot] = false;
         restarts[slot] = 0;
+        kinds[slot] = OWN;
+        links[slot] = 0;
+        placements[slot] = 0;
+        nears[slot] = 0;
+        drawScales[slot] = 1;
         if (parameters[slot] == null || parameters[slot].length != effect.parameterFloats()) {
             parameters[slot] = new float[effect.parameterFloats()];
         }
@@ -385,6 +451,12 @@ public final class Effects {
         cells = Arrays.copyOf(cells, 3 * length);
         parameters = Arrays.copyOf(parameters, length);
         restarts = Arrays.copyOf(restarts, length);
+        kinds = Arrays.copyOf(kinds, length);
+        links = Arrays.copyOf(links, length);
+        variantIndex = Arrays.copyOf(variantIndex, length);
+        placements = Arrays.copyOf(placements, length);
+        nears = Arrays.copyOf(nears, length);
+        drawScales = Arrays.copyOf(drawScales, length);
     }
 
     private static long id(int slot, int generation) {
@@ -520,6 +592,36 @@ public final class Effects {
         return shared[held(effect)];
     }
 
+    /**
+     * Whether a playing effect is a placement of a shared effect (E23): it simulates nothing, and draws its variant's
+     * particles ({@link #variantOf}) where it is, turned and scaled as it is.
+     */
+    public boolean placement(long effect) {
+        return kinds[held(effect)] == PLACEMENT;
+    }
+
+    /** Whether a playing effect is a variant of a shared effect: simulated at the origin, drawn only at placements. */
+    public boolean variant(long effect) {
+        return kinds[held(effect)] == VARIANT;
+    }
+
+    /** The variant a placement draws, by id; 0 once it ended (a shared effect that ends on its own) or for others. */
+    public long variantOf(long effect) {
+        int slot = held(effect);
+        return kinds[slot] == PLACEMENT && slot(links[slot]) >= 0 ? links[slot] : 0;
+    }
+
+    /** A placement's simulation of its own while it is near a viewer (or its particles linger), by id; else 0. */
+    public long nearOf(long effect) {
+        int slot = held(effect);
+        return kinds[slot] == PLACEMENT && slot(nears[slot]) >= 0 ? nears[slot] : 0;
+    }
+
+    /** The scale a placement draws its variant at; 1 for others. */
+    public float scale(long effect) {
+        return drawScales[held(effect)];
+    }
+
     /** Component {@code axis} (0 to 2) of where a playing effect is, as of the last advance (its node's position). */
     public double position(long effect, int axis) {
         return positions[3 * held(effect) + Objects.checkIndex(axis, 3)];
@@ -585,12 +687,24 @@ public final class Effects {
 
     // Changes through handles: inert for ended effects.
 
+    /**
+     * Sets float user parameter {@code parameter} of playing effect {@code effect} (inert once it ended), as
+     * {@link Effect#set(EffectParameter.Float, float)} does. Placements of shared effects take none: they draw a
+     * simulation shared with others.
+     */
+    public void set(long effect, EffectParameter.Float parameter, float value) {
+        set(effect, parameter, value, 0, 0, 0);
+    }
+
     void set(long effect, EffectParameter parameter, float a, float b, float c, float d) {
         int slot = slot(effect);
         if (slot < 0) {
             return;
         }
         checkOwner();
+        if (kinds[slot] == PLACEMENT) {
+            throw new IllegalStateException(shares("parameters of its own"));
+        }
         EffectData effectData = data[slot];
         int index = effectData.parameterIndex(parameter);
         if (index < 0) {
@@ -605,6 +719,11 @@ public final class Effects {
             block[offset + 3] = d;
         }
         log(effect, PARAMETERS);
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String shares(String what) {
+        return "A placement of a shared effect has no " + what + ": its variant is drawn at several placements";
     }
 
     @AllowAllocation("diagnostics")
@@ -639,7 +758,11 @@ public final class Effects {
         }
     }
 
-    void offset(long effect, double x, double y, double z) {
+    /**
+     * Places playing effect {@code effect} at ({@code x}, {@code y}, {@code z}) in its node's frame (inert once it
+     * ended), as {@link Effect#offset} does.
+     */
+    public void offset(long effect, double x, double y, double z) {
         int slot = slot(effect);
         if (slot >= 0) {
             checkOwner();
@@ -667,7 +790,25 @@ public final class Effects {
         int slot = slot(effect);
         if (slot >= 0) {
             checkOwner();
+            if (kinds[slot] == PLACEMENT && fraction != 0) {
+                throw new IllegalStateException(shares("velocity to inherit"));
+            }
             inherit[slot] = fraction;
+            log(effect, MOVED);
+        }
+    }
+
+    void scale(long effect, float scale) {
+        int slot = slot(effect);
+        if (slot >= 0) {
+            checkOwner();
+            if (kinds[slot] != PLACEMENT) {
+                throw new IllegalStateException("Only placements of shared effects draw scaled");
+            }
+            if (!(scale > 0)) {
+                throw new IllegalArgumentException("Not a scale: " + scale);
+            }
+            drawScales[slot] = scale;
             log(effect, MOVED);
         }
     }
@@ -706,6 +847,16 @@ public final class Effects {
 
     private void end(int slot) {
         long id = id(slot);
+        if (kinds[slot] == PLACEMENT) {
+            int variant = slot(links[slot]);
+            if (variant >= 0 && --placements[variant] == 0) {
+                stop(variant); // its particles live out their lives, undrawn: new placements start a new variant
+            }
+            int near = slot(nears[slot]);
+            if (near >= 0 && states[near] == PLAYING) {
+                stop(near);
+            }
+        }
         states[slot] = FREE;
         data[slot] = null;
         shared[slot] = false;
@@ -731,8 +882,8 @@ public final class Effects {
             if (states[slot] == FREE || !data[slot].equals(old)) {
                 continue;
             }
-            if (shared[slot]) {
-                end(slot);
+            if (shared[slot] || kinds[slot] != OWN) {
+                end(slot); // shared simulations start again from the placements played next
                 continue;
             }
             float[] block = new float[replacement.parameterFloats()];
@@ -848,6 +999,54 @@ public final class Effects {
             if (times[slot] >= ends[slot]) {
                 end(slot);
             }
+        }
+        for (int slot = 0; slot < slots; slot++) {
+            int placement = kinds[slot] == NEAR && states[slot] != FREE ? slot(links[slot]) : -1;
+            if (placement >= 0) { // where its placement is
+                System.arraycopy(positions, 3 * placement, positions, 3 * slot, 3);
+                System.arraycopy(rotations, 4 * placement, rotations, 4 * slot, 4);
+            }
+        }
+    }
+
+    // Placements near viewers, for the runtime.
+
+    boolean placementAt(int slot) {
+        return kinds[slot] == PLACEMENT;
+    }
+
+    boolean variantAt(int slot) {
+        return kinds[slot] == VARIANT;
+    }
+
+    /** The slot of the variant the placement in {@code slot} draws, or -1. */
+    int variantSlotOf(int slot) {
+        return slot(links[slot]);
+    }
+
+    /** Whether the placement in {@code slot} has a simulation of its own that spawns. */
+    boolean nearAt(int slot) {
+        int own = slot(nears[slot]);
+        return own >= 0 && states[own] == PLAYING;
+    }
+
+    /**
+     * Gives the placement in {@code slot} a simulation of its own when it comes {@code near} (an effect where it is,
+     * seeded as it is), or stops it when it goes far: its particles live out their lives. Called as that changes
+     * ({@link #nearAt} says otherwise).
+     */
+    void near(int slot, boolean near) {
+        if (near) {
+            int s = claim(data[slot]);
+            kinds[s] = NEAR;
+            links[s] = id(slot);
+            seeds[s] = seeds[slot];
+            System.arraycopy(positions, 3 * slot, positions, 3 * s, 3);
+            System.arraycopy(rotations, 4 * slot, rotations, 4 * s, 4);
+            nears[slot] = id(s);
+            log(id(s), ADDED);
+        } else {
+            stop(slot(nears[slot]));
         }
     }
 

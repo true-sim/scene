@@ -157,7 +157,7 @@ class EventsTest {
         assertThat(simulation.count(random, 1)).isBetween(8, 12);
         assertThat(simulation.count(curve, 1)).as("the parameter's 2 through the curve").isEqualTo(2);
         assertThat(simulation.count(speed, 1)).isEqualTo(3);
-        assertThat(simulation.count(emit, 1)).as("emitting particles: step 19").isZero();
+        assertThat(simulation.count(emit, 1)).as("30 a second over its life of 0.05 s").isEqualTo(1);
     }
 
     @Test

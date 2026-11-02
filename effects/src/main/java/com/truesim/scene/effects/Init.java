@@ -27,6 +27,13 @@ public final class Init {
      * that point), with this module or without; on other particles it does nothing.
      */
     public static final String INHERIT = "init.inherit";
+    /** A particle's rotation at its birth, in radians: billboards turn by it in their plane. */
+    public static final String ROTATION = "init.rotation";
+    /**
+     * Where a particle's flipbook starts, as a fraction of its frames: particles born together then show different
+     * frames (flame tongues that do not repeat).
+     */
+    public static final String FRAME = "init.frame";
 
     private Init() {
     }
@@ -59,6 +66,26 @@ public final class Init {
     /** Particles take {@code color}. */
     public static Module color(ColorBinding color) {
         return Module.of(COLOR).with("color", color);
+    }
+
+    /** Particles start turned by {@code radians} in their billboard's plane. */
+    public static Module rotation(Binding radians) {
+        return Module.of(ROTATION).with("angle", radians);
+    }
+
+    /** Particles start turned by a random angle, each its own. */
+    public static Module randomRotation() {
+        return rotation(Bind.random(0, (float) (2 * Math.PI)));
+    }
+
+    /** Particles' flipbooks start {@code fraction} of their frames in (0 to 1, wrapping round). */
+    public static Module frame(Binding fraction) {
+        return Module.of(FRAME).with("frame", fraction);
+    }
+
+    /** Particles' flipbooks start at a random frame, each its own. */
+    public static Module randomFrame() {
+        return frame(Bind.random(0, 1));
     }
 
     /** Particles spawned by events take their parent's color and size, and {@code velocity} of its velocity. */

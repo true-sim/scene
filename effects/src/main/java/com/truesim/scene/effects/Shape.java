@@ -99,6 +99,18 @@ public final class Shape {
         return Module.of(MESH).with("mode", (float) mode);
     }
 
+    /**
+     * On the mesh as {@code mode} says, places facing up the most: a particle is kept with the chance
+     * {@code 1 - upward + upward * max(0, n.y)} for the surface's normal {@code n} in the emitter's frame (0: as
+     * {@link #mesh(int)}, 1: only where the surface faces up, the more the more it does); the others are born dead.
+     */
+    public static Module mesh(int mode, float upward) {
+        if (!(upward >= 0 && upward <= 1)) {
+            throw new IllegalArgumentException("Not an upward weight: " + upward);
+        }
+        return mesh(mode).with("upward", upward);
+    }
+
     /** Along the joints the engine gives the emitter, within {@code radius} metres of the segments between them. */
     public static Module bones(float radius) {
         return Module.of(BONES).with("radius", radius);

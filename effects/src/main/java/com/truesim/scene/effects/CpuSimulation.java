@@ -47,6 +47,10 @@ public final class CpuSimulation {
     public static final int EVENT_SALTS = 8192;
     /** The most particles one event spawns. */
     public static final int MAX_CHILDREN = 255;
+    /** The most emit events (particles as emitters) an emitter sends, each with an accumulator per particle. */
+    public static final int MAX_EMITS = 4;
+    /** Emit accumulators count children in fixed point with this many fraction bits (as the GPU does). */
+    public static final int EMIT_BITS = 16;
     /**
      * How far, in metres, an effect moves from the origin of its world-space particles before the origin moves to it
      * (rebasing): float offsets stay precise to a millimetre within it.
@@ -84,6 +88,8 @@ public final class CpuSimulation {
     /** Born in the last update: its birth events go out in the next one, as on the GPU. */
     static final int NEWBORN = 4;
     private static final int INHERIT = 24;
+    private static final int ROTATION = 25;
+    private static final int FRAME = 26;
     private static final float TAU = (float) Maths.TAU;
     /** How fast gusts of wind change: noise cells per second. */
     static final float GUST_RATE = 0.5f;
@@ -342,11 +348,22 @@ public final class CpuSimulation {
                 case EMIT -> false; // particles as emitters: step 19 of the design
             };
             int salt = EVENT_SALTS + 16 * k;
-            if (!sent || !(Hash.random(p.seed[i], salt + 15) < event.chance())) {
+            boolean emits = event.kind() == ParticleEvent.Kind.EMIT && periodic;
+            if (!(sent || emits) || !(Hash.random(p.seed[i], salt + 15) < event.chance())) {
                 continue;
             }
-            int count = Math.max(0, Math.min(MAX_CHILDREN, Math.round(eventCount(event.count(), parameters,
-                program.offsets(event), p.seed[i], salt, p, i))));
+            float rate = eventCount(event.count(), parameters, program.offsets(event), p.seed[i], salt, p, i);
+            float step = p.age[i] - before;
+            int count;
+            if (emits) {
+                // Per second, carried in fixed point per particle: the children its step owes, spread over the step
+                int at = MAX_EMITS * i + program.emitSlot(k);
+                int owed = p.emitted[at] + (int) Math.max(0f, rate * step * (1 << EMIT_BITS));
+                count = Math.min(MAX_CHILDREN, owed >>> EMIT_BITS);
+                p.emitted[at] = owed - (count << EMIT_BITS);
+            } else {
+                count = Math.max(0, Math.min(MAX_CHILDREN, Math.round(rate)));
+            }
             if (count == 0) {
                 continue;
             }
@@ -356,7 +373,7 @@ public final class CpuSimulation {
             double z = s.wz + (program.local ? s.z - s.oz : 0);
             s.out(p.vx[i], p.vy[i], p.vz[i], program.local);
             s.events.add(s.data.emitter(event.target()), count, p.seed[i], salt, x, y, z, s.wx, s.wy, s.wz,
-                p.color, 4 * i, p.size[i]);
+                p.color, 4 * i, p.size[i], emits ? step : 0);
         }
     }
 
@@ -391,8 +408,11 @@ public final class CpuSimulation {
                     break;
                 }
                 int i = p.count;
-                int seed = Hash.combine(Hash.combine(events.seed[v], events.salt[v]), c);
-                p.born(i, seed, s.eventIndex[e]++);
+                long index = s.eventIndex[e]++;
+                // An emitting parent's children each by their spawn index: its events come every frame, alike
+                int seed = Hash.combine(Hash.combine(events.seed[v], events.salt[v]), events.step[v] > 0 ? (int) index
+                    : c);
+                p.born(i, seed, index);
                 s.direction(0, 0, 0);
                 for (int m = 0; m < program.init.length; m++) {
                     init(s, p, i, program.init[m], parameters, seed);
@@ -400,7 +420,10 @@ public final class CpuSimulation {
                 if (p.lifetime[i] <= 0) {
                     continue;
                 }
-                inherit(s, p, i, program, parameters, events, v);
+                // Emitted children are spread back over their parent's step, the youngest last, along its path
+                float back = events.step[v] * (events.count[v] - 1 - c) / events.count[v];
+                inherit(s, p, i, program, parameters, events, v, back);
+                p.age[i] = back;
                 p.flags[i] |= NEWBORN;
                 p.count++;
             }
@@ -409,7 +432,7 @@ public final class CpuSimulation {
 
     /** Places child {@code i} at its event's parent and gives it what its {@code init.inherit} takes of it. */
     private static void inherit(Slot s, Particles p, int i, Program program, float[] parameters, Events events,
-            int v) {
+            int v, float back) {
         float velocity = 0;
         boolean color = false;
         boolean size = false;
@@ -425,15 +448,18 @@ public final class CpuSimulation {
         double vx = events.vx[v] * velocity;
         double vy = events.vy[v] * velocity;
         double vz = events.vz[v] * velocity;
+        double ex = events.x[v] - events.vx[v] * back;
+        double ey = events.y[v] - events.vy[v] * back;
+        double ez = events.z[v] - events.vz[v] * back;
         if (local) {
-            s.in(events.x[v] - (s.x - s.ox), events.y[v] - (s.y - s.oy), events.z[v] - (s.z - s.oz), true);
+            s.in(ex - (s.x - s.ox), ey - (s.y - s.oy), ez - (s.z - s.oz), true);
             p.setPosition(i, (float) (s.wx + p.px[i]), (float) (s.wy + p.py[i]), (float) (s.wz + p.pz[i]));
             s.in(vx, vy, vz, true);
             p.addVelocity(i, (float) s.wx, (float) s.wy, (float) s.wz);
         } else {
             s.turn(s.qx, s.qy, s.qz, s.qw);
             s.rotate(p.px[i], p.py[i], p.pz[i]);
-            p.setPosition(i, (float) (events.x[v] + s.rx), (float) (events.y[v] + s.ry), (float) (events.z[v] + s.rz));
+            p.setPosition(i, (float) (ex + s.rx), (float) (ey + s.ry), (float) (ez + s.rz));
             s.rotate(p.vx[i], p.vy[i], p.vz[i]);
             p.vx[i] = (float) (s.rx + vx);
             p.vy[i] = (float) (s.ry + vy);
@@ -528,6 +554,8 @@ public final class CpuSimulation {
             case INHERIT -> {
                 // read when an event spawns the particle (inherit), nothing otherwise
             }
+            case ROTATION -> p.rotation[i] = value(op, 0, parameters, seed, p, i);
+            case FRAME -> p.frame[i] = value(op, 0, parameters, seed, p, i);
             default -> { // COLOR
                 color(op, parameters, seed, p, i, s.rgba);
                 for (int c = 0; c < 4; c++) {
@@ -973,6 +1001,10 @@ public final class CpuSimulation {
         final int[] seed;
         final long[] index;
         final int[] flags;
+        final float[] rotation;
+        final float[] frame;
+        /** {@link #MAX_EMITS} emit accumulators per particle, in fixed point. */
+        final int[] emitted;
 
         @AllowAllocation("an effect's particles, made when it starts")
         Particles(int capacity) {
@@ -992,6 +1024,9 @@ public final class CpuSimulation {
             seed = new int[capacity];
             index = new long[capacity];
             flags = new int[capacity];
+            rotation = new float[capacity];
+            frame = new float[capacity];
+            emitted = new int[MAX_EMITS * capacity];
         }
 
         /** A newborn at {@code i}: at the origin of its frame, at rest, with the modules' fallbacks. */
@@ -1009,6 +1044,9 @@ public final class CpuSimulation {
             size0[i] = 0.1f;
             Arrays.fill(color, 4 * i, 4 * i + 4, 1);
             Arrays.fill(color0, 4 * i, 4 * i + 4, 1);
+            rotation[i] = 0;
+            frame[i] = 0;
+            Arrays.fill(emitted, MAX_EMITS * i, MAX_EMITS * i + MAX_EMITS, 0);
         }
 
         void setPosition(int i, float x, float y, float z) {
@@ -1040,6 +1078,9 @@ public final class CpuSimulation {
             seed[to] = seed[from];
             index[to] = index[from];
             flags[to] = flags[from];
+            rotation[to] = rotation[from];
+            frame[to] = frame[from];
+            System.arraycopy(emitted, MAX_EMITS * from, emitted, MAX_EMITS * to, MAX_EMITS);
         }
     }
 
@@ -1053,10 +1094,15 @@ public final class CpuSimulation {
 
     /** An emitter's modules as operations, and the parameter offsets its events' counts read. */
     private record Program(Op[] init, Op[] update, boolean overSize, boolean overColor, boolean local,
-            boolean collides, java.util.Map<ParticleEvent, Integer> eventOffsets) {
+            boolean collides, java.util.Map<ParticleEvent, Integer> eventOffsets, int[] emitSlots) {
 
         int offsets(ParticleEvent event) {
             return eventOffsets.get(event);
+        }
+
+        /** The accumulator of event {@code k}, an emit event: its place among the emitter's emit events. */
+        int emitSlot(int k) {
+            return emitSlots[k];
         }
 
 
@@ -1085,11 +1131,16 @@ public final class CpuSimulation {
                 color |= op.code == OVER_COLOR;
             }
             java.util.Map<ParticleEvent, Integer> eventOffsets = new java.util.HashMap<>();
-            for (ParticleEvent event : emitter.events()) {
+            int[] emitSlots = new int[emitter.events().size()];
+            int emits = 0;
+            for (int k = 0; k < emitSlots.length; k++) {
+                ParticleEvent event = emitter.events().get(k);
                 Binding b = event.count();
                 eventOffsets.put(event, b.parameter() == null ? -1 : data.parameterOffset(b.parameter()));
+                emitSlots[k] = event.kind() == ParticleEvent.Kind.EMIT ? emits++ : -1;
             }
-            return new Program(init, update, size, color, emitter.space() == Space.LOCAL, collides, eventOffsets);
+            return new Program(init, update, size, color, emitter.space() == Space.LOCAL, collides, eventOffsets,
+                emitSlots);
         }
 
         @AllowAllocation("an emitter's program, made when its effect starts")
@@ -1110,6 +1161,8 @@ public final class CpuSimulation {
                     case Init.SIZE -> SIZE;
                     case Init.COLOR -> COLOR;
                     case Init.INHERIT -> INHERIT;
+                    case Init.ROTATION -> ROTATION;
+                    case Init.FRAME -> FRAME;
                     case Forces.GRAVITY -> GRAVITY;
                     case Forces.DRAG -> DRAG;
                     case Over.SIZE -> OVER_SIZE;
@@ -1172,6 +1225,8 @@ public final class CpuSimulation {
         double[] vz = new double[16];
         float[] color = new float[64];
         float[] sizes = new float[16];
+        /** An emit event's step, over which its children are spread; 0 for others. */
+        float[] step = new float[16];
 
         void clear() {
             size = 0;
@@ -1192,10 +1247,11 @@ public final class CpuSimulation {
             vz = Arrays.copyOf(vz, n);
             color = Arrays.copyOf(color, 4 * n);
             sizes = Arrays.copyOf(sizes, n);
+            step = Arrays.copyOf(step, n);
         }
 
         void add(int target, int count, int seed, int salt, double x, double y, double z, double vx, double vy,
-                double vz, float[] colors, int at, float size) {
+                double vz, float[] colors, int at, float size, float step) {
             if (this.size == this.target.length) {
                 grow();
             }
@@ -1212,6 +1268,7 @@ public final class CpuSimulation {
             this.vz[v] = vz;
             System.arraycopy(colors, at, color, 4 * v, 4);
             sizes[v] = size;
+            this.step[v] = step;
         }
     }
 
