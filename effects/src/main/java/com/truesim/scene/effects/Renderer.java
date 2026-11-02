@@ -8,7 +8,7 @@ import java.util.Objects;
 
 /**
  * How an emitter's particles are drawn, whatever simulated them: billboards, meshes, ribbons through the particles in
- * spawn order, trails of each particle's past positions, or beams; with a lighting (E14), a blend from alpha to
+ * spawn order, trails of each particle's past positions, beams, or point lights; with a lighting (E14), a blend from alpha to
  * additive, an order against glass, and whether it is sorted. Further settings by name (textures, flipbooks, stretch,
  * soft fade) are for the engine's renderers, as module fields are for its modules. Immutable, compared by value.
  *
@@ -40,7 +40,12 @@ public record Renderer(Kind kind, Facing facing, Lighting lighting, GlassOrder g
         /** A strip through each particle's past positions. */
         TRAIL,
         /** Segments between two points, with no simulation. */
-        BEAM
+        BEAM,
+        /**
+         * A point light per particle (or the brightest of them), its intensity the particle's color times its alpha,
+         * casting no shadows: sparks lighting the ground. GPU emitters.
+         */
+        LIGHT
     }
 
     /** How billboards turn. */
@@ -123,6 +128,18 @@ public record Renderer(Kind kind, Facing facing, Lighting lighting, GlassOrder g
     /** A beam between two points the effect's parameters or nodes give. */
     public static Renderer beam() {
         return of(Kind.BEAM, null);
+    }
+
+    /**
+     * A point light at each particle, reaching {@code radius} metres, as bright as {@code intensity} times the
+     * particle's color and alpha (a fading spark dims its light). The engine keeps the brightest within a budget per
+     * emitter ({@code max} setting) and for all; a {@code fraction} setting lights only that share of the particles.
+     */
+    public static Renderer light(float radius, float intensity) {
+        if (!(radius > 0) || !(intensity >= 0)) {
+            throw new IllegalArgumentException("Not a light: " + radius + " m, " + intensity);
+        }
+        return of(Kind.LIGHT, null).set("radius", radius).set("intensity", intensity);
     }
 
     private static Renderer of(Kind kind, Facing facing) {
