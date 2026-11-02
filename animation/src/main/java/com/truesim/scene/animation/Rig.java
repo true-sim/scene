@@ -34,6 +34,7 @@ public final class Rig {
     private final List<AnimationClip> sources = new ArrayList<>(); // an open rig's clips, by what they bind
     private final List<Layer> layers = new ArrayList<>();
     private final List<AnimationCurve> curves = new ArrayList<>();
+    private final List<AnimationPointer> pointers = new ArrayList<>();
     private int blendSpaces;
     private int rootJoint = -1;
     private final List<TwoBoneIk> iks = new ArrayList<>();
@@ -42,11 +43,12 @@ public final class Rig {
     private final List<PoseModifier> modifiers = new ArrayList<>();
     private RootMotion rootMotion;
     // The layout of an animator's values: per joint whether a clip moves it, its morph weights' offset and count;
-    // then the curves.
+    // then the curves, then the pointers' values.
     private boolean[] animated;
     private int[] weightOffset;
     private int[] weightCount;
     private int curveOffset;
+    private int[] pointerOffset = new int[0];
     private int scalarCount;
     private int cursorCount;
     private int version; // changes when an open rig binds a clip
@@ -210,6 +212,31 @@ public final class Rig {
         return -1;
     }
 
+    /** How many pointers the rig's clips animate. */
+    public int pointerCount() {
+        return pointers.size();
+    }
+
+    /** Pointer {@code i} of those its clips animate, in the order they were first bound. */
+    public AnimationPointer pointer(int i) {
+        return pointers.get(i);
+    }
+
+    /** Where pointer {@code i}'s values start among an animator's. */
+    int pointerOffset(int i) {
+        return pointerOffset[i];
+    }
+
+    /** The slot of {@code pointer} among the pointers, or -1 if no clip animates it. Allocates nothing. */
+    int pointerSlot(AnimationPointer pointer) {
+        for (int i = 0; i < pointers.size(); i++) {
+            if (pointers.get(i).equals(pointer)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     void checkSettingUp() {
         if (!settingUp) {
             throw new IllegalStateException("The rig is built: its setup does not change");
@@ -254,21 +281,30 @@ public final class Rig {
     private Clip bind(AnimationClip source, Clip.Reference reference) {
         List<Track> tracks = source.tracks();
         int[] joints = new int[tracks.size()];
+        int[] slots = new int[tracks.size()];
         for (int t = 0; t < joints.length; t++) {
             Track track = tracks.get(t);
             int index = track.node();
-            if (index >= 0 && index < skeleton.size() && skeleton.name(index).equals(track.nodeName())) {
+            slots[t] = -1;
+            if (track.property() == Track.Property.POINTER) {
+                joints[t] = -1;
+                slots[t] = pointerSlot(track.pointer());
+                if (slots[t] < 0) {
+                    slots[t] = pointers.size();
+                    pointers.add(track.pointer());
+                }
+            } else if (index >= 0 && index < skeleton.size() && skeleton.name(index).equals(track.nodeName())) {
                 joints[t] = index;
             } else {
                 joints[t] = track.nodeName().isEmpty() ? -1 : skeleton.find(track.nodeName());
             }
         }
-        Clip clip = new Clip(this, source, reference, joints);
+        Clip clip = new Clip(this, source, reference, joints, slots);
         clips.add(clip);
         return clip;
     }
 
-    /** Works out the animators' layout from the clips: which joints move, the morph weights, the curves. */
+    /** Works out the animators' layout from the clips: which joints move, the morph weights, the curves, pointers. */
     @AllowAllocation("setting up a rig")
     private void layout() {
         int n = skeleton.size();
@@ -299,7 +335,13 @@ public final class Rig {
             total += weightCount[j];
         }
         curveOffset = total;
-        scalarCount = total + curves.size();
+        total += curves.size();
+        pointerOffset = new int[pointers.size()];
+        for (int p = 0; p < pointerOffset.length; p++) {
+            pointerOffset[p] = total;
+            total += pointers.get(p).components();
+        }
+        scalarCount = total;
         cursorCount = cursors;
     }
 

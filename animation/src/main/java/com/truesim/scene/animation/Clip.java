@@ -28,6 +28,7 @@ public final class Clip implements Motion {
     private final AnimationClip clip;
     private final Reference reference; // null: not additive
     final int[] trackJoint;            // by track: its joint, or -1 to skip it
+    final int[] trackPointer;          // by track: its pointer's slot in the rig, or -1 for a node's track
     int cursorBase;                    // its tracks' first cursor in an animator's
     private double[][] referenceValues; // an additive clip's, by track
     private float[] eventTimes = new float[0];
@@ -43,11 +44,12 @@ public final class Clip implements Motion {
     private int rootRotation = -1;
 
     @AllowAllocation("set up with its rig")
-    Clip(Rig rig, AnimationClip clip, Reference reference, int[] trackJoint) {
+    Clip(Rig rig, AnimationClip clip, Reference reference, int[] trackJoint, int[] trackPointer) {
         this.rig = rig;
         this.clip = Objects.requireNonNull(clip, "clip");
         this.reference = reference;
         this.trackJoint = trackJoint;
+        this.trackPointer = trackPointer;
         this.duration = clip.duration();
         if (reference != null) {
             referenceValues = new double[trackJoint.length][];
@@ -55,7 +57,11 @@ public final class Clip implements Motion {
             for (int t = 0; t < trackJoint.length; t++) {
                 Track track = clip.tracks().get(t);
                 double[] values = new double[Math.max(4, track.components())];
-                if (reference == Reference.FIRST_FRAME || trackJoint[t] < 0
+                if (reference == Reference.REST_POSE && trackPointer[t] >= 0) {
+                    for (int c = 0; c < track.components(); c++) {
+                        values[c] = track.pointer().rest(c);
+                    }
+                } else if (reference == Reference.FIRST_FRAME || trackJoint[t] < 0
                     || track.property() == Track.Property.WEIGHTS) {
                     track.sample(0, cursor, 0, values); // weights rest at 0: their first frame then
                 } else {
@@ -257,21 +263,29 @@ public final class Clip implements Motion {
     }
 
     /**
-     * Its values at {@code time} into {@code pose} (10 per joint) and {@code scalars} (morph weights, then curves, by
-     * the rig's layout): absolute, or for an additive clip its moves from the reference (translation and weight
-     * differences, the rotation relative to the reference's, scale ratios). Only what its tracks move is written.
-     * Allocates nothing.
+     * Its values at {@code time} into {@code pose} (10 per joint) and {@code scalars} (morph weights, then curves, then
+     * pointers' values, by the rig's layout): absolute, or for an additive clip its moves from the reference
+     * (translation, weight and pointer value differences, the rotation relative to the reference's, scale ratios).
+     * Only what its tracks move is written. Allocates nothing.
      */
     void sample(double time, int[] cursors, double[] pose, double[] scalars, double[] scratch) {
         var tracks = clip.tracks();
         for (int t = 0; t < trackJoint.length; t++) {
             int joint = trackJoint[t];
-            if (joint < 0) {
+            int pointer = trackPointer[t];
+            if (joint < 0 && pointer < 0) {
                 continue;
             }
             Track track = tracks.get(t);
             track.sample(time, cursors, cursorBase + t, scratch);
             double[] ref = reference != null ? referenceValues[t] : null;
+            if (pointer >= 0) {
+                int offset = rig.pointerOffset(pointer);
+                for (int c = 0; c < track.components(); c++) {
+                    scalars[offset + c] = ref == null ? scratch[c] : scratch[c] - ref[c];
+                }
+                continue;
+            }
             int base = Skeleton.TRANSFORM * joint;
             switch (track.property()) {
                 case TRANSLATION -> {

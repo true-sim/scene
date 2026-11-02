@@ -373,6 +373,15 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
      * nodes, by the model's node index.
      */
     public long[] spawn(SceneGraph scene, Renderables renderables, long parent) {
+        return spawn(scene, renderables, parent, null);
+    }
+
+    /**
+     * Places the model's nodes as {@link #spawn(SceneGraph, Renderables, long)} does, hiding its hidden nodes by
+     * {@code visibility} (null: by putting them and their children on no layer), so that animating their visibility
+     * shows them ({@code KHR_node_visibility}).
+     */
+    public long[] spawn(SceneGraph scene, Renderables renderables, long parent, NodeVisibility visibility) {
         long[] placed = new long[nodes.size()];
         boolean[] shown = new boolean[nodes.size()];
         for (int i = 0; i < placed.length; i++) {
@@ -382,7 +391,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
             scene.setRotation(created, node.rx(), node.ry(), node.rz(), node.rw());
             scene.setScale(created, node.sx(), node.sy(), node.sz());
             shown[i] = node.visible() && (node.parent() < 0 || shown[node.parent()]);
-            if (!shown[i]) {
+            if (!shown[i] && visibility == null) {
                 scene.setLayers(created, 0);
             }
             if (node.mesh() != null) {
@@ -397,9 +406,12 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
             }
             placed[i] = created;
         }
-        // Skins last: their joints may come after the nodes they deform.
+        // Skins last: their joints may come after the nodes they deform. Hidden nodes once their children are placed.
         for (int i = 0; i < placed.length; i++) {
             Node node = nodes.get(i);
+            if (!node.visible() && visibility != null) {
+                visibility.setVisible(placed[i], false);
+            }
             if (node.mesh() != null && node.skin() >= 0) {
                 Skin skin = skins.get(node.skin());
                 long[] joints = new long[skin.jointCount()];

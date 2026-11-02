@@ -26,8 +26,8 @@ final class GltfDocument {
     private static final String DATA = "data:";
     /** The extensions read, besides every {@code KHR_materials_*}: a file requiring others fails. */
     static final java.util.Set<String> READ = java.util.Set.of("KHR_texture_transform", "KHR_lights_punctual",
-        "KHR_node_visibility", "KHR_mesh_quantization", "KHR_xmp_json_ld", Meshopt.KHR, Meshopt.EXT,
-        "EXT_texture_webp");
+        "KHR_node_visibility", "KHR_mesh_quantization", "KHR_xmp_json_ld", "KHR_animation_pointer", Meshopt.KHR,
+        Meshopt.EXT, "EXT_texture_webp");
 
     private final Map<String, Object> json;
     private final List<byte[]> buffers = new ArrayList<>();

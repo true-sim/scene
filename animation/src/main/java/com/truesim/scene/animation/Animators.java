@@ -10,7 +10,8 @@ import java.util.Objects;
  * Every animator of a scene, updated together once a frame before the scene's own {@link SceneGraph#update()}: clips
  * move on, animators sample in parallel when given jobs, then poses are written to the scene one after another, on its
  * thread; then the events they passed go to their listeners, animator by animator. Morph weights go to a
- * {@link MorphSink} (the renderer's).
+ * {@link MorphSink} (the renderer's), the values of pointer tracks to a {@link PointerSink} (the renderer's for
+ * materials, a {@code NodeVisibility} for visibility, the game's for lights and cameras).
  *
  * <pre>{@code
  * Animators animators = new Animators(scene, jobs);
@@ -28,6 +29,29 @@ public final class Animators {
     public interface MorphSink {
         /** Node {@code node}'s morph weights are {@code weights[offset..offset + count)}; copy what is kept. */
         void weights(long node, double[] weights, int offset, int count);
+    }
+
+    /**
+     * Takes the values of what an animator's pointer tracks animate (materials, lights, cameras, visibility), once per
+     * update while it plays, each pointer its clips key; a sink applies those it knows and ignores the rest.
+     */
+    @FunctionalInterface
+    public interface PointerSink {
+        /**
+         * {@code animator}'s value of {@code pointer} is {@code values[offset..offset + count)}; copy what is kept.
+         * A {@link AnimationPointer.Target#VISIBILITY visibility}'s node is {@code animator.node(pointer.index())}.
+         */
+        void value(Animator animator, AnimationPointer pointer, double[] values, int offset, int count);
+
+        /** This sink, then {@code next}: two sinks as one, each taking the pointers it knows. */
+        @AllowAllocation("set up once")
+        default PointerSink andThen(PointerSink next) {
+            Objects.requireNonNull(next, "next");
+            return (animator, pointer, values, offset, count) -> {
+                value(animator, pointer, values, offset, count);
+                next.value(animator, pointer, values, offset, count);
+            };
+        }
     }
 
     /** Hears an event as an animator's playback passes it. */
@@ -48,6 +72,7 @@ public final class Animators {
     private Animator[] animators = new Animator[8];
     private int count;
     private MorphSink morphs;
+    private PointerSink pointers;
     private long ticks; // updates so far, for animators updating every few
     private int added;  // animators added so far, for their turns
     private AnimationEvent[] listened = new AnimationEvent[0];
@@ -73,6 +98,11 @@ public final class Animators {
     /** Where morph weights go; null drops them. */
     public void morphSink(MorphSink morphs) {
         this.morphs = morphs;
+    }
+
+    /** Where pointer tracks' values go ({@link PointerSink#andThen} combines sinks); null drops them. */
+    public void pointerSink(PointerSink pointers) {
+        this.pointers = pointers;
     }
 
     /**
@@ -146,7 +176,7 @@ public final class Animators {
             sample.run(0, count, 0);
         }
         for (int i = 0; i < count; i++) {
-            animators[i].write(scene, morphs);
+            animators[i].write(scene, morphs, pointers);
         }
         for (int i = 0; i < count; i++) {
             animators[i].dispatch(this); // in order: deterministic, whatever the threads
