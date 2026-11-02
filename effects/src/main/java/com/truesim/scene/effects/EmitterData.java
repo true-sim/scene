@@ -321,6 +321,15 @@ public final class EmitterData {
             return this;
         }
 
+        /**
+         * A collision chain ({@link Collide}), added after the updaters it had: the first of its methods the target and
+         * the device have collides.
+         */
+        public Builder collide(Collide.Collision collision) {
+            update.addAll(collision.modules());
+            return this;
+        }
+
         /** Events its particles send, added to those it had. */
         public Builder event(ParticleEvent... events) {
             Collections.addAll(this.events, events);

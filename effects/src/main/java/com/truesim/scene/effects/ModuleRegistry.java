@@ -20,8 +20,8 @@ import java.util.Set;
 public final class ModuleRegistry {
 
     /**
-     * The built-in modules: the shapes, initializers, forces and attributes over life both targets have, and the
-     * vector field, which only GPU emitters have.
+     * The built-in modules: the shapes, initializers, forces, attributes over life and collision methods both targets
+     * have, and those one target has: the vector field, depth and ray collision (GPU), the game's world (CPU).
      */
     public static final ModuleRegistry BUILT_IN = new ModuleRegistry(Map.of()).with(
         init(Shape.POINT).build(),
@@ -53,6 +53,11 @@ public final class ModuleRegistry {
             .field("sizeX", Bind.constant(1)).field("sizeY", Bind.constant(1)).field("sizeZ", Bind.constant(1))
             .field("tile", Bind.constant(0)).build(),
         update(Forces.SPEED_LIMIT).field("speed", Bind.constant(1)).build(),
+        collide(Collide.COLLIDERS).field("layers", Bind.constant(EffectColliders.ALL_LAYERS)).build(),
+        collide(Collide.HEIGHT).build(),
+        collide(Collide.DEPTH).targets(Target.GPU).field("thickness", Bind.constant(0.5f)).build(),
+        collide(Collide.RAYS).targets(Target.GPU).capability(Capability.RAY_QUERY).build(),
+        collide(Collide.WORLD).targets(Target.CPU).build(),
         update(Over.SIZE).field("curve", FloatCurve.constant(1)).build(),
         update(Over.COLOR).field("gradient", ColorGradient.constant(1, 1, 1, 1)).build());
 
@@ -69,6 +74,12 @@ public final class ModuleRegistry {
 
     private static ModuleType.Builder update(String name) {
         return ModuleType.builder(name, ModuleType.Stage.UPDATE);
+    }
+
+    /** A collision method: its response and the fields every method has. */
+    private static ModuleType.Builder collide(String name) {
+        return update(name).field("response", Bind.constant(0)).field("restitution", Bind.constant(0.5f))
+            .field("friction", Bind.constant(0)).field("radius", Bind.constant(0)).field("fallback", Bind.constant(0));
     }
 
     /** An axis in the emitter's frame: +Y unless given. */

@@ -1654,3 +1654,32 @@ Details the steps settled where sections 2 and 5 left them open.
   analytic gradient) in three channels; its seed is `Hash.combine(emitter seed, salt + 8)`. It is sampled at the
   particle's coordinates (offsets from its effect's origin, or in its emitter's frame), so each effect has its own
   pattern, which moves when the origin rebases.
+
+### Step 11: forces, engine side (engine 0.148.0)
+
+- The kernel runs the forces as `CpuSimulation` does; the emitter record (192 bytes) carries the effect's time and the
+  world's wind in the particles' frame. Asset fields encode the asset's sampled slot as the effect is encoded
+  (`particles.texture(ref, slot)` must come first; a field without a slot does nothing). `VectorField` makes the 3D
+  half-float texture of a `force.field` (bindless `volumes[]`, sampled with linear filtering, tiled or clamped).
+- Every force matches the Java reference within 1 cm over 20 frames, in world and local space; orbits keep their
+  radius on the GPU too. The demo has a swirl (a vortex pulling in, curl noise, rising).
+
+### Step 12: collision, scene side (scene 0.50.0)
+
+- `Collide` makes chains (`Collide.Collision`, added by `EmitterData.Builder.collide`): modules
+  `collide.colliders` (GPU and CPU), `collide.height` (both), `collide.depth` (GPU), `collide.rays` (GPU, needs ray
+  queries) and `collide.world` (CPU), each with `response` (bounce, slide, stick, kill, snap), `restitution`,
+  `friction`, `radius` (0: half the particle's size) and `fallback` (1 for the methods after the first: used only
+  where the ones before are not there). A chain is valid when one of its methods runs on the emitter's target; the
+  others are left out there (the CPU takes the first CPU method of each chain).
+- `EffectColliders` (`effects.colliders()`): planes (the node's XZ plane), spheres, boxes and capsules (along the
+  node's Y) on nodes, in 24-bit layer masks; `Effects.advance` takes their nodes' world transforms, node scales do not
+  apply, colliders of removed nodes go.
+- A step collides after the forces, orbits and limits: the move from the step's start to its end, in the effect's
+  world frame about its origin (local-space particles turned out and back), against the chain's method; the first hit
+  responds: the particle is put at the contact (outside the surface by its radius), bounce turns the speed into the
+  surface back times the restitution and keeps `1 - friction` of the speed along it, slide drops the speed into it,
+  stick and snap freeze it there (flag `STUCK`: it only ages from then on), kill gives it `lifetime = age`. A hit sets
+  `COLLIDED` for the step (collision events, step 14). Spheres, boxes and capsules push out what ends inside them (no
+  sweep: fast particles can pass thin ones); planes and the height field count a move ending behind them that started
+  no more than the radius behind; the world casts a ray along the move.
