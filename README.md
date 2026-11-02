@@ -26,7 +26,7 @@ example, takes core, world and collision without any render data.
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
 | `scene-animation` | animation clips and their sampling, skeletons, animators posing scene nodes                | milestone 6 |
-| `scene-effects`   | particle effects as data, the effects playing in a scene                                   | milestone 7 |
+| `scene-effects`   | particle effects as data, the effects playing in a scene, the emitter runtime              | milestone 7 |
 | `scene-render`    | renderables on nodes, materials, textures and models; a PNG/JPEG importer                 | milestone 5 |
 | `scene-gltf`      | glTF 2.0 and GLB import: models, meshes, materials, embedded images                        | milestone 5 |
 
@@ -580,6 +580,32 @@ effects.changesSince(since, (effect, changes) -> ...); // ADDED, STOPPED, REMOVE
   scale, carried exactly in fixed point, so the same ticks give the same times however frames split them. `pause`
   stops it, per effect or for all.
 
+`EffectRuntime` is the emitters' logic on the CPU: each frame it advances the effects and turns their timing into
+`SpawnRecords`, which the engine copies to the GPU and the CPU simulation spawns from:
+
+```java
+EffectRuntime runtime = new EffectRuntime(effects, jobs);
+runtime.quality(Quality.HIGH);
+// each frame, after scene.update():
+runtime.clearViewers();
+runtime.addViewer(camera.x, camera.y, camera.z);
+runtime.update(dt);                        // advances the effects, decides significance, spawns
+SpawnRecords spawns = runtime.spawns();    // effect, emitter, count, first spawn index, ages, burst call
+int lod = runtime.lod(torch.id());         // culled(), drawnFraction(), updateEvery(), spawnScale()
+```
+
+- **Counts are closed forms of time:** a rate has spawned `floor(rate × running time)` by any tick, its fraction
+  carried in 32.32 fixed point across frames and loop ends; bursts fire as their times in each loop pass; per-metre
+  spawns count the way moved while the emitter runs. So 30, 60, 90 or 144 Hz, hitches, or any split of the same ticks
+  give the same particles, born at the same times, on any thread count. Prewarmed emitters spawn their past back-dated
+  on their first update (`SpawnRecords.PREWARM`); a record spawns at most its emitter's capacity, the youngest.
+- **Significance** per effect type: culled beyond its distance (10 % further out to cull, back within it), levels of
+  detail by distance with the same hysteresis, caps keeping the nearest (or the youngest) with a 10 % bonus for those
+  already shown, and culled effects killed, paused in time, or simulated on undrawn. Spawns scale by the type's quality
+  scale and the level's; emitters below their minimum quality spawn nothing.
+- **Seeds:** an emitter's seed is `Hash.combine(effect seed, emitter)`, a particle's `Hash.combine(emitter seed, spawn
+  index)`; random spawn amounts draw per loop (per burst call in shared instances).
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -598,7 +624,7 @@ dependencies {
     implementation("com.truesim.scene:scene-meshbuild:0.17.0") // building meshes (import or load time)
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
     implementation("com.truesim.scene:scene-animation:0.42.0") // clips, rigs and animators (from 0.35.0)
-    implementation("com.truesim.scene:scene-effects:0.44.0")   // particle effects as data (from 0.44.0)
+    implementation("com.truesim.scene:scene-effects:0.45.0")   // effects as data and the emitter runtime (from 0.44.0)
 }
 ```
 
