@@ -21,7 +21,8 @@ public final class ModuleRegistry {
 
     /**
      * The built-in modules: the shapes, initializers, forces, attributes over life and collision methods both targets
-     * have, and those one target has: the vector field, depth and ray collision (GPU), the game's world (CPU).
+     * have, and those one target has: the mesh, bone and mask shapes, the vector field, depth and ray collision (GPU),
+     * the game's world (CPU).
      */
     public static final ModuleRegistry BUILT_IN = new ModuleRegistry(Map.of()).with(
         init(Shape.POINT).build(),
@@ -30,6 +31,11 @@ public final class ModuleRegistry {
             .build(),
         init(Shape.CONE).field("angle", Bind.constant(0.5f)).field("radius", Bind.constant(0)).build(),
         init(Shape.DISC).field("radius", Bind.constant(1)).build(),
+        init(Shape.MESH).targets(Target.GPU).field("mode", Bind.constant(Shape.SURFACE)).build(),
+        init(Shape.BONES).targets(Target.GPU).field("radius", Bind.constant(0)).build(),
+        init(Shape.MASK).targets(Target.GPU).field("mask", Forces.NO_FIELD)
+            .field("channel", Bind.constant(Shape.LUMINANCE)).field("threshold", Bind.constant(0))
+            .field("sizeX", Bind.constant(1)).field("sizeZ", Bind.constant(1)).build(),
         init(Init.LIFETIME).field("lifetime", Bind.constant(EmitterData.DEFAULT_LIFETIME)).build(),
         init(Init.SPEED).field("speed", Bind.constant(1)).build(),
         init(Init.VELOCITY).field("x", Bind.constant(0)).field("y", Bind.constant(0)).field("z", Bind.constant(0))

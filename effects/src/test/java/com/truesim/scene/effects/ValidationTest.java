@@ -3,14 +3,18 @@ package com.truesim.scene.effects;
 import static com.truesim.scene.effects.ValuesTest.INTENSITY;
 import static com.truesim.scene.effects.ValuesTest.TINT;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
+import com.truesim.scene.assets.AssetId;
+import com.truesim.scene.assets.AssetRef;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
 /** Every problem building an effect finds, each in a sentence naming its emitter. */
 class ValidationTest {
 
+    private static final AssetRef<?> MASK = AssetRef.of(EffectAssets.EFFECT, new AssetId(5, 1));
     private static final ModuleType RAYS = ModuleType.builder("game.rays", ModuleType.Stage.UPDATE)
         .targets(Target.GPU).capability(Capability.RAY_QUERY).build();
 
@@ -44,6 +48,36 @@ class ValidationTest {
             .containsExactly("e: force.gravity runs at UPDATE, not at INIT.");
         assertThat(problems(e -> e.target(Target.CPU).spawn(Spawn.rate(1)).update(Module.of("game.rays")))
             .problems()).containsExactly("e: game.rays does not run on CPU emitters.");
+        // The mesh, bone and mask shapes: the GPU's only
+        assertThat(problems(e -> e.target(Target.CPU).spawn(Spawn.rate(1)).init(Shape.mesh(Shape.SURFACE),
+            Shape.bones(0.1f), Shape.mask(MASK))).problems()).containsExactly(
+            "e: shape.mesh does not run on CPU emitters.", "e: shape.bones does not run on CPU emitters.",
+            "e: shape.mask does not run on CPU emitters.");
+        assertThat(problems(e -> e.spawn(Spawn.rate(1)).init(Module.of(Shape.MASK))).problems())
+            .containsExactly("e: shape.mask needs its mask.");
+    }
+
+    @Test
+    void meshBoneAndMaskShapesBuildOnGpuEmitters() {
+        EffectData data = EffectData.builder().emitter("e", e -> e.spawn(Spawn.rate(10)).init(Shape.mesh(Shape.VOLUME),
+            Shape.mask(MASK, 3, 0.5f, 2, 3), Shape.bones(0.05f))).build();
+        Module mesh = data.emitters().getFirst().init().getFirst();
+        assertThat(mesh.type()).isEqualTo(Shape.MESH);
+        assertThat(mesh.value("mode")).isEqualTo(Bind.constant(Shape.VOLUME));
+        Module mask = data.emitters().getFirst().init().get(1);
+        assertThat(mask.value("mask")).isEqualTo(MASK);
+        assertThat(mask.value("channel")).isEqualTo(Bind.constant(3));
+        assertThat(mask.value("threshold")).isEqualTo(Bind.constant(0.5f));
+        assertThat(mask.value("sizeZ")).isEqualTo(Bind.constant(3));
+        assertThat(Shape.bones(0.05f).value("radius")).isEqualTo(Bind.constant(0.05f));
+        assertThat(Shape.mask(MASK).value("channel")).isNull(); // luminance, by its fallback
+        assertThat(ModuleRegistry.BUILT_IN.type(Shape.MASK).fields().get("channel").fallback())
+            .isEqualTo(Bind.constant(Shape.LUMINANCE));
+        assertThatIllegalArgumentException().isThrownBy(() -> Shape.mesh(3)).withMessageContaining("mesh mode");
+        assertThatIllegalArgumentException().isThrownBy(() -> Shape.mesh(-1));
+        assertThatIllegalArgumentException().isThrownBy(() -> Shape.mask(MASK, 5, 0, 1, 1))
+            .withMessageContaining("channel");
+        assertThatIllegalArgumentException().isThrownBy(() -> Shape.mask(MASK, -1, 0, 1, 1));
     }
 
     @Test
