@@ -113,6 +113,7 @@ public final class Effects {
     private int played;
     private int scale = ONE;
     private boolean pausedAll;
+    private final float[] wind = new float[3];
 
     // Burst calls into shared instances, in the order made.
     private long[] burstEffects = new long[16];
@@ -775,6 +776,21 @@ public final class Effects {
 
     public boolean paused() {
         return pausedAll;
+    }
+
+    /**
+     * The world's wind, a velocity in metres per second, which {@link Forces#WIND wind} modules pick up; none by
+     * default. Any frame; allocates nothing.
+     */
+    public void wind(float x, float y, float z) {
+        wind[0] = x;
+        wind[1] = y;
+        wind[2] = z;
+    }
+
+    /** The world's wind along {@code axis}. */
+    public float wind(int axis) {
+        return wind[axis];
     }
 
     /** The ticks advanced so far. */

@@ -1588,3 +1588,49 @@ Details the steps settled where sections 2 and 5 left them open.
   its survey that drives the torch's intensity.
 - `CpuSimulation` kept the last shape's direction for a speed given before any shape (the GPU starts each particle
   with none); fixed in scene 0.48.0.
+
+### CPU cost of the sync (engine 0.146.0)
+
+- `Particles.update` wrote its tables (emitter records, spawn records, parameter blocks, chunk and ribbon lists) and
+  the CPU emitters' particles field by field into `FrameBuffer`s, each write taking a lock to mark the other slots'
+  pages: about 150 ns a write, 8.3 ms a frame for the benchmark's 100 torches once their embers were all alive. They
+  are now written into native memory (`particles/Staging`) and copied into their frame buffers once a frame: 0.065 ms.
+  The scene benchmark's "torches on 100 rocks" sync went from 4.1 to 1.5 ms over its first 20 frames (mostly the JIT)
+  and a new "burning 2 s" scenario reads 0.36 ms (8.4 ms before); RX 9070 XT, 32 job threads.
+
+### Step 10: sorting (engine 0.147.0)
+
+- `ParticleSort` is a request of (particles, center camera, pool, state): equal requests are one sort, so both eyes
+  of a pair, each drawn by `new ParticleDraw(particles, eyeView, head)` with the camera at their center, sort once and
+  face the center (view-plane billboards face its position). The sort is by the **distance** from the center, not the
+  depth along its ray: turning the head reorders nothing, as position-facing billboards turn with the position.
+- Sorted emitters are those with a sorted billboard renderer (the default; `additive()` and `sorted(false)` are not),
+  at most 4,096 a frame (`SORT_EMITTERS`; more draw unsorted), CPU emitters included. Keys are the emitter's place
+  among them (top bits) above the top 20 bits of the squared distance; one global radix sort (4 bits a pass,
+  FidelityFX-style count, scan and scatter with stable 1-bit splits in group memory) leaves each emitter's particles in
+  a run, farthest first. Passes: as many as the keys' bits need, rounded up to even (6 up to 16 sorted emitters, 8 at
+  most). No 16-bit keys for small emitters. Measured (one emitter, a view): 10k 0.091 ms, 100k 0.235 ms, 1M 1.725 ms.
+- Draws: records carry the emitter, renderer, texture, sorted run, beam end and time; draws of one pipeline next to
+  each other in the back-to-front order are one indirect multi-draw (`SV_DrawIndex`), so many emitters of one renderer
+  kind cost one draw call (step 9's leftover).
+- The demo's `StereoBench -Peffect` draws both eyes as a pair (one set of sort passes); it shows red and blue puffs.
+
+### Step 11: forces, scene side (scene 0.49.0)
+
+- Updaters (`Forces`): `force.wind` (a drag of `coupling` towards `Effects.wind(x, y, z)` times `scale`, the speed
+  varying by `gusts` with value noise over the effect's time at 0.5 cells a second), `force.curl` (`strength`,
+  `frequency`, `speed` of drift, 1 to 4 `octaves`), `force.vortex` (`strength` around, `pull` in, about an axis),
+  `force.point` (`strength`, linear falloff to 0 at `radius`, `killRadius`, at `x`, `y`, `z`), `force.line`
+  (through a point along an axis), `force.orbit` (`speed` in radians a second about an axis), `force.field` (a 3D
+  texture asset, `strength`, a box of `sizeX` by `sizeY` by `sizeZ` around the emitter, `tile`; GPU only) and
+  `limit.speed`. Axes and points are in the emitter's frame, about the emitter (its position at the step), +Y by
+  default.
+- Module fields gain a fourth kind, `ASSET` (an `AssetRef`); a module must give its asset fields ("needs its field").
+- Integration: gravity, drag and wind exactly over a step (wind is a drag towards a velocity); forces depending on the
+  position (curl, vortex, attractors, fields) taken as constant over a step from its start; orbits turn the position
+  and velocity about their axis exactly (radius kept); the speed limit last; a particle within a kill radius gets
+  `lifetime = age` (drawn no more, gone at the next step), as the GPU does.
+- Curl noise is value noise on the integer lattice (`Hash` of the coordinates and seed, quintic interpolation, the
+  analytic gradient) in three channels; its seed is `Hash.combine(emitter seed, salt + 8)`. It is sampled at the
+  particle's coordinates (offsets from its effect's origin, or in its emitter's frame), so each effect has its own
+  pattern, which moves when the origin rebases.
