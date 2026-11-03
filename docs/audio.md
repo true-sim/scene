@@ -2116,8 +2116,10 @@ Details steps 1 to 20 settled where sections 2 to 6 left them open, and where th
   target to the 99.9th percentile; the sync 0.087 ms a frame at the median and 0.172 ms at p99 (under §2.23's 0.2 ms).
   Other scenes: 64 voices of 1,000 loops 0.219 ms; 16 HRTF voices 0.279 ms; 64 HRTF voices (16 binaural, 48 in the
   field) 0.489 ms; 2 rendering listeners with 16 voices each 0.176 ms; 12 streams 0.065 ms; the V8 patch 0.017 ms.
-  Each run's slowest block took 17 to 24 ms (0.2 to 0.7 ms in the streams and patch runs); the cause was not looked
-  for.
+  Each run's slowest block took 17 to 24 ms (0.2 to 0.7 ms in the streams and patch runs): a blocking C2 compile of
+  a per-block method (the test JVMs run with `-XX:-BackgroundCompilation`; `AudioRenderer.renderBlock` compiles after
+  about 5,100 blocks, past the 10 s warm-up). With a 30 s warm-up the maxima are 0.5 to 1.8 ms, and the benchmark
+  fails on a timed block slower than a block (engine `docs/pitfalls.md`).
 - **Deviation:** the debug overlay is `AudioOverlay`, text lines (voices real, virtual, binaural; underruns and
   starvations; each bus's meter as peak and RMS in dB with a bar; the rendering listeners' blocks; a store's listener
   graph: order, delayed and cut edges) rewritten in place without garbage, for a game's HUD or a log; the engine has
