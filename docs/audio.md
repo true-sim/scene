@@ -1951,6 +1951,66 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   not the emitter's. **Deviation:** rays only from device listeners (not rendering listeners), and the ray tracing
   structures implementation comes with step 19.
 
+### Step 17: HRTF (scene, engine)
+
+- Scene: `HrtfSet` (`AudioAssets.HRTF`): per measured direction a unit vector in the listener's frame, the distance,
+  each ear's delay (samples, the set's least delay 0) and minimum-phase filter, plus a credit string (source and
+  licence). The `.hrtf` format is little-endian: header, credit, the directions' floats, the filters. `HrtfImporter`
+  reads it; `AudioImporters` registers `.hrtf`.
+- **Deviation (where):** the SOFA converter is engine-audio's `tools` source set (`SofaConverter`, jHDF 0.13.0 on
+  that source set only; `./gradlew :engine-audio:convertHrtf -Ptruesim.audio.sofa=<file> -Ptruesim.audio.hrtf=<out>
+  [-Ptruesim.audio.directions=2000] [-Ptruesim.audio.taps=128] [-Ptruesim.audio.credit=...]`), not
+  scene-audio-codecs: it reuses the engine's preparation (`HrtfConversion`). The runtime reads only `.hrtf`.
+- `HrtfConversion`: minimum phase by the folded real cepstrum (4,096-point transforms), cut to 128 taps with a
+  half-cosine fade over the last eighth; filters scaled so an ear's mean energy over the directions is 1/2 (an
+  equal-power pan's in the middle: HRTF and panned voices are about as loud, −32.5 against −31.7 dB mean in the
+  clip below); dense sets thinned by farthest-point sampling from straight ahead. **Deviation:** the ITD is the lag
+  of the largest cross-correlation of the two ears' responses low-passed at 1.5 kHz, within ±1 ms, refined by a
+  parabola; not onsets refined by correlation: SADIE II's KU100 responses rise slowly, and the −20 dB onsets of the
+  two ears straight above were 14.6 samples apart (ITD −0.3 ms where it is 0). With the correlation the set is
+  symmetric: ±0.78 ms to the sides, 0.011 ms above, 0 ahead.
+- **The default set** (decision 1): SADIE II subject D1 (KU100), `D1_48K_24bit_256tap_FIR_SOFA.sofa` from the
+  official Zenodo zip (SHA-256 `366321fa…5f75`), converted to 2,000 of its 8,802 directions, 128 taps:
+  `engine-audio`'s `com/truesim/engine/audio/hrtf/sadie-ii-ku100.hrtf` (2.1 MB), with the Apache 2.0 text
+  (`LICENSE-SADIE-II.txt`) and a notice of the source, the credit (doi:10.3390/app8112029) and the changes made
+  (`NOTICE-SADIE-II.txt`, Apache 2.0 §4b); the engine README credits it, and `Hrtf.credit()` carries it for a game's
+  credits.
+- `Hrtf` (prepared per set and output rate, off the audio thread): filters and delays resampled by a Blackman
+  windowed sinc (the filters padded by the sinc's ringing ahead, a common delay; DC gain kept within 2 %), the
+  directions triangulated as their convex hull (incremental, points nudged by a hashed 1e-9 for the tests so rings of
+  coplanar directions decide; repeated directions skipped); T = 2V − 4 for the built-in set. **Deviation:** the lookup
+  is a cube map of 6 × 48 × 48 cells (about 2°, no trigonometry) naming a triangle near each, then a walk across
+  edges by the most negative barycentric weight, not a 2° azimuth-elevation grid; 5,000 random directions all find
+  their triangle with weights ≥ 0 reconstructing the direction (cos > 0.99999).
+- `HrtfSpatializer` behind the `Spatializer` interface (Steam Audio stays a documented fallback only): uniformly
+  partitioned overlap-save, FFTs of 2B points, P = ceil(filter / B) partitions (1 at 256 frames, 3 at 64; a 64-frame
+  render matches the 256-frame one within 2e-6); filters interpolated barycentrically when a source moved by more
+  than 0.5°, at most 4 channels a block (a new voice at once), the block rendered with old and new filters
+  cross-faded. **Deviation:** each ear's delay is put into its interpolated filter (a Blackman windowed sinc shift by
+  the delay plus 12 samples), not applied after the convolution as a ramped Lagrange delay: the Lagrange delay lost
+  highs by its fraction, different per ear, and rendered ILDs were 0.4 dB off the set's; with the shift they are
+  within 0.1 dB, ITDs within 0.25 samples (6 directions tested). The delay then moves with the cross-fade. Near
+  field: each ear's own direction from ears 8.75 cm off the centre and a gain of its distance's ratio, faded in from
+  1 m to 25 cm (a source at 45° right: ILD 3.7 dB at 2 m, 6.6 dB at 20 cm). **Deviation:** no spherical-head shelf
+  beyond that ratio; sets with several measured distances are not interpolated between shells (SADIE has one).
+- The cap (AU7): `Voices` gives spatializer channels to the most audible real placed `Spatial.HRTF` voices every 4
+  blocks (16 by default); a voice joining or leaving cross-fades between pan and HRTF over a block; a voice starting
+  binaural takes a channel at once; a released channel renders its tail (P blocks) into the voice's bus. Voices past
+  the cap pan (step 18 adds the ambisonics bus). `commands().spatializer(s, voices)`; `audio.output` (`AUTO`,
+  `HEADPHONES`, `STEREO_SPEAKERS`, `SURROUND`) with `HEADPHONES` (stereo, mono off) prepares the set on a background
+  thread and hands it over at the next frame; `audio.hrtf.set` (a `.hrtf` file; the built-in set if empty or
+  unreadable) and hidden `audio.hrtf.voices`. **Deviation:** `audio.hrtf.set` sits at the basic tier: the engine
+  declares no tiers by default, and an undeclared tier fails the registry's check.
+- **Measured** (`HrtfCostProbe`, `TRUESIM_AUDIO=true`, no coverage probes; 16 binaural voices, the whole renderer per
+  256-frame block, 3,000 blocks warm, 20,000 timed): sources still, median 171 µs, p99 283 µs; every source moving
+  about 1° a block (four filter updates a block), median 218 µs, p99 357 µs, max 586 µs: within the 0.6 ms budget
+  (the same 16 voices panned: median 58 µs). `assertAllocationFree` holds for 16 moving binaural voices.
+- **Listening checklist** (for a person, on headphones, with `au_step17_fly_circling_hrtf_then_panned`: 12 s through
+  the HRTF, then the same 12 s panned): the fly is heard outside the head, not between the ears; ahead and behind are
+  told apart (with panning they are the same); it rises over the head at 8 to 10 s; it passes close by the left ear
+  near 11 s and grows louder in that ear; no clicks or zipper noise as it moves; HRTF and panned halves are about
+  equally loud. Not done by the agent (needs ears).
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
