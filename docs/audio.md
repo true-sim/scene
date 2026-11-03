@@ -1892,6 +1892,22 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   the buses' volumes, effects or sends (only the voice's own gain); 2D (unplaced) sounds are not heard by rendering
   listeners; the distance low-pass is the device's (heard by listeners as well).
 
+### Step 14: `AudioBindings` (engine)
+
+- **Deviation (where):** `AudioBindings` is in engine-audio (next to the `Audio` plugin, as step 6 placed it), not in
+  an engine-app module; engine-audio now depends on scene-animation and scene-effects for it.
+- `onEvent(event, sound, joint)` plays the sound at the joint's node of the animator that fired (by id, allocating
+  nothing), its volume the event's weight as a linear gain (`scaled(false)` to keep it), `minimumWeight` as in
+  `EffectBindings`; `.surface(group, materialAt)` sets the switch from a `MaterialAt` (`TerrainHeights::materialAt`
+  fits) at the joint's position as of the last `scene.update()`: the material number is the enum ordinal, negative
+  (`NONE`, unloaded) or past the values gives the group's fallback.
+- `curve(animator, curve, instance, parameter).map(scale, bias)` sets the parameter every `update()` (no ramp).
+- `onEffect(effect, sound)` (after `effects(Effects)`) plays the sound once per instance added to the effects' log
+  (at its node, else its position; shared burst instances excepted) and once per burst call (at the burst's
+  position), read by serial number. A log that overflowed between updates loses those starts (not replayed).
+- Demo: `FoxFootsteps`, the fox's four paws bound to the walk's and run's foot-down events, on bands of grass, stone
+  and gravel standing in for terrain materials (the demo ground has none); steps synthesized, three per surface.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
