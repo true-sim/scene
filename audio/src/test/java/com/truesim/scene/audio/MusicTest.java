@@ -389,7 +389,10 @@ class MusicTest {
     @Test
     void stingersPlayOnTheirQuantizeDucking() {
         assertThatThrownBy(() -> music.stinger(Stinger.of("level-up"))).hasMessageContaining("no stinger");
+        clips.notReady.add(STING);
         music.play(score(), EXPLORE);
+        assertThat(clips.primed).as("stingers primed with the score").contains(STING);
+        clips.notReady.clear();
         music.stinger(Stinger.of("level-up"));
         assertThat(commands()).as("nothing scheduled yet: at the schedule point").containsExactly(
             "stinger v1 clip6 @1000 g-6.0 s0.0");

@@ -130,6 +130,11 @@ public final class Music {
         startPending = true;
         startIndex = firstIndex(score.playlist(state));
         prime(firstSegment(state));
+        for (Score.StingerPlay stinger : score.stingers()) { // ready whenever asked for, on their quantize
+            if (!clips.ready(stinger.clip())) {
+                clips.prime(stinger.clip());
+            }
+        }
     }
 
     /** Asks for {@code next}: the transition happens at its sync point once the destination is ready. */

@@ -218,6 +218,11 @@ public final class Score {
         return stingers.get(stinger);
     }
 
+    /** What its stingers play. */
+    public java.util.Collection<StingerPlay> stingers() {
+        return stingers.values();
+    }
+
     /** The parameters its stems follow. */
     public List<SoundParameter> parameters() {
         return parameters;
