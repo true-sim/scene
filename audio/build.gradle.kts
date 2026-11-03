@@ -8,6 +8,7 @@ description = "Scene audio for true-sim: clips, sounds, buses and snapshots as d
 dependencies {
     api(project(":scene-core"))
     api(project(":scene-assets"))
+    api("com.truesim.common:common-collision:0.2.0") // CollisionAudioWorld: occlusion rays through physics
 }
 
 coverage {
