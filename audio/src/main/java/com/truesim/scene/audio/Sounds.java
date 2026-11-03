@@ -695,6 +695,11 @@ public final class Sounds {
         return plan(held(instance)).role[v] == Plans.OUTRO;
     }
 
+    /** How a loop voice of a {@link Segments} ends when the instance stops; {@code null} for other voices. */
+    public Release voiceRelease(long instance, int v) {
+        return plan(held(instance)).release[v];
+    }
+
     /** Voice {@code v}'s gain now: drawn, times its curves and blends at the parameters' values. */
     public float voiceGain(long instance, int v) {
         int slot = held(instance);

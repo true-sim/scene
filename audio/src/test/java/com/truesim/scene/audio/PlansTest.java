@@ -106,6 +106,8 @@ class PlansTest {
         assertThat(sounds.voiceOutro(id, 3)).isFalse();
         assertThat(sounds.voiceClip(id, 4)).isEqualTo(clip(5));
         assertThat(sounds.voiceOutro(id, 4)).isTrue();
+        assertThat(sounds.voiceRelease(id, 3)).isEqualTo(Release.AT_LOOP_END);
+        assertThat(sounds.voiceRelease(id, 4)).isNull();
         assertThat(sounds.voiceFollows(id, 4)).isEqualTo(-1);
         assertThat(sounds.voiceClip(id, 5)).isEqualTo(clip(6));
         assertThat(sounds.voiceDelay(id, 5)).isEqualTo(1);

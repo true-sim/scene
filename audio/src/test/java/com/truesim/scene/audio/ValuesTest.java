@@ -48,6 +48,26 @@ class ValuesTest {
     }
 
     @Test
+    void clipsReadThroughDecoders() {
+        try (AudioClip clip = AudioClip.builder(8_000, 2).floats(new float[] {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f})
+                .build(); ClipDecoder d = clip.open()) {
+            float[] out = new float[8];
+            d.seek(1);
+            assertThat(d.read(out, 1, 4)).isEqualTo(2);
+            assertThat(out).startsWith(0, 0, 0.3f, 0.4f, 0.5f, 0.6f);
+            assertThat(d.read(out, 0, 4)).isZero();
+        }
+        AudioClip.Opener opener = () -> null;
+        try (AudioClip streamed = AudioClip.builder(48_000, 1).streamed(96_000, opener, 1234).loop(10, 20).build()) {
+            assertThat(streamed.streamed()).isTrue();
+            assertThat(streamed.frames()).isEqualTo(96_000);
+            assertThat(streamed.bytes()).isEqualTo(1234);
+            assertThat(streamed.encoding()).isEqualTo(AudioClip.Encoding.FLOAT);
+            assertThat(streamed.open()).isNull();
+        }
+    }
+
+    @Test
     void clipsRefuseWhatCannotBe() {
         assertThatThrownBy(() -> AudioClip.builder(0, 1)).hasMessage("Not a sample rate: 0");
         assertThatThrownBy(() -> AudioClip.builder(1, 0)).hasMessage("Clips have 1 to 8 channels, not 0");

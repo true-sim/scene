@@ -113,6 +113,7 @@ final class Plans {
         float[] rate = new float[4];
         boolean[] looped = new boolean[4];
         SoundNode[] node = new SoundNode[4];
+        Release[] release = new Release[4];
         int[] factorStart = new int[4];
         int[] factorCount = new int[4];
         int factors;
@@ -132,6 +133,7 @@ final class Plans {
             rate = Arrays.copyOf(rate, n);
             looped = Arrays.copyOf(looped, n);
             node = Arrays.copyOf(node, n);
+            release = Arrays.copyOf(release, n);
             factorStart = Arrays.copyOf(factorStart, n);
             factorCount = Arrays.copyOf(factorCount, n);
         }
@@ -252,8 +254,12 @@ final class Plans {
                     intro = walk(flat, from, seed, switches, plan, delay, gain, rate, follows, role, false);
                 }
                 int loopNode = flat.index(sg.loop(), from);
+                int first = plan.count;
                 last = walk(flat, loopNode, seed, switches, plan, sg.intro() != null ? 0 : delay, gain, rate, intro,
                     LOOP, true);
+                for (int v = first; v < plan.count; v++) {
+                    plan.release[v] = sg.release(); // how the loop's voices end when the instance stops
+                }
                 if (sg.outro() != null) {
                     walk(flat, flat.index(sg.outro(), loopNode + 1), seed, switches, plan, 0, gain, rate, -1, OUTRO,
                         false);
@@ -284,6 +290,7 @@ final class Plans {
         plan.rate[v] = rate;
         plan.looped[v] = loop;
         plan.node[v] = node;
+        plan.release[v] = null;
         plan.factorStart[v] = plan.factors;
         plan.factorCount[v] = depth;
         for (int i = 0; i < depth; i++) {

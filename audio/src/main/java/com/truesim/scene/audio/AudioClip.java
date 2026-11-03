@@ -57,14 +57,24 @@ public final class AudioClip implements AutoCloseable {
     private final float gain;
     private final Arena arena;
     private final MemorySegment samples;
+    private final Opener opener;
+    private final long encodedBytes;
     private final AtomicBoolean closed = new AtomicBoolean();
+
+    /** Opens a decoder of a streamed clip's encoded bytes: one per stream. */
+    @FunctionalInterface
+    public interface Opener {
+        ClipDecoder open();
+    }
 
     @AllowAllocation("loading a clip")
     private AudioClip(Builder b) {
         rate = b.rate;
         channels = b.channels;
-        encoding = b.encoding;
-        frames = b.count / channels;
+        encoding = b.opener != null ? Encoding.FLOAT : b.encoding;
+        frames = b.opener != null ? b.streamFrames : b.count / channels;
+        opener = b.opener;
+        encodedBytes = b.encodedBytes;
         loopStart = b.loopStart;
         loopEnd = b.loopEnd;
         markers = List.copyOf(b.markers);
@@ -72,6 +82,9 @@ public final class AudioClip implements AutoCloseable {
         gain = b.gain;
         arena = Arena.ofShared();
         samples = arena.allocate(Math.max(1, (long) b.count * encoding.bytes), 4);
+        if (b.opener != null) {
+            return; // the encoded bytes are the opener's
+        }
         if (encoding == Encoding.PCM16) {
             MemorySegment.copy(b.shorts, 0, samples, SHORT, 0, b.count);
         } else {
@@ -138,9 +151,44 @@ public final class AudioClip implements AutoCloseable {
         return gain;
     }
 
-    /** Whether it streams from encoded bytes instead of being decoded whole (none do yet: WAV decodes whole). */
+    /** Whether it streams from encoded bytes instead of being decoded whole: read it through {@link #open()}. */
     public boolean streamed() {
-        return false;
+        return opener != null;
+    }
+
+    /**
+     * A decoder reading it from its first frame: its encoded bytes decoded for a streamed clip, its memory for a
+     * decoded one. Each stream opens its own; close it when done.
+     */
+    @AllowAllocation("a decoder per stream")
+    public ClipDecoder open() {
+        return opener != null ? opener.open() : new MemoryDecoder();
+    }
+
+    /** Reads a decoded clip's memory as floats. */
+    private final class MemoryDecoder implements ClipDecoder {
+        private long at;
+
+        @Override
+        public int read(float[] out, int offset, int count) {
+            int n = (int) Math.max(0, Math.min(count, frames - at));
+            for (int f = 0; f < n; f++) {
+                for (int c = 0; c < channels; c++) {
+                    out[(offset + f) * channels + c] = sample(at + f, c);
+                }
+            }
+            at += n;
+            return n;
+        }
+
+        @Override
+        public void seek(long frame) {
+            at = frame;
+        }
+
+        @Override
+        public void close() {
+        }
     }
 
     /** Sample {@code channel} of {@code frame}, in [-1, 1]. */
@@ -155,9 +203,9 @@ public final class AudioClip implements AutoCloseable {
         return samples;
     }
 
-    /** Memory it takes, for the asset cache's budget. */
+    /** Memory it takes, for the asset cache's budget: its samples, or a streamed clip's encoded bytes. */
     public long bytes() {
-        return samples.byteSize();
+        return opener != null ? encodedBytes : samples.byteSize();
     }
 
     /** Frees the samples: reading them throws from now on. Closing twice does nothing. */
@@ -189,6 +237,9 @@ public final class AudioClip implements AutoCloseable {
         private final List<SoundMarker> markers = new ArrayList<>();
         private float loudness = Float.NaN;
         private float gain = 1;
+        private Opener opener;
+        private long streamFrames;
+        private long encodedBytes;
 
         private Builder(int rate, int channels) {
             if (rate <= 0) {
@@ -225,6 +276,17 @@ public final class AudioClip implements AutoCloseable {
             count = length;
         }
 
+        /**
+         * Streams it instead of holding samples: {@code frames} long, read through decoders {@code opener} opens,
+         * holding {@code bytes} of encoded data.
+         */
+        public Builder streamed(long frames, Opener opener, long bytes) {
+            this.opener = Objects.requireNonNull(opener, "opener");
+            streamFrames = frames;
+            encodedBytes = bytes;
+            return this;
+        }
+
         /** Loops frames {@code start} (inclusive) to {@code end} (exclusive) when the sound loops. */
         public Builder loop(long start, long end) {
             if (start < 0 || end <= start) {
@@ -250,8 +312,10 @@ public final class AudioClip implements AutoCloseable {
 
         /** The clip; throws if it has no samples, or loop points or markers past its end. */
         public AudioClip build() {
-            Objects.requireNonNull(encoding, "samples");
-            long frames = count / channels;
+            if (opener == null) {
+                Objects.requireNonNull(encoding, "samples");
+            }
+            long frames = opener != null ? streamFrames : count / channels;
             if (loopEnd > frames) {
                 throw new IllegalArgumentException("The loop ends past the clip: " + loopEnd + " > " + frames);
             }
