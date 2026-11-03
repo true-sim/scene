@@ -1818,6 +1818,26 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   their node: a zone whose node was removed goes, tested in step 3). **Deviation:** no adapter to scene-world's cell
   loaders, as scene-audio does not depend on scene-world.
 
+### Step 11: music and Opus
+
+- `AudioSync.music(Music)` (and `Audio.music()`, made once over the renderer's clock and `CachedMusicClips`) turns
+  Music's commands into the renderer's: starts at their exact frames on `Bus.MUSIC` at the highest priority (streamed
+  clips through rings, primed when they start), stops with their fades. Stem gains, pauses and the stinger duck are
+  queued and applied by the update whose schedule point reaches their frame, so they land within one update (and the
+  renderer's gain ramp) of the bar, not to the sample; starts and stops are to the sample. A transition measured on
+  clicks lands on the bar line to the sample; a stem and its negation re-scheduled every 4 bars cancel below 1e-6
+  for 10 minutes.
+- **Deviation:** a stinger ducks the other music through their voice gains (to the duck at its start, back over
+  0.3 s at its end), not through a duck on the music bus: the bus's ducks are keyed by bus, and the stinger plays on
+  the music bus itself.
+- `Music.play` primes the score's stingers as well as the first playlist, so a stinger asked for is ready; `Score`
+  lists its stingers.
+- Opus decodes through libopusfile (always 48 kHz, pre-skip and end trim by the library). A seek is exact in
+  position but not bit-exact to a decode from the start (the decoder's pre-roll converges): tested by alignment at lag
+  0 and an error below 1e-3 after the first half of a 4,096-frame window.
+- Offline renders run faster than real time, so a listening proof waits for loading between frames; a game's frame
+  does not, and a late clip starts on the next bar line after it is ready.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
