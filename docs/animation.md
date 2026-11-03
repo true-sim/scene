@@ -162,7 +162,7 @@ version: games drive layers and fades in code; a state machine helper comes late
 | A7 | **Sharing clips**: a clip binds to any rig whose joints have the same names; humanoid retargeting later, nothing in the data blocking it. |
 | A8 | **Events and markers** come from code (`clip.event(0.5, FOOTSTEP)`); a sidecar file beside the model later, for tools. |
 | A9 | **Curves** drive morph weights and are read by game code; material parameters when the engine has per-instance ones. |
-| A10 | **Coarser levels of skinned meshes** are simplified with the joint weights as attributes, so collapses stay within a joint's influence. |
+| A10 | **Coarser levels of skinned meshes** are simplified with the joint weights as attributes, so collapses stay within a joint's influence. Built: `MeshBuilder` (hierarchies and discrete LODs) gives meshoptimizer's `meshopt_simplifyWithAttributes` four values per joint, its weight w and w times the vertex position (linear blend skinning is linear in them, so they bound the posed deviation in any pose); up to 8 joints per simplification, more share slots (joints that meet around a vertex never share). Weights compared slot by slot were rejected: they call two vertices bound wholly to different joints alike. Posed tubes (an elbow, a hard seam, a chain, 40 joints) deviate 27 to 100 % less at equal triangle counts than with plain simplification. A skinned level's error includes the skin term, so coarse levels of limbs switch later than their rest-pose geometry alone would. |
 | A11 | **Influences**: the four largest per vertex, renormalized; an eight-influence attribute later, where a model needs it. |
 | A12 | **IK**: two-bone, look-at/aim and foot placement first; a FABRIK chain solver with joint limits next, on the same `PoseModifier` hook. |
 | A13 | **Ground probes** for foot placement run in the serial part of `ANIMATE` until collision queries are verified thread-safe, then in the parallel part. |
@@ -173,7 +173,7 @@ version: games drive layers and fades in code; a state machine helper comes late
 - glTF importer: skins, animations, JOINTS/WEIGHTS are not read; new attributes would default to colors there, so they
   get explicit cases; the node index map is kept.
 - `ModelData.Node`: skin, weights, camera; `spawn` binds skins.
-- `MeshBuilder`: morph deltas and joint boxes follow its vertex remap.
+- `MeshBuilder`: morph deltas and joint boxes follow its vertex remap; skinned meshes simplify with their skin (A10).
 - `SceneGraph`: a one-call `setLocal(node, ...)`, as the README promises primitive overloads on hot paths.
 - `SceneSync`: its "more than half changed, rewrite all" rule counts only renderable nodes, not joints.
 - `RenderableBounds`: animated nodes take the box above.

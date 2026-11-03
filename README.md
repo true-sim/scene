@@ -491,6 +491,8 @@ vertices and triangles; 64 / 124 by default when built), culled and drawn on the
   about 8, each group simplified to half with its border locked (so neighbors still meet) and split again, until one
   group remains; each group's sphere holds its children's and its error includes theirs, so the selection rule never
   cracks or overlaps. Vertices are reordered as meshlets first use them, coarsest level first. Deterministic.
+  Skinned meshes (joints and weights given) simplify with their skin as attributes, so a collapse stays within a
+  joint's influence and a straight limb keeps its elbow (animation A10); their errors include that term.
 - **Measured** (`MeshBuildBenchmark`, 524,288 triangles): flat 445 ms, 5,422 meshlets, 5.5 MB; cluster hierarchy
   715 ms, 12,291 meshlets in 10 levels down to 25, 9.1 MB; six discrete LODs 1.1 s.
 
