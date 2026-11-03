@@ -74,6 +74,66 @@ class OcclusionTest {
         assertThat(t.mid()).isEqualTo(AudioMaterial.CONCRETE.mid());
     }
 
+    /** A slab across x from {@code from} to {@code to}, of material {@code material}. */
+    static void slab(CollisionWorld world, double from, double to, int material) {
+        int c = world.addStatic(new BoxShape(new Vec3((to - from) / 2, 5, 5)),
+            Transform.ofTranslation(new Vec3((from + to) / 2, 0, 0)));
+        world.setMaterial(c, material);
+    }
+
+    /** A glass pane across x = {@code x}: a mesh of two triangles, material 2. */
+    static void pane(CollisionWorld world, double x) {
+        world.addStatic(com.truesim.common.collision.TriangleMeshShape.of(java.util.List.of(
+            new Vec3(x, -5, -5), new Vec3(x, 5, -5), new Vec3(x, 5, 5), new Vec3(x, -5, 5)),
+            new int[] {0, 1, 2, 0, 2, 3}, new int[] {2, 2}), Transform.IDENTITY);
+    }
+
+    @Test
+    void stepsOutOfABodyCountTheBodiesBehindIt() {
+        float both = AudioMaterial.CONCRETE.mid() * AudioMaterial.GLASS.mid();
+        // a curtain from 4.9 to 5.1; the steps out of it (10, 20, 40, 80 mm on) land inside the brick at 5.12
+        CollisionWorld behind = new CollisionWorld();
+        wall(behind, 5, 1);
+        slab(behind, 5.12, 5.32, 2);
+        CollisionAudioWorld audio = world(behind);
+        Transmission t = new Transmission();
+        assertThat(audio.trace(5, 0, 0, 6, 0, 0, t)).as("from inside the curtain").isTrue();
+        assertThat(t.mid()).isEqualTo(AudioMaterial.GLASS.mid());
+        assertThat(audio.trace(0, 0, 0, 6, 0, 0, t.open())).as("through both").isTrue();
+        assertThat(t.mid()).isCloseTo(both, within(1e-7f));
+        assertThat(audio.trace(0, 0, 0, 5.2, 0, 0, t.open())).as("ending inside the brick").isTrue();
+        assertThat(t.mid()).isCloseTo(both, within(1e-7f));
+        // a thin board closer than a step: the steps would pass over it; and a foil thinner than the step past a face
+        CollisionWorld board = new CollisionWorld();
+        wall(board, 5, 1);
+        slab(board, 5.13, 5.17, 2);
+        slab(board, 3, 3.0005, 2);
+        Transmission b = new Transmission();
+        assertThat(world(board).trace(0, 0, 0, 6, 0, 0, b)).isTrue();
+        assertThat(b.mid()).isCloseTo(both * AudioMaterial.GLASS.mid(), within(1e-7f));
+        // touching: the brick starts where the curtain ends
+        CollisionWorld touching = new CollisionWorld();
+        wall(touching, 5, 1);
+        slab(touching, 5.1, 5.3, 2);
+        Transmission c = new Transmission();
+        assertThat(world(touching).trace(0, 0, 0, 6, 0, 0, c)).isTrue();
+        assertThat(c.mid()).isCloseTo(both, within(1e-7f));
+        // a mesh's side half a millimetre behind a body: within a step of its end
+        CollisionWorld near = new CollisionWorld();
+        wall(near, 5, 1);
+        pane(near, 5.1005);
+        Transmission n = new Transmission();
+        assertThat(world(near).trace(0, 0.3, 0.2, 6, 0.3, 0.2, n)).isTrue();
+        assertThat(n.mid()).isCloseTo(both, within(1e-7f));
+        // a mesh's side just behind a body
+        CollisionWorld pane = new CollisionWorld();
+        wall(pane, 5, 1);
+        pane(pane, 5.15);
+        Transmission p = new Transmission();
+        assertThat(world(pane).trace(0, 0.3, 0.2, 6, 0.3, 0.2, p)).isTrue();
+        assertThat(p.mid()).isCloseTo(both, within(1e-7f));
+    }
+
     @Test
     void aMeshsTrianglesHaveTheirOwnMaterials() {
         CollisionWorld physics = new CollisionWorld();

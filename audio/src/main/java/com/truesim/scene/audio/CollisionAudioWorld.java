@@ -10,8 +10,9 @@ import java.util.function.IntFunction;
 /**
  * An {@link AudioWorld} over physics (§2.11): rays through common-collision, each surface hit a crossing whose
  * material (a mesh triangle's, else its collider's) the table maps to an {@link AudioMaterial}; up to 8 crossings. A
- * convex body counts once (going in; the ray then steps out of it in doubling steps), a triangle mesh once per side
- * crossed. A query per thread, made on its first trace. Thread-safe while the collision world does not change.
+ * convex body counts once (going in; the ray then steps out of it in doubling steps, each probe cast back so a body
+ * it steps into or over still counts), a triangle mesh once per side crossed. A query per thread, made on its first
+ * trace. Thread-safe while the collision world does not change.
  */
 public final class CollisionAudioWorld implements AudioWorld {
 
@@ -56,27 +57,58 @@ public final class CollisionAudioWorld implements AudioWorld {
         RaycastHit hit = hits.get();
         double travelled = 0;
         double step = 10 * STEP;
+        int inside = RaycastHit.NONE; // the convex body the ray is stepping out of
         int crossings = 0;
         for (int casts = 0; casts < MAX_CASTS && travelled < length; casts++) {
-            if (!query.raycast(x0 + dx * travelled, y0 + dy * travelled, z0 + dz * travelled, dx, dy, dz,
-                length - travelled, mask, hit)) {
-                break;
-            }
-            if (hit.distance() <= 0) { // inside a body: on, in doubling steps, until out of it
-                travelled += step;
-                step *= 2;
+            if (inside == RaycastHit.NONE) {
+                if (!query.raycast(x0 + dx * travelled, y0 + dy * travelled, z0 + dz * travelled, dx, dy, dz,
+                    length - travelled, mask, hit)) {
+                    break;
+                }
+                if (hit.distance() <= 0) { // starting inside a body: not counted, stepped out of
+                    inside = hit.collider();
+                    step = 10 * STEP;
+                    continue;
+                }
+                crossings = cross(hit, crossings, out); // a mesh's side, or a body's face going in
+                travelled += hit.distance() + STEP;
+                inside = hit.triangle() == RaycastHit.NONE ? hit.collider() : RaycastHit.NONE;
+                step = 10 * STEP;
                 continue;
             }
-            step = 10 * STEP;
-            if (crossings++ < MAX_CROSSINGS) { // a surface ahead: a mesh's side, or a body's face going in
-                // a mesh's triangle has its own material; a convex shape takes its collider's
-                int id = hit.material() != RaycastHit.NONE ? hit.material() : world.material(hit.collider());
-                AudioMaterial material = materials.apply(id);
-                out.cross(material == null ? AudioMaterial.OPEN : material);
+            // In a body: probe a step on (doubling) and cast back. Hitting the body's far face first, nothing lies
+            // between it and the probe; another body first, the probe went past its exit and into or over that one.
+            double probe = Math.min(step, length - travelled);
+            double at = travelled + probe;
+            boolean back = query.raycast(x0 + dx * at, y0 + dy * at, z0 + dz * at, -dx, -dy, -dz, probe, mask, hit);
+            if (!back || hit.collider() == inside) {
+                travelled = at;
+                if (!back || hit.distance() > 0) { // out, and on from the probe
+                    inside = RaycastHit.NONE;
+                } else { // still in it
+                    step *= 2;
+                }
+            } else if (probe > STEP) { // probe closer, until it falls between the two
+                step = probe / 2;
+            } else { // the other starts within a step of this one's end: entered it, and out of it in turn
+                crossings = cross(hit, crossings, out); // (behind the probe, a mesh's side: the next probe is out)
+                travelled = at;
+                inside = hit.collider();
+                step = 10 * STEP;
             }
-            travelled += hit.distance() + STEP;
         }
         return crossings > 0;
+    }
+
+    /** Counts the surface hit, up to {@link #MAX_CROSSINGS}; the crossings so far, plus one. */
+    private int cross(RaycastHit hit, int crossings, Transmission out) {
+        if (crossings < MAX_CROSSINGS) {
+            // a mesh's triangle has its own material; a convex shape takes its collider's
+            int id = hit.material() != RaycastHit.NONE ? hit.material() : world.material(hit.collider());
+            AudioMaterial material = materials.apply(id);
+            out.cross(material == null ? AudioMaterial.OPEN : material);
+        }
+        return crossings + 1;
     }
 
     /** The collision world it traces. */
