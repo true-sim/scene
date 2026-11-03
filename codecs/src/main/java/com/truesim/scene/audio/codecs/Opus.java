@@ -14,7 +14,6 @@ import com.truesim.scene.audio.Decibels;
 import com.truesim.scene.audio.Loudness;
 import com.truesim.scene.audio.WavReader;
 import java.io.IOException;
-import java.lang.ref.Cleaner;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -28,7 +27,6 @@ import org.lwjgl.system.MemoryUtil;
 @AllowAllocation("loading a clip")
 public final class Opus {
 
-    private static final Cleaner CLEANER = Cleaner.create();
     private static final int RATE = 48_000;
 
     private Opus() {
@@ -84,7 +82,7 @@ public final class Opus {
         Encoded(ByteBuffer data, int channels) {
             this.data = data;
             this.channels = channels;
-            CLEANER.register(this, () -> MemoryUtil.memFree(data));
+            OffHeap.freeWith(this, data);
         }
 
         ClipDecoder open() {

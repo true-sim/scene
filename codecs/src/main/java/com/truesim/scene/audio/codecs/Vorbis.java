@@ -15,7 +15,6 @@ import com.truesim.scene.audio.Decibels;
 import com.truesim.scene.audio.Loudness;
 import com.truesim.scene.audio.WavReader;
 import java.io.IOException;
-import java.lang.ref.Cleaner;
 import java.nio.ByteBuffer;
 import java.util.Locale;
 import org.lwjgl.PointerBuffer;
@@ -148,8 +147,6 @@ public final class Vorbis {
         }
     }
 
-    private static final Cleaner CLEANER = Cleaner.create();
-
     /** A streamed clip's encoded bytes, off-heap, opened by each stream; freed once the clip is unreachable. */
     private static final class Encoded {
         private final ByteBuffer data;
@@ -158,7 +155,7 @@ public final class Vorbis {
         Encoded(ByteBuffer data, int channels) {
             this.data = data;
             this.channels = channels;
-            CLEANER.register(this, () -> MemoryUtil.memFree(data));
+            OffHeap.freeWith(this, data);
         }
 
         ClipDecoder open() {

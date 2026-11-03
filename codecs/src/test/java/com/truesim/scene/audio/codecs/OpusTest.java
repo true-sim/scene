@@ -37,12 +37,15 @@ class OpusTest {
             assertThat(streamed.streamed()).isTrue();
             assertThat(streamed.frames()).isEqualTo(whole.frames());
             assertThat(streamed.loudness()).isCloseTo(whole.loudness(), within(0.05f));
-            float[] out = new float[256];
+            float[] out = new float[4_096];
             try (ClipDecoder d = streamed.open()) {
                 for (long at : new long[] {0, 48_001, 300_000, 77_777}) {
                     d.seek(at);
-                    int n = d.read(out, 0, 256);
-                    assertThat(n).isPositive();
+                    int n = 0;
+                    for (int r; n < 4_096 && (r = d.read(out, n, 4_096 - n)) > 0; ) {
+                        n += r;
+                    }
+                    assertThat(n).isEqualTo(4_096);
                     // lossy: the decoder's state after a seek (its pre-roll) differs a little, but the position is
                     // exact: the seeked frames match the whole decode best with no shift
                     double best = error(out, n, whole, at, 0);
@@ -62,13 +65,18 @@ class OpusTest {
         try (AudioClip silent = Opus.read(VorbisTest.file("silence.opus"), true)) {
             assertThat(silent.gain()).isEqualTo(1);
         }
+        try (AudioClip small = Opus.read(VorbisTest.file("short.opus"), null)) {
+            assertThat(small.streamed()).isFalse();
+        }
+        OffHeap.free(org.lwjgl.system.MemoryUtil.memAlloc(16)).run();
         assertThatThrownBy(() -> Opus.read(new byte[] {9, 9, 9}, null)).isInstanceOf(IOException.class)
             .hasMessage("Not an Ogg Opus file");
     }
 
+    /** The squared difference over the second half of the window: after the decoder's state has settled. */
     private static double error(float[] out, int n, AudioClip whole, long at, int lag) {
         double e = 0;
-        for (int i = 0; i < n; i++) {
+        for (int i = n / 2; i < n; i++) {
             double d = out[i] - whole.sample(at + i + lag, 0);
             e += d * d;
         }
