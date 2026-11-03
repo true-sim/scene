@@ -16,9 +16,11 @@ dependencies {
     implementation(platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
     implementation("org.lwjgl:lwjgl")
     implementation("org.lwjgl:lwjgl-stb")
+    implementation("org.lwjgl:lwjgl-opus")
     for (natives in lwjglNatives) {
         runtimeOnly("org.lwjgl:lwjgl::$natives")
         runtimeOnly("org.lwjgl:lwjgl-stb::$natives")
+        runtimeOnly("org.lwjgl:lwjgl-opus::$natives")
     }
 }
 

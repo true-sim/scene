@@ -11,7 +11,7 @@ import java.io.InputStream;
 import java.util.Objects;
 
 /**
- * Registers the audio importers by extension (D47): {@code .wav} and {@code .ogg} (Ogg Vorbis). An Ogg file streams
+ * Registers the audio importers by extension (D47): {@code .wav}, {@code .ogg} (Ogg Vorbis) and {@code .opus}. An Ogg or Opus file streams
  * when it is long or large (over {@value Vorbis#STREAM_SECONDS} s or 1 MB decoded) or when its path says
  * {@code #stream} ({@code game://music/theme.ogg#stream}); {@code #decode} keeps it whole. WAV files always decode.
  *
@@ -29,22 +29,33 @@ public final class AudioImporters {
         this.paths = Objects.requireNonNull(paths, "paths");
     }
 
-    /** Registers {@code .wav} and {@code .ogg} for clips. */
+    /** Registers {@code .wav}, {@code .ogg} and {@code .opus} for clips. */
     public AudioImporters register() {
         paths.importers().add(AudioAssets.CLIP, "wav", WavImporter.INSTANCE)
-            .add(AudioAssets.CLIP, "ogg", AudioImporters::ogg);
+            .add(AudioAssets.CLIP, "ogg", AudioImporters::ogg)
+            .add(AudioAssets.CLIP, "opus", AudioImporters::opus);
         return this;
     }
 
     static AudioClip ogg(AssetInput input) throws IOException {
+        try (InputStream in = input.open()) {
+            return Vorbis.read(in.readAllBytes(), stream(input));
+        }
+    }
+
+    static AudioClip opus(AssetInput input) throws IOException {
+        try (InputStream in = input.open()) {
+            return Opus.read(in.readAllBytes(), stream(input));
+        }
+    }
+
+    /** What the path's fragment asks: {@code #stream}, {@code #decode}, or the importer's choice (null). */
+    private static Boolean stream(AssetInput input) {
         String fragment = input.path() == null ? "" : input.path().fragment();
-        Boolean stream = switch (fragment) {
+        return switch (fragment) {
             case "stream" -> Boolean.TRUE;
             case "decode" -> Boolean.FALSE;
             default -> null;
         };
-        try (InputStream in = input.open()) {
-            return Vorbis.read(in.readAllBytes(), stream);
-        }
     }
 }
