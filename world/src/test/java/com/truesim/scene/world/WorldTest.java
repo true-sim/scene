@@ -290,4 +290,41 @@ class WorldTest {
         });
         assertThat(tasks.pending()).isZero();
     }
+
+    @Test
+    void sourcesFeaturesAndSettingsChangeOnTheOwnerOnly() throws InterruptedException {
+        world.register(PROPS, new PropLoader());
+        InterestSource source = world.addInterest(InterestProfile.builder()
+            .layer(PROPS, Detail.full(), Range.radius(10)).build(), Priority.HIGH);
+        scene.clock().ownedBy(Thread.currentThread());
+        Throwable[] thrown = new Throwable[1];
+        Thread other = new Thread(() -> {
+            try {
+                source.moveTo(100, 0, 0);
+            } catch (IllegalStateException e) {
+                thrown[0] = e;
+            }
+        }, "other");
+        other.start();
+        other.join();
+        assertThat(thrown[0]).hasMessage("The world changes on " + Thread.currentThread().getName()
+            + " only, not on other");
+        assertThat(source.x()).as("a refused move does nothing").isZero();
+        Thread owner = new Thread(() -> { });
+        scene.clock().ownedBy(owner);
+        assertThatIllegalStateException().isThrownBy(() -> source.setView(1, 720));
+        assertThatIllegalStateException().isThrownBy(source::close);
+        assertThatIllegalStateException().isThrownBy(() -> world.setAttachBudget(4));
+        assertThatIllegalStateException().isThrownBy(() -> world.setHysteresis(0.2));
+        assertThatIllegalStateException().isThrownBy(() -> world.setJobs(null));
+        assertThatIllegalStateException().isThrownBy(world::close);
+        assertThatIllegalStateException().isThrownBy(() -> world.features().select(Variant.NONE))
+            .withMessage("The features change on " + owner.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        scene.clock().ownedBy(Thread.currentThread());
+        world.features().select(Variant.NONE); // the owner may
+        scene.clock().ownedBy(null);
+        source.moveTo(100, 0, 0);
+        assertThat(source.x()).isEqualTo(100);
+    }
 }

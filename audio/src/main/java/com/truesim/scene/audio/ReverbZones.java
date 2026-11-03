@@ -2,6 +2,7 @@ package com.truesim.scene.audio;
 
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.common.math.Maths;
+import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
 import java.util.Arrays;
@@ -27,6 +28,7 @@ public final class ReverbZones {
     }
 
     private final SceneGraph scene;
+    private final ChangeClock clock;
     private int slots;
     private int size;
     private int version;
@@ -41,8 +43,9 @@ public final class ReverbZones {
     private double[] positions = new double[12];
     private double[] rotations = new double[16];
 
-    ReverbZones(SceneGraph scene) {
+    ReverbZones(SceneGraph scene, ChangeClock clock) {
         this.scene = scene;
+        this.clock = clock;
     }
 
     /**
@@ -51,6 +54,7 @@ public final class ReverbZones {
      * overlap. Returns its id.
      */
     public long box(long node, double hx, double hy, double hz, double fade, AudioEffect reverb, int priority) {
+        checkOwner();
         if (!(hx > 0 && hy > 0 && hz > 0)) {
             throw new IllegalArgumentException("Not a box: " + hx + " by " + hy + " by " + hz);
         }
@@ -59,6 +63,7 @@ public final class ReverbZones {
 
     /** A sphere zone on {@code node}, {@code radius} metres, as {@link #box} otherwise. */
     public long sphere(long node, double radius, double fade, AudioEffect reverb, int priority) {
+        checkOwner();
         if (!(radius > 0)) {
             throw new IllegalArgumentException("Not a radius: " + radius);
         }
@@ -121,6 +126,7 @@ public final class ReverbZones {
 
     /** Removes {@code zone}; nothing for one removed already. */
     public void remove(long zone) {
+        checkOwner();
         int slot = slot(zone);
         if (slot >= 0) {
             used[slot] = false;
@@ -229,5 +235,18 @@ public final class ReverbZones {
                 }
             }
         }
+    }
+
+    /** Throws unless the calling thread may change the zones: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = clock.owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The reverb zones change on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

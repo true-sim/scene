@@ -414,4 +414,29 @@ class SoundsTest {
             last[0] = id;
         });
     }
+
+    @Test
+    void onlyTheOwnerChangesListenersAndReverbZones() {
+        long node = scene.create();
+        long listener = sounds.listeners().device(node).id();
+        long zone = sounds.reverbZones().sphere(node, 5, 1, AudioEffect.named("hall"), 0);
+        Thread other = new Thread(() -> { });
+        scene.clock().ownedBy(other);
+        assertThatThrownBy(() -> sounds.listeners().device(node)).isInstanceOf(IllegalStateException.class)
+            .hasMessage("The listeners change on " + other.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        assertThatThrownBy(() -> sounds.listeners().render(node, null)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> sounds.listeners().remove(listener)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> sounds.reverbZones().box(node, 1, 1, 1, 0, AudioEffect.named("hall"), 0))
+            .hasMessageStartingWith("The reverb zones change on " + other.getName());
+        assertThatThrownBy(() -> sounds.reverbZones().remove(zone)).isInstanceOf(IllegalStateException.class);
+        assertThat(sounds.listeners().alive(listener)).isTrue();
+        assertThat(sounds.reverbZones().alive(zone)).isTrue();
+        scene.clock().ownedBy(Thread.currentThread());
+        sounds.listeners().remove(listener); // the owner may
+        sounds.reverbZones().remove(zone);
+        assertThat(sounds.listeners().alive(listener)).isFalse();
+        assertThat(sounds.reverbZones().alive(zone)).isFalse();
+        scene.clock().ownedBy(null);
+    }
 }

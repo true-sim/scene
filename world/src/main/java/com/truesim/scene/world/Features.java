@@ -1,6 +1,7 @@
 package com.truesim.scene.world;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.common.state.ChangeClock;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -37,11 +38,21 @@ public final class Features implements FeatureView {
     private FeatureState applied = FeatureState.DEFAULTS;
     private final Map<Feature<?>, List<Listener<?>>> listeners = new IdentityHashMap<>();
 
+    private final ChangeClock clock;
+
+    /** Features of their own, changed on any thread. */
     Features() {
+        this(new ChangeClock());
+    }
+
+    /** A world's features, changed on {@code clock}'s owner only (its scene's), if it has one. */
+    Features(ChangeClock clock) {
+        this.clock = clock;
     }
 
     /** Selects {@code selected}'s feature states, dropping the single changes made on top of the previous one. */
     public void select(Variant selected) {
+        checkOwner();
         variant = Objects.requireNonNull(selected, "variant");
         overrides.clear();
         current = variant.state();
@@ -54,12 +65,14 @@ public final class Features implements FeatureView {
 
     /** Switches {@code feature} on, keeping its parameter. */
     public void enable(Feature<?> feature) {
+        checkOwner();
         overrides.enable(feature, true);
         recompute();
     }
 
     /** Switches {@code feature} on with {@code value} as its parameter. */
     public <P> void enable(Feature<P> feature, P value) {
+        checkOwner();
         overrides.set(feature, value);
         overrides.enable(feature, true);
         recompute();
@@ -67,18 +80,21 @@ public final class Features implements FeatureView {
 
     /** Switches {@code feature} off. */
     public void disable(Feature<?> feature) {
+        checkOwner();
         overrides.enable(feature, false);
         recompute();
     }
 
     /** Sets {@code feature}'s parameter, leaving it on or off. */
     public <P> void set(Feature<P> feature, P value) {
+        checkOwner();
         overrides.set(feature, value);
         recompute();
     }
 
     /** Takes back the changes to {@code feature}: it is as the variant says again. */
     public void reset(Feature<?> feature) {
+        checkOwner();
         overrides.clear(feature);
         recompute();
     }
@@ -110,6 +126,7 @@ public final class Features implements FeatureView {
     /** Calls {@code listener} whenever the world applies a change to {@code feature}. */
     @AllowAllocation("adding a listener")
     public <P> void listen(Feature<P> feature, Listener<P> listener) {
+        checkOwner();
         listeners.computeIfAbsent(feature, f -> new ArrayList<>()).add(Objects.requireNonNull(listener, "listener"));
     }
 
@@ -137,5 +154,18 @@ public final class Features implements FeatureView {
                 }
             }
         });
+    }
+
+    /** Throws unless the calling thread may change the features: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = clock.owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The features change on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

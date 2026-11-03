@@ -97,11 +97,13 @@ public final class Animators {
 
     /** Where morph weights go; null drops them. */
     public void morphSink(MorphSink morphs) {
+        checkOwner();
         this.morphs = morphs;
     }
 
     /** Where pointer tracks' values go ({@link PointerSink#andThen} combines sinks); null drops them. */
     public void pointerSink(PointerSink pointers) {
+        checkOwner();
         this.pointers = pointers;
     }
 
@@ -117,6 +119,7 @@ public final class Animators {
     /** An animator of {@code rig} posing {@code nodes}, the scene nodes of its skeleton's nodes in its order. */
     @AllowAllocation("animators are made when models spawn")
     public Animator add(Rig rig, long[] nodes) {
+        checkOwner();
         Animator animator = new Animator(rig, nodes, scene);
         animator.turn(added++);
         if (count == animators.length) {
@@ -128,6 +131,7 @@ public final class Animators {
 
     /** Stops updating {@code animator}; its nodes keep their pose. False if it was not one of these. */
     public boolean remove(Animator animator) {
+        checkOwner();
         for (int i = 0; i < count; i++) {
             if (animators[i] == animator) {
                 animators[i] = animators[--count];
@@ -158,6 +162,7 @@ public final class Animators {
     /** Calls {@code listener} whenever an animator's playback passes {@code event}, after the poses are written. */
     @AllowAllocation("adding a listener")
     public void listen(AnimationEvent event, Listener listener) {
+        checkOwner();
         Objects.requireNonNull(event, "event");
         Objects.requireNonNull(listener, "listener");
         listened = Arrays.copyOf(listened, listened.length + 1);
@@ -176,6 +181,7 @@ public final class Animators {
 
     /** Moves every clip on by {@code seconds} and poses the scene; on the scene's thread. Allocates nothing. */
     public void update(double seconds) {
+        checkOwner();
         if (!(seconds >= 0) || seconds == Double.POSITIVE_INFINITY) {
             throw new IllegalArgumentException("Not a time step: " + seconds);
         }
@@ -194,5 +200,18 @@ public final class Animators {
         for (int i = 0; i < count; i++) {
             animators[i].dispatch(this); // in order: deterministic, whatever the threads
         }
+    }
+
+    /** Throws unless the calling thread may change the animators: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = scene.clock().owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The animators change on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

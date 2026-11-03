@@ -424,4 +424,41 @@ class AssetCacheTest {
         assertThatIllegalArgumentException().isThrownBy(() -> AssetId.parse("abc"));
         assertThatIllegalArgumentException().isThrownBy(() -> AssetId.parse("0123456789abcdefXedcba9876543210"));
     }
+
+    @Test
+    void onlyTheOwnerChangesTheCache() throws InterruptedException {
+        assertThat(cache.owner()).isNull();
+        assertThat(cache.ownedBy(Thread.currentThread())).isSameAs(cache);
+        cache.setBudget(Long.MAX_VALUE); // the owner may
+        Throwable[] thrown = new Throwable[1];
+        Thread other = new Thread(() -> {
+            try {
+                cache.acquire(AssetRef.of(MESH, BARRIER));
+            } catch (IllegalStateException e) {
+                thrown[0] = e;
+            }
+        }, "other");
+        other.start();
+        other.join();
+        assertThat(thrown[0]).hasMessage("The asset cache changes on " + Thread.currentThread().getName()
+            + " only, not on other");
+        assertThat(cache.holders(AssetRef.of(MESH, BARRIER))).as("a refused acquire does nothing").isZero();
+        cache.ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(() -> cache.release(AssetRef.of(MESH, BARRIER)))
+            .withMessageStartingWith("The asset cache changes on other");
+        assertThatIllegalStateException().isThrownBy(() -> cache.setBudget(0));
+        assertThatIllegalStateException().isThrownBy(() -> cache.setSource(SOURCE));
+        assertThatIllegalStateException().isThrownBy(() -> cache.addListener(new AssetCache.Listener() {
+            @Override
+            public void loaded(AssetRef<?> ref, Object data) {
+            }
+
+            @Override
+            public void evicted(AssetRef<?> ref, Object data) {
+            }
+        }));
+        assertThatIllegalStateException().isThrownBy(() -> cache.removeListener(null));
+        assertThatIllegalStateException().isThrownBy(cache::close);
+        cache.ownedBy(null);
+    }
 }

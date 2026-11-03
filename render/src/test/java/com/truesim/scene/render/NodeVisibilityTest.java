@@ -3,6 +3,7 @@ package com.truesim.scene.render;
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.animation.AnimationClip;
@@ -117,5 +118,21 @@ class NodeVisibilityTest {
         animators.update(0.5);
         assertThat(scene.layers(nodes[0])).isEqualTo(scene.layers(root));
         assertThat(scene.layers(nodes[1])).isEqualTo(scene.layers(root));
+    }
+
+    @Test
+    void onlyTheScenesOwnerChangesVisibility() {
+        NodeVisibility visibility = new NodeVisibility(scene);
+        long node = scene.create();
+        Thread other = new Thread(() -> { });
+        scene.clock().ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(() -> visibility.setVisible(node, false))
+            .withMessage("Visibility changes on " + other.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        assertThat(visibility.visible(node)).as("a refused change does nothing").isTrue();
+        scene.clock().ownedBy(Thread.currentThread());
+        visibility.setVisible(node, false); // the owner may
+        assertThat(visibility.visible(node)).isFalse();
+        scene.clock().ownedBy(null);
     }
 }

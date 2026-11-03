@@ -109,6 +109,7 @@ public final class AssetCache implements AutoCloseable {
     private long cachedBytes;
     private int loading;
     private boolean closed;
+    private Thread owner; // checked on every change once named
 
     /** A cache loading on {@code tasks}' lanes. */
     @AllowAllocation("set up once")
@@ -117,10 +118,26 @@ public final class AssetCache implements AutoCloseable {
     }
 
     /**
+     * From now on, only {@code thread} may change the cache (null: any thread, the default): a change from another one
+     * throws {@link IllegalStateException}, instead of corrupting the cache unnoticed. Name the thread that drains the
+     * scheduler, usually the scene clock's owner, once the cache is set up.
+     */
+    public AssetCache ownedBy(Thread thread) {
+        this.owner = thread;
+        return this;
+    }
+
+    /** The thread that may change the cache, or null for any. */
+    public Thread owner() {
+        return owner;
+    }
+
+    /**
      * Where stored assets come from, for types registered without a source of their own; chain several with
      * {@link AssetSource#firstOf}. None by default.
      */
     public void setSource(AssetSource assetSource) {
+        checkOwner();
         this.source = Objects.requireNonNull(assetSource, "source");
     }
 
@@ -148,11 +165,13 @@ public final class AssetCache implements AutoCloseable {
 
     @AllowAllocation("adding a listener")
     public void addListener(Listener listener) {
+        checkOwner();
         listeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     /** Stops telling {@code listener} of loads and evictions, e.g. when what it uploaded is closed. */
     public void removeListener(Listener listener) {
+        checkOwner();
         listeners.remove(listener);
     }
 
@@ -161,6 +180,7 @@ public final class AssetCache implements AutoCloseable {
      * Unlimited by default; assets in use are never evicted, whatever the budget.
      */
     public void setBudget(long bytes) {
+        checkOwner();
         if (bytes < 0) {
             throw new IllegalArgumentException("The budget is 0 bytes or more: " + bytes);
         }
@@ -374,6 +394,19 @@ public final class AssetCache implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("The asset cache is closed");
         }
+        checkOwner();
+    }
+
+    /** Throws unless the calling thread may change the cache: any, or its {@linkplain #ownedBy owner}. */
+    private void checkOwner() {
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The asset cache changes on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 
     /** Evicts every loaded asset, held or not; loads still running are unloaded when they arrive. */
@@ -383,6 +416,7 @@ public final class AssetCache implements AutoCloseable {
         if (closed) {
             return;
         }
+        checkOwner();
         closed = true;
         for (Entry entry : List.copyOf(entries.values())) {
             if (entry.state == AssetState.LOADED) {

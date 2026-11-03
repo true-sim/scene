@@ -169,6 +169,7 @@ public final class SpatialIndex implements AutoCloseable {
      */
     @Override
     public void close() {
+        checkOwner();
         cleanable.clean();
     }
 
@@ -217,6 +218,7 @@ public final class SpatialIndex implements AutoCloseable {
      * from all nodes.
      */
     public void update() {
+        checkOwner();
         long since = cursor.mark();
         int noted = collectPrepared();
         if (!scene.changesSince(since, onChange)) {
@@ -242,6 +244,7 @@ public final class SpatialIndex implements AutoCloseable {
      * rebuilt instead of refit. Lower is faster queries, higher is fewer rebuilds.
      */
     public void setRebuildThreshold(double threshold) {
+        checkOwner();
         if (!(threshold >= 1)) {
             throw new IllegalArgumentException("The threshold must be at least 1: " + threshold);
         }
@@ -256,6 +259,7 @@ public final class SpatialIndex implements AutoCloseable {
      * thread that submits to {@code jobs}.
      */
     public void setJobs(JobSystem jobs) {
+        checkOwner();
         this.jobs = jobs;
     }
 
@@ -983,5 +987,18 @@ public final class SpatialIndex implements AutoCloseable {
                 bounds.get(primitive, 5));
             return t <= max ? t : Double.POSITIVE_INFINITY;
         }
+    }
+
+    /** Throws unless the calling thread may change the index: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = scene.clock().owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The spatial index changes on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

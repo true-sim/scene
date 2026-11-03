@@ -3,6 +3,7 @@ package com.truesim.scene.animation;
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
@@ -182,5 +183,29 @@ class AnimatorsTest {
         assertThatIllegalArgumentException().isThrownBy(() -> animators.update(Double.NaN));
         assertThatIllegalArgumentException().isThrownBy(() -> animators.update(Double.POSITIVE_INFINITY));
         assertThatIllegalArgumentException().isThrownBy(() -> animators.add(leg(), new long[2]));
+    }
+
+    @Test
+    void onlyTheScenesOwnerChangesAnimatorsAndTheirInputs() {
+        Animators animators = new Animators(scene);
+        Animator animator = animators.add(leg(), spawn());
+        ClipState playing = animator.play(bend());
+        Thread other = new Thread(() -> { });
+        scene.clock().ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(() -> animators.update(0.1))
+            .withMessage("The animators change on " + other.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        assertThatIllegalStateException().isThrownBy(() -> animators.add(leg(), spawn()));
+        assertThatIllegalStateException().isThrownBy(() -> animator.play(bend()))
+            .withMessageStartingWith("The animator changes on " + other.getName());
+        assertThatIllegalStateException().isThrownBy(() -> playing.speed(2));
+        assertThatIllegalStateException().isThrownBy(() -> animator.layer(animator.rig().layers().getFirst())
+            .weight(0.5));
+        assertThat(playing.time()).as("refused changes do nothing").isZero();
+        scene.clock().ownedBy(Thread.currentThread());
+        animators.update(0.5); // the owner may
+        assertThat(playing.time()).isEqualTo(0.5, within(1e-9));
+        playing.speed(2);
+        scene.clock().ownedBy(null);
     }
 }

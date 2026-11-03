@@ -3,6 +3,7 @@ package com.truesim.scene.core;
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import com.truesim.common.math.Mat4;
 import com.truesim.common.math.Vec3;
@@ -278,5 +279,23 @@ class SpatialIndexTest {
             index.raycast(0, 5, -10, 0, 0, 1, 100, ALL, hit);
             sink += hit.node();
         });
+    }
+
+    @Test
+    void onlyTheScenesOwnerChangesTheIndex() {
+        box(0, 0, 0, Mobility.STATIC);
+        update();
+        Thread other = new Thread(() -> { });
+        clock.ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(index::update)
+            .withMessage("The spatial index changes on " + other.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        assertThatIllegalStateException().isThrownBy(() -> index.setRebuildThreshold(3));
+        assertThatIllegalStateException().isThrownBy(() -> index.setJobs(null));
+        assertThatIllegalStateException().isThrownBy(index::close);
+        assertThat(inBox(-1, -1, -1, 1, 1, 1, ALL)).as("queries only read").hasSize(1);
+        clock.ownedBy(Thread.currentThread());
+        index.update(); // the owner may
+        clock.ownedBy(null);
     }
 }
