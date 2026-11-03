@@ -73,6 +73,73 @@ class LevelOfDetailTest {
     }
 
     @Test
+    void animatorsOnFixedStepsMoveOnlyInStepsAndTheOthersOnlyInUpdates() {
+        Rig.Builder r = Rig.builder(RigTest.body());
+        Clip walk = r.clip(SyncTest.walking(2, false)).event(0.25, RigTest.STEP);
+        Rig.Layer base = r.layer();
+        Rig rig = r.build();
+        Animator[] two = new Animator[2];
+        ClipState[] states = new ClipState[2];
+        for (int i = 0; i < 2; i++) {
+            long root = scene.create();
+            long arm = scene.create(root);
+            two[i] = animators.add(rig, new long[] {root, arm, scene.create(arm)});
+            states[i] = two[i].layer(base).play(walk);
+        }
+        Animator stepped = two[1].fixedSteps(true);
+        assertThat(stepped.fixedSteps()).isTrue();
+        assertThat(two[0].fixedSteps()).isFalse();
+        List<Long> heard = new ArrayList<>();
+        animators.listen(RigTest.STEP, (node, event, weight) -> heard.add(node));
+        animators.update(0.1);
+        animators.update(0.1);
+        animators.step(0.05);
+        assertThat(states[0].time()).isCloseTo(0.2, within(1e-9));
+        assertThat(states[1].time()).isCloseTo(0.05, within(1e-9));
+        // Each one's events in its own pass: the stepped one's at 0.25 in a step, not in a frame's update
+        for (int s = 0; s < 3; s++) {
+            animators.step(0.05);
+        }
+        animators.update(0.1);
+        assertThat(heard).containsExactly(two[0].node(0));
+        animators.step(0.05);
+        animators.step(0.05);
+        assertThat(heard).containsExactly(two[0].node(0), stepped.node(0));
+        // Level of detail counts steps: every second step, the time between added up
+        stepped.updateEvery(2);
+        int updates = 0;
+        for (int s = 0; s < 4; s++) {
+            animators.step(0.05);
+            updates += stepped.updated() ? 1 : 0;
+        }
+        assertThat(updates).isEqualTo(2);
+        assertThat(states[1].time()).isCloseTo(0.5, within(1e-9));
+        // Back to every frame: steps leave it
+        stepped.updateEvery(1).fixedSteps(false);
+        animators.step(0.05);
+        assertThat(states[1].time()).isCloseTo(0.5, within(1e-9));
+        animators.update(0.1);
+        assertThat(states[1].time()).isCloseTo(0.6, within(1e-9));
+        assertThatIllegalArgumentException().isThrownBy(() -> animators.step(-1));
+        // On jobs: the frame's five sample in parallel, the one on fixed steps alone on this thread, the same either way
+        try (com.truesim.common.jobs.JobSystem jobs = new com.truesim.common.jobs.JobSystem(2)) {
+            Animators parallel = new Animators(scene, jobs);
+            ClipState[] six = new ClipState[6];
+            for (int i = 0; i < 6; i++) {
+                long root = scene.create();
+                long arm = scene.create(root);
+                Animator a = parallel.add(rig, new long[] {root, arm, scene.create(arm)}).fixedSteps(i == 5);
+                six[i] = a.layer(base).play(walk);
+            }
+            parallel.update(0.1);
+            parallel.step(0.05);
+            for (int i = 0; i < 6; i++) {
+                assertThat(six[i].time()).isCloseTo(i == 5 ? 0.05 : 0.1, within(1e-9));
+            }
+        }
+    }
+
+    @Test
     void listenersFindTheAnimatorAndItsJointsByTheNodeTheyHearOf() {
         Rig.Builder r = Rig.builder(RigTest.body());
         Joint hand = r.joint("hand");

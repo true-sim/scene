@@ -479,6 +479,11 @@ assets.acquire(rock);
   Far away or out of sight, `a.updateEvery(4)` updates an animator's pose every fourth update only, animators taking
   turns so the work spreads; its clock adds up the time between, events and root motion arrive on its turns.
 
+  `a.fixedSteps(true)` runs an animator on fixed steps instead of frames (A5): `animators.step(dt)` updates those, once
+  per step of the world, and `animators.update(dt)` the others, so characters moved by root motion and servers get
+  the same poses, events and root motion whatever the frame rate; an engine draws their joints between steps. With
+  `updateEvery(n)` it updates every nth step.
+
   `Motion` is open: a game's own motion (a 2D blend space, motion matching, a procedural source) says how long it lasts
   and which of its rig's clips it plays at which times and weights for a phase (`contents`); the animator does the
   sampling, blending, events, root motion and sync from that, as it does for clips and blend spaces
