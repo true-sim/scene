@@ -663,6 +663,17 @@ public final class Sounds {
         pendingCount = 0;
     }
 
+    private Dialogue dialogue;
+
+    /** The world's dialogue: lines said by speakers under rules (§2.15); made on first use. */
+    @AllowAllocation("made once")
+    public Dialogue dialogue() {
+        if (dialogue == null) {
+            dialogue = new Dialogue(this);
+        }
+        return dialogue;
+    }
+
     /** The clip voice {@code v} plays; {@code null} for an input, a patch or a scatter. */
     public AssetRef<AudioClip> voiceClip(long instance, int v) {
         int slot = held(instance);
@@ -1018,6 +1029,9 @@ public final class Sounds {
             listeners.update();
             reverbZones.update();
             graph();
+        }
+        if (dialogue != null) {
+            dialogue.update();
         }
     }
 
