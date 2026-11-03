@@ -31,6 +31,17 @@ public record SoundParameter(String name, float fallback, float min, float max) 
         return new SoundParameter(name, fallback, min, max);
     }
 
+    /** The largest count a trigger reaches before it wraps to 0. */
+    public static final float TRIGGER_WRAP = 1 << 20;
+
+    /**
+     * A trigger called {@code name}: a parameter counting {@link SoundInstance#trigger}s (a patch fires on each change,
+     * a gear shift), not a level.
+     */
+    public static SoundParameter trigger(String name) {
+        return new SoundParameter(name, 0, 0, TRIGGER_WRAP);
+    }
+
     /** {@code value} clamped to its range; its default for NaN. */
     public float clamp(float value) {
         return value != value ? fallback : Math.min(max, Math.max(min, value));

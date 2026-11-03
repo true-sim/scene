@@ -730,6 +730,17 @@ public final class Sounds {
         log(instance, PARAMETERS);
     }
 
+    /**
+     * Fires trigger {@code parameter} ({@link SoundParameter#trigger}): its count goes up by one (wrapping), and a
+     * patch reading it fires once at the sample the change is heard.
+     */
+    public void trigger(long instance, SoundParameter parameter) {
+        float now = get(instance, parameter);
+        if (now == now) {
+            set(instance, parameter, now + 1 >= SoundParameter.TRIGGER_WRAP ? 0 : now + 1, 0);
+        }
+    }
+
     @AllowAllocation("diagnostics")
     private static String noParameter(Object what) {
         return "The sound reads no " + what;

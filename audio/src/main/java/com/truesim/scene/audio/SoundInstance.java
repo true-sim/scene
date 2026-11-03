@@ -53,6 +53,12 @@ public final class SoundInstance {
         return this;
     }
 
+    /** Fires trigger {@code parameter} once (a gear shift for a patch); see {@link Sounds#trigger}. */
+    public SoundInstance trigger(SoundParameter parameter) {
+        sounds.trigger(id, parameter);
+        return this;
+    }
+
     /** Sets switch {@code group}: counted if set the frame it was played, before its voices are planned. */
     public <E extends Enum<E>> SoundInstance set(SwitchGroup<E> group, E value) {
         sounds.set(id, group, value);

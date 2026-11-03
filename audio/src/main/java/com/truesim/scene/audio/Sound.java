@@ -486,6 +486,9 @@ public final class Sound {
                     if (p.name().isEmpty()) {
                         problems.add(where + ": a patch without a name");
                     }
+                    for (SoundParameter input : p.inputs()) {
+                        parameter(input, where);
+                    }
                 }
             }
         }
