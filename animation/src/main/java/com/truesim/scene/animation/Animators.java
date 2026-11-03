@@ -22,6 +22,9 @@ import java.util.Objects;
  * animators.update(dt);
  * scene.update();
  * }</pre>
+ *
+ * <p>An animator may run on fixed steps instead ({@link Animator#fixedSteps}, decision A5): {@link #step} updates those,
+ * once per fixed step of the world, and {@link #update} the others, once per frame.
  */
 public final class Animators {
 
@@ -75,18 +78,22 @@ public final class Animators {
     private MorphSink morphs;
     private PointerSink pointers;
     private long ticks; // updates so far, for animators updating every few
+    private long steps; // fixed steps so far, alike
     private int added;  // animators added so far, for their turns
+    // The animators of the update or step running: those updated every frame, or those on fixed steps.
+    private Animator[] running = new Animator[8];
+    private int runningCount;
     private AnimationEvent[] listened = new AnimationEvent[0];
     private Listener[] listeners = new Listener[0];
     private final JobSystem.RangeTask sample = (from, to, worker) -> {
         for (int i = from; i < to; i++) {
-            animators[i].sample();
+            running[i].sample();
         }
     };
 
     private final JobSystem.RangeTask resume = (from, to, worker) -> {
         for (int i = from; i < to; i++) {
-            animators[i].resume();
+            running[i].resume();
         }
     };
 
@@ -131,6 +138,7 @@ public final class Animators {
         animator.turn(added++);
         if (count == animators.length) {
             animators = Arrays.copyOf(animators, 2 * count);
+            running = new Animator[2 * count];
         }
         animators[count++] = animator;
         return animator;
@@ -143,6 +151,7 @@ public final class Animators {
             if (animators[i] == animator) {
                 animators[i] = animators[--count];
                 animators[count] = null;
+                Arrays.fill(running, null);
                 return true;
             }
         }
@@ -186,44 +195,69 @@ public final class Animators {
         }
     }
 
-    /** Moves every clip on by {@code seconds} and poses the scene; on the scene's thread. Allocates nothing. */
+    /**
+     * Moves the clips of every animator updated each frame (all but those on {@link Animator#fixedSteps fixed steps}) on
+     * by {@code seconds} and poses the scene; on the scene's thread. Allocates nothing.
+     */
     public void update(double seconds) {
+        run(seconds, false, ticks++);
+    }
+
+    /**
+     * Moves the clips of the animators on {@link Animator#fixedSteps fixed steps} on by {@code seconds}, one step, and
+     * poses the scene, as {@link #update} does for the others: an engine calls it in each fixed step of the world, so
+     * they keep the world's simulated time whatever the frame rate (decision A5). An animator updating every few
+     * ({@link Animator#updateEvery}) counts steps then. Allocates nothing.
+     */
+    public void step(double seconds) {
+        run(seconds, true, steps++);
+    }
+
+    private void run(double seconds, boolean fixed, long tick) {
         checkOwner();
         if (!(seconds >= 0) || seconds == Double.POSITIVE_INFINITY) {
             throw new IllegalArgumentException("Not a time step: " + seconds);
         }
+        runningCount = 0;
         for (int i = 0; i < count; i++) {
-            animators[i].tick(ticks, seconds);
+            if (animators[i].fixedSteps() == fixed) {
+                running[runningCount++] = animators[i];
+            }
         }
-        ticks++;
+        if (runningCount == 0) {
+            return;
+        }
+        for (int i = 0; i < runningCount; i++) {
+            running[i].tick(tick, seconds);
+        }
         run(sample);
         // Foot placement's ground probes in the serial part, in order (A13); the modifiers then go on in parallel
         while (answer()) {
             run(resume);
         }
-        for (int i = 0; i < count; i++) {
-            animators[i].write(scene, morphs, pointers);
+        for (int i = 0; i < runningCount; i++) {
+            running[i].write(scene, morphs, pointers);
         }
-        for (int i = 0; i < count; i++) {
-            animators[i].dispatch(this); // in order: deterministic, whatever the threads
+        for (int i = 0; i < runningCount; i++) {
+            running[i].dispatch(this); // in order: deterministic, whatever the threads
         }
     }
 
     /** Runs {@code task} over the animators: on the jobs when there are enough of them, else here. */
     private void run(JobSystem.RangeTask task) {
-        if (jobs != null && count > GRAIN) {
-            jobs.parallelFor(count, GRAIN, task);
+        if (jobs != null && runningCount > GRAIN) {
+            jobs.parallelFor(runningCount, GRAIN, task);
         } else {
-            task.run(0, count, 0);
+            task.run(0, runningCount, 0);
         }
     }
 
     /** Asks the ground for the feet waiting, animator by animator on this thread; whether any were. */
     private boolean answer() {
         boolean any = false;
-        for (int i = 0; i < count; i++) {
-            if (animators[i].waiting()) {
-                animators[i].answer();
+        for (int i = 0; i < runningCount; i++) {
+            if (running[i].waiting()) {
+                running[i].answer();
                 any = true;
             }
         }

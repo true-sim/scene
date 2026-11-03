@@ -70,6 +70,7 @@ public final class Animator {
     private int turn;
     private double pending;
     private boolean due = true;
+    private boolean fixedSteps; // updated by its animators' fixed steps, not their frames' updates (A5)
     // Events passed this update, dispatched in order after the poses are written.
     private AnimationEvent[] events = new AnimationEvent[8];
     private float[] eventWeights = new float[8];
@@ -226,6 +227,24 @@ public final class Animator {
 
     public int updateEvery() {
         return every;
+    }
+
+    /**
+     * Whether it runs on fixed steps ({@link Animators#step}, once per step of the world's clock) rather than once per
+     * frame ({@link Animators#update}, the default): decision A5, for characters moved by root motion and on servers,
+     * deterministic whatever the frame rate. An engine draws its joints interpolated between steps, as other nodes
+     * moved in steps. With {@link #updateEvery}, it updates every nth step. Takes effect at its animators' next update
+     * or step; the time it had added up for its level of detail carries over.
+     */
+    public Animator fixedSteps(boolean on) {
+        checkOwner();
+        fixedSteps = on;
+        return this;
+    }
+
+    /** Whether it runs on fixed steps ({@link #fixedSteps(boolean)}). */
+    public boolean fixedSteps() {
+        return fixedSteps;
     }
 
     /** Whether it updated its pose in the last update of its animators. */
