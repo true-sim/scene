@@ -27,6 +27,7 @@ example, takes core, world and collision without any render data.
 | `scene-meshbuild` | building meshes on meshoptimizer: meshlets, cluster hierarchies, discrete LODs               | milestone 4 |
 | `scene-animation` | animation clips and their sampling, skeletons, animators posing scene nodes                | milestone 6 |
 | `scene-effects`   | particle effects as data, the emitter runtime, the CPU particle simulation                 | milestone 7 |
+| `scene-audio`     | clips and the WAV importer, sounds, buses and snapshots as data, the sounds of a world, music | milestone 8 |
 | `scene-render`    | renderables on nodes, materials, textures and models; a PNG/JPEG importer                 | milestone 5 |
 | `scene-gltf`      | glTF 2.0 and GLB import: models, meshes, materials, embedded images                        | milestone 5 |
 
@@ -629,6 +630,28 @@ while (shards.next()) damage(shards.x(), shards.y(), shards.z());
 - **Random values** are `Hash.random(particle seed, salt)`, the same bits as the Slang kernel's; the fixed vectors are
   in `com/truesim/scene/effects/hash-vectors.csv` in the jar.
 
+### Audio
+
+`scene-audio` holds sound as data and the game-facing state of what plays, with no native code and no DSP: the engine
+renders it (`engine-audio`), servers and tools use it without a sound card. The design is `docs/audio.md`.
+- **Clips** (`AudioClip`, `AudioAssets.CLIP`): decoded 16-bit or float PCM off-heap with loop points and markers;
+  `WavImporter` reads WAV (8 to 32-bit PCM, 32 and 64-bit float, extensible, 1 to 8 channels, `smpl` loops, `cue` and
+  `labl` markers).
+- **Sounds** (`Sound`, `AudioAssets.SOUND`): a tree of `Play`, `Random`, `Sequence`, `Switch`, `Layer`, `Blend`,
+  `Segments`, `Scatter` and `Patch` nodes with random volume and pitch, delays and parameter curves, and per sound the
+  bus, attenuation, concurrency, priority, virtualization, spatial mode, occlusion, time scaling, Doppler and caption.
+  Built once and checked as a whole; equal data is one asset (`ref()`).
+- **The mix as data:** `Bus`, `BusLayout` (volumes, effect records by name, sends, ducks, processing order) and
+  `Snapshot`; unknown effect names and fields fail with "did you mean".
+- **`Sounds`**, the sounds of a world, shaped on `Effects`: slots with generations and inert handles, `play` (a handle)
+  and `fire` (an id, allocating nothing), a change log on the scene's clock, ticks, pause and time scale, concurrency
+  at start, each instance's voices planned from its seed (the same picks on every machine), `Listeners` with the
+  listener graph (order, cycles delayed by a block, chains cut), `ReverbZones`, and `Sounds.ui()`.
+- **`Music`** over an `AudioClock`: a `Score` of segments (clips or stems), states with playlists, quantized
+  transitions with transition segments and start positions, stems by parameter, stingers and `pauseWith`; it writes
+  frame-stamped commands and reports bars, beats, markers and transitions as heard.
+- **Random choices** use common-math's `Hash`, the one scene effects use.
+
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
@@ -648,6 +671,7 @@ dependencies {
     implementation("com.truesim.scene:scene-render:0.18.0")    // renderables, materials, textures (from 0.18.0)
     implementation("com.truesim.scene:scene-animation:0.42.0") // clips, rigs and animators (from 0.35.0)
     implementation("com.truesim.scene:scene-effects:0.46.0")   // effects as data, runtime, CPU particles (from 0.44.0)
+    implementation("com.truesim.scene:scene-audio:0.58.0")     // sounds as data, the sounds of a world, music (from 0.58.0)
 }
 ```
 

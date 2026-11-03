@@ -1,5 +1,5 @@
-# The PCG hash of scene-effects (com.truesim.scene.effects.Hash), as fixed vectors: the Java simulator and
-# the engine's Slang kernel are checked against the same values. Integers are unsigned 32-bit, in hex.
+# The PCG hash of common-math (com.truesim.common.math.random.Hash; scene-effects' Hash delegates to it), as
+# fixed vectors: the Java simulator and the engine's Slang kernel are checked against the same values. Integers are unsigned 32-bit, in hex.
 #   pcg,<value>,,<pcg(value)>
 #   combine,<seed>,<salt>,<pcg(seed + pcg(salt))>
 #   random,<seed>,<salt>,<float bits of (combine(seed, salt) >>> 8) * 2^-24>
