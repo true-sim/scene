@@ -1930,6 +1930,27 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   loudest captioned, placed, playing sounds a device listener hears: caption, unit direction in the listener's frame,
   azimuth, loudness (attenuation times voice gain). Allocation-free.
 
+### Step 16: occlusion (scene, engine)
+
+- Scene: `AudioWorld` (`trace(from, to, Transmission)`), `Transmission` (low, mid, high gains), `AudioMaterial` (per
+  crossing; presets from open to concrete) and `CollisionAudioWorld` over common-collision (scene-audio now depends
+  on it): a query and hit per thread; a convex body counts once (a ray from inside one hits at 0, so the ray steps
+  out in doubling steps), a triangle mesh once per side; a triangle's material, else its collider's; up to 8
+  crossings and 96 casts a ray.
+- Engine: `AudioSync.occlusion(world, jobs)` and `occlusionBudget(rays)` (64): each frame the next occluding sounds
+  round-robin (placed, playing, `Occlusion.RAYS`) get rays from their nearest device listener, 4 across the radius
+  of a volumetric source (`Attenuation` radius), traced on the job system each into its own result (the same on 1
+  or 6 threads: tested), summed per sound, smoothed (attack 100 ms, release 300 ms; a sound's first rays taken at
+  once) and sent as an `OCCLUDE` command: the voice's attenuation times a gain and a one-pole low-pass at a cutoff on
+  top of the air's.
+- **As built (the mapping):** the gain is the geometric mean of the low and mid transmissions (bass carries
+  through walls), the cutoff 20 kHz times the square of the highs' share of that gain (200 Hz at least; none when
+  the highs pass as the gain). A wall of 0.5 / 0.25 / 0.05 gives −9 dB and a 400 Hz cutoff, as measured on a DC and
+  a 4 kHz tone.
+- Obstruction versus occlusion: the reverb send is multiplied by the gain only when the listener's strongest zone is
+  not the emitter's. **Deviation:** rays only from device listeners (not rendering listeners), and the ray tracing
+  structures implementation comes with step 19.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
