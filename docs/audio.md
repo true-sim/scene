@@ -1802,6 +1802,22 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   offsets for music and dialogue yet; sine tests read their level within 0.1 LU, the gates and the surround weights
   are checked against analytic values, not the EBU 3341 files (not fetched).
 
+### Step 10: reverb (engine)
+
+- `reverb` is a feedback delay network of 8 lines (29.7 to 79.3 ms at size 1, scaled by `size`) mixed by a Hadamard
+  matrix, each line's gain 10^(−3 length / (decay × rate)), a one-pole low-pass per line for damping, a 12 ms
+  pre-delay, stereo out from two decorrelated sums. Presets: room 0.6 s, hall 2.2 s, cave 4 s, small room 0.3 s.
+  Undamped, the decay measured from impulse responses (Schroeder integration, −5 to −25 dB, times 3) is within 15 %
+  of the preset's; damping shortens the broadband decay (the highs die first).
+- **Deviation:** one aux reverb, `AudioSync.REVERB` (`Bus.aux("reverb")`), not one per zone: each placed voice sends to
+  it post-fader at the attenuation's `reverbSend` by distance times how much its emitter is inside its strongest
+  zone (everything sends where the world has no zones), and the listener's strongest zone blends its decay and
+  damping over the aux's own reverb by the zone's weight (sent when they move by 1 %, the lines unchanged: a zone's
+  size is not blended). Walking into a hall's fade changes the decay by under 0.2 s a step of 0.2 m.
+- Zones stream with cells as game code adds them in a cell loader's `attach` and removes them in `detach` (or with
+  their node: a zone whose node was removed goes, tested in step 3). **Deviation:** no adapter to scene-world's cell
+  loaders, as scene-audio does not depend on scene-world.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
