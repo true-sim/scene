@@ -123,6 +123,7 @@ public final class Sounds {
     private float[] parameterRamps = new float[16];
     private int[][] switches = new int[16][];
     private long[] inputs = new long[16];
+    private SoundField[] fields = new SoundField[16];
     private boolean[] outroSkipped = new boolean[16];
     private int played;
     private long now;
@@ -279,6 +280,25 @@ public final class Sounds {
         return added(slot);
     }
 
+    /**
+     * Plays {@code sound} (a loop) from every place of {@code field} (§2.18): one instance, a few voices at the nearest
+     * places and a bed for the rest; the instance is at the field's centre for its concurrency.
+     */
+    @AllowAllocation("a handle per sound played")
+    public SoundInstance field(Sound sound, SoundField field) {
+        return new SoundInstance(this, fireField(sound, field));
+    }
+
+    /** {@link #field(Sound, SoundField)} without a handle: returns the instance's id (0 if rejected). */
+    public long fireField(Sound sound, SoundField field) {
+        Objects.requireNonNull(field, "field");
+        long id = fire(sound, field.centre(0), field.centre(1), field.centre(2));
+        if (id != 0) {
+            fields[held(id)] = field;
+        }
+        return id;
+    }
+
     private void placed() {
         if (ui) {
             throw new IllegalStateException("The UI store plays 2D sounds only: no nodes or positions");
@@ -354,6 +374,7 @@ public final class Sounds {
         pitches[slot] = 1;
         parameterRamps[slot] = 0;
         inputs[slot] = 0;
+        fields[slot] = null;
         int count = sound.parameters().size();
         if (parameters[slot] == null || parameters[slot].length != count) {
             parameters[slot] = new float[count];
@@ -468,6 +489,7 @@ public final class Sounds {
         parameterRamps = Arrays.copyOf(parameterRamps, length);
         switches = Arrays.copyOf(switches, length);
         inputs = Arrays.copyOf(inputs, length);
+        fields = Arrays.copyOf(fields, length);
         outroSkipped = Arrays.copyOf(outroSkipped, length);
     }
 
@@ -603,6 +625,11 @@ public final class Sounds {
     /** Switch {@code index} of its sound's {@link Sound#switches()}, as an ordinal. */
     public int switchValue(long instance, int index) {
         return switches[held(instance)][index];
+    }
+
+    /** The field it plays from (§2.18); {@code null} for a sound at one place. */
+    public SoundField field(long instance) {
+        return fields[held(instance)];
     }
 
     /** The rendering listener whose mix it plays as input; 0 for none. */
