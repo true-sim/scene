@@ -1754,6 +1754,30 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
 - The renderer's slots are the logical voices (1,024 by default); the 512 logical per world of AU7 is not enforced
   per store.
 
+### Step 8: streaming (scene, engine)
+
+- `scene-audio-codecs`: `Vorbis` reads Ogg Vorbis through stb_vorbis (LWJGL's JNI calls into a decoder's own float
+  buffer: no wrapping per call), with the loop comments `LOOPSTART` and `LOOPLENGTH` or `LOOPEND`; a clip streams when
+  longer than 10 s or over 1 MB decoded, or when its path ends in `#stream` (`#decode` keeps it whole).
+  `AudioImporters(paths).register()` adds `.wav` and `.ogg`. The encoded bytes live off-heap, freed by a cleaner once
+  the clip is unreachable; every stream opens its own stb_vorbis state on them. Decoders seek exactly (checked against
+  a whole decode at four positions).
+- `AudioClip` reads through `ClipDecoder`s (`open()`): a streamed clip's opener decodes; a decoded clip reads its
+  memory, so any clip can stream (the tests stream memory clips through a decoder that records its thread and stalls).
+- **Deviation:** stream priorities and the 32-stream cap are not built: every streamed voice gets a ring on the one
+  streaming thread, which wakes every 2 ms. A ring is 1 s; priming is half a second (or the whole clip), and the sync
+  starts the voice once primed, counting the wait against the max start delay.
+- A starved voice holds its last frame fading out over 5 ms, keeps time, asks the ring to start again 0.1 s ahead of
+  where it is (again if it passes that point first), and fades back in over 5 ms once 50 ms are there; each starvation
+  is counted (`renderer.starvations()`). The design's "three in a second raise the ring to 2 s" is not built.
+- **Deviation:** a starvation is not yet an event to the game (only counted).
+- Loops are stitched by the ring (the decoder sent back to the loop's start at its end), so the voice reads straight
+  on. Segments end as their `Release` says: `AT_LOOP_END` stops the loop sample-exactly at its next pass end and starts
+  the outro there; `AT_MARKER` at the loop region's next marker; `crossfade(s)` now, fading the loop over s. An
+  explicit `stop(seconds)` still plays the outro (the sync cannot tell it from `stop()`; the store knows).
+- Fixed on the way: the renderer counted a voice whose stop was still to come as silent and ended it at the next
+  choice; a fade to come or under way now counts as heard.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
