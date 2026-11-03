@@ -159,6 +159,19 @@ class DialogueTest {
     }
 
     @Test
+    void withAnEngineALineIsHeardOnlyWhenItSays() {
+        Dialogue d = dialogue();
+        d.heardByEngine();
+        LineInstance line = d.say(Line.of(clip(1)).speaker("narrator").subtitle("intro"), Priority.NORMAL);
+        sounds.advance(0.5);
+        assertThat(events).as("not told yet").isEmpty();
+        assertThat(line.heard()).isEqualTo(-1);
+        d.heard(line.instance(), 0.01);
+        d.update();
+        assertThat(events).hasSize(2);
+    }
+
+    @Test
     void higherInterruptsEqualQueuesLowerIsDropped() {
         Dialogue d = dialogue().queueExpiry(2);
         Line bark = Line.of(clip(1)).speaker("guard").subtitle("bark");

@@ -50,6 +50,7 @@ public final class Dialogue {
     private Function<String, AssetRef<AudioClip>> clips;
     private String locale = "en";
     private double queueExpiry = 5;
+    private boolean engine;
 
     @AllowAllocation("made with its world")
     Dialogue(Sounds sounds) {
@@ -155,6 +156,14 @@ public final class Dialogue {
             .root(Play.clip(clip)).build();
     }
 
+    /**
+     * The engine's sync says it tells where lines are heard ({@link #heard}): a line is then not heard until it says
+     * so, rather than by its instance's time.
+     */
+    public void heardByEngine() {
+        engine = true;
+    }
+
     /** The engine's sync: {@code instance}'s listener hears it {@code seconds} in (negative: not yet). */
     public void heard(long instance, double seconds) {
         for (int i = 0; i < entries.size(); i++) {
@@ -205,8 +214,8 @@ public final class Dialogue {
                 continue;
             }
             boolean alive = sounds.alive(e.instance);
-            double h = e.heardKnown ? e.heard : alive ? (double) sounds.time(e.instance) / Sounds.TICKS_PER_SECOND
-                : Double.POSITIVE_INFINITY;
+            double h = e.heardKnown ? e.heard
+                : engine || !alive ? -1 : (double) sounds.time(e.instance) / Sounds.TICKS_PER_SECOND;
             progress(e, alive ? h : Double.POSITIVE_INFINITY);
             if (!alive) {
                 report(DialogueEvent.LINE_ENDED, e, e.line.subtitle(), 0, 0);
@@ -267,7 +276,7 @@ public final class Dialogue {
     }
 
     double heardOf(Entry e) {
-        return e.heardKnown ? e.heard : e.instance == 0 || !sounds.alive(e.instance) ? -1
+        return e.heardKnown ? e.heard : engine || e.instance == 0 || !sounds.alive(e.instance) ? -1
             : (double) sounds.time(e.instance) / Sounds.TICKS_PER_SECOND;
     }
 
