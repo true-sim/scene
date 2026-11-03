@@ -114,6 +114,39 @@ thread that submits to the job system. The serial parts limit the gain where the
 | `SceneBenchmark`: first scene update, 1,010,000 nodes      | 58 ms      | 35 ms      |
 | `SceneBenchmark`: scene update, 10,000 moving nodes        | 0.54 ms    | 0.30 ms    |
 
+### One owner thread
+
+Everything that changes a scene is used by one thread at a time. Name it on the scene's clock and every change from
+another thread throws, before it changes anything, instead of corrupting the scene unnoticed:
+
+```java
+scene.clock().ownedBy(mainThread);   // e.g. once loading on a background thread has built the scene
+assets.ownedBy(mainThread);          // the asset cache has no clock: it is named on its own
+```
+
+The clock's owner covers the scene graph, the spatial index, the world (its interest sources and features too),
+renderables, renderable bounds and node visibility, animators (and each animator's inputs: playback, clip states,
+IK and look-at targets, overrides), sounds (their listeners and reverb zones) and effects (their colliders). Reads and
+queries are not checked. Without an owner (the default) nothing is checked; the check is a field read and a compare.
+Work handed to a `JobSystem` (above) runs on its workers by design and changes nothing it does not own.
+
+### Several worlds in one process
+
+A server hosting many places, or a game with instances, makes one world per place, each on a scene of its own with its
+own `ChangeClock`: cells, interest sources, features, change logs and spatial indexes stay apart, and each world may be
+owned by a thread of its own and run in parallel with the others (`SeveralWorldsTest`). No scene class keeps static
+mutable state; what worlds share is declared once and immutable (layers, profiles, features, variants, module
+registries), or shared on purpose: a task scheduler (worlds driven from one thread) and an asset cache (one thread).
+
+- **Node handles carry no world:** each scene numbers its nodes from the start, so the same handle names a node in
+  every world. Keep handles with their world; replication and saves name the world beside them.
+- **One world per scene:** two worlds on one scene would number their cells' groups alike and mix them in the spatial
+  index.
+- **Not built:** a world instanced from a template (many copies of one place sharing loaded cell data, each with its
+  own changes on top). Today each instance loads its cells itself; their assets load once through a shared cache.
+- `Feature`s are kept in a process-wide list (their ids index each world's feature states): declare them as constants,
+  not per world.
+
 ### Staged content: prepare in the background, apply cheaply
 
 A loader can build a cell's nodes as a `SceneBatch` on its lane: hierarchy, transforms, bounds, mobility and layers,
@@ -657,7 +690,7 @@ renders it (`engine-audio`), servers and tools use it without a sound card. The 
 ### Multiplayer
 
 - A server adds one interest source per player, with collision layers only; separate places (instances, other
-  worlds) are separate worlds.
+  worlds) are separate worlds, each on its own scene (see "Several worlds in one process").
 - Node ids are assigned by the authoritative side, separate from client-local ids.
 - Replication sends each client the changes of the cells it is interested in, straight from the change logs.
 
