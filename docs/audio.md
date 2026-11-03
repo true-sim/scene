@@ -1869,6 +1869,29 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   into the patch's own frames through the voice's position and rate; an input set for a frame lands on that sample.
 - Demo: `CameraCar`, the V8 heard as if the fly camera were a car, a five-speed gearbox on the camera's speed.
 
+### Step 13: rendering listeners (engine)
+
+- The renderer keeps four rendering listeners (`Voices.LISTENERS`; the sync counts more as `listenersDropped`).
+  Each block: voices playing clips and patches render first, writing what listeners hear (before the device's
+  attenuation and pan) into a per-voice buffer, so each is read and resampled once; then the listeners mix in the
+  order the scene's graph gives; then the voices re-emitting their mixes (`Play.input()`) render for the device, and
+  device-bus routes and taps are written. A mix is soft-clipped (a rational tanh) after its gain.
+- A re-emitting voice heard by a listener reads its source's mix of this block when that listener already rendered,
+  else its previous block (exactly one block of delay: tested), at −6 dB times the loop's howl guard. The howl
+  detector lowers a listener's loop gain by 30 % a block while its level grows by a fifth over 8 blocks, and lets
+  it back only in silence: two camera and television pairs at +6 dB each decay below −60 dB within a second.
+- Lazy: a listener renders only while a real, audible voice re-emits it, or it has a device bus or a tap; idle, its
+  ring is silent (`AudioRenderer.listenerBlocks` counts its blocks; a television turned off stops it).
+- An input switch cross-fades 30 ms; re-emitting voices play by mix frame (**deviation:** no pitch or Doppler on a
+  re-emitted mix). Taps (`AudioSync.tap(listener)`, `ListenerTap`) and listener mixes are not delayed by the device
+  limiter's look-ahead, so they lead the device output by its latency.
+- The sync tells each rendering listener how loud it hears each placed voice: the sound's attenuation curve at the
+  distance (within the mix's max distance, on buses its mix hears), panned for a stereo mix, sent when it changes. The
+  renderer counts a listener's level as audibility, so voices only a camera hears stay real.
+- **Deviations:** no per-listener voice budget yet (every voice in range is mixed); a listener's mix does not apply
+  the buses' volumes, effects or sends (only the voice's own gain); 2D (unplaced) sounds are not heard by rendering
+  listeners; the distance low-pass is the device's (heard by listeners as well).
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
