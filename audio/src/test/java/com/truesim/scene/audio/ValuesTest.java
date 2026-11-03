@@ -58,7 +58,7 @@ class ValuesTest {
             assertThat(d.read(out, 0, 4)).isZero();
         }
         AudioClip.Opener opener = () -> null;
-        try (AudioClip streamed = AudioClip.builder(48_000, 1).streamed(96_000, opener, 1234).loop(10, 20).build()) {
+        try (AudioClip streamed = AudioClip.builder(48_000, 1).streamed(96_000, opener, 1234).loop(10, 20).measure(-23).build()) {
             assertThat(streamed.streamed()).isTrue();
             assertThat(streamed.frames()).isEqualTo(96_000);
             assertThat(streamed.bytes()).isEqualTo(1234);

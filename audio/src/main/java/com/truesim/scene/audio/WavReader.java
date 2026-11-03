@@ -18,6 +18,9 @@ import java.util.Map;
 @AllowAllocation("loading a clip")
 public final class WavReader {
 
+    /** The loudness clips are brought to (§2.6): −23 LUFS for effects; buses offset music and dialogue. */
+    public static final double TARGET = -23;
+
     private static final int PCM = 1;
     private static final int IEEE_FLOAT = 3;
     private static final int EXTENSIBLE = 0xFFFE;
@@ -128,7 +131,7 @@ public final class WavReader {
         }
         int frames = dataLength / blockAlign;
         int count = frames * channels;
-        AudioClip.Builder clip = AudioClip.builder(rate, channels);
+        AudioClip.Builder clip = AudioClip.builder(rate, channels).measure(TARGET);
         if (!floating && bits <= 16) {
             short[] s = new short[count];
             for (int i = 0; i < count; i++) {

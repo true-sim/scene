@@ -79,6 +79,13 @@ class VorbisTest {
         try (AudioClip backwards = Vorbis.read(file("backwards.ogg"), null)) {
             assertThat(backwards.loopEnd()).as("an end before the start: to the end").isEqualTo(backwards.frames());
         }
+        try (AudioClip silent = Vorbis.read(file("silence.ogg"), true)) {
+            assertThat(silent.loudness()).isEqualTo(Float.NEGATIVE_INFINITY);
+            assertThat(silent.gain()).isEqualTo(1);
+        }
+        try (AudioClip measured = Vorbis.read(file("long.ogg"), true)) {
+            assertThat((double) measured.loudness()).as("a 300 Hz sine at 0.4, mono").isBetween(-15.0, -9.0);
+        }
         assertThatThrownBy(() -> Vorbis.read(new byte[] {1, 2, 3}, null)).isInstanceOf(IOException.class)
             .hasMessage("Not an Ogg Vorbis file");
     }

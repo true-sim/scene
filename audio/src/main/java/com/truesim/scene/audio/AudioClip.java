@@ -240,6 +240,7 @@ public final class AudioClip implements AutoCloseable {
         private Opener opener;
         private long streamFrames;
         private long encodedBytes;
+        private double target = Double.NaN;
 
         private Builder(int rate, int channels) {
             if (rate <= 0) {
@@ -303,6 +304,15 @@ public final class AudioClip implements AutoCloseable {
             return this;
         }
 
+        /**
+         * Measures its loudness when built (BS.1770, {@link Loudness}) and keeps the gain to {@code targetLufs} (−23
+         * for effects by default); a streamed clip is measured by whoever decodes it ({@link #loudness}).
+         */
+        public Builder measure(double targetLufs) {
+            target = targetLufs;
+            return this;
+        }
+
         /** Its measured loudness in LUFS and the gain to the target loudness. */
         public Builder loudness(float lufs, float gainToTarget) {
             loudness = lufs;
@@ -322,6 +332,19 @@ public final class AudioClip implements AutoCloseable {
             markers.sort(Comparator.comparingLong(SoundMarker::frame));
             if (!markers.isEmpty() && markers.getLast().frame() > frames) {
                 throw new IllegalArgumentException("A marker past the clip: " + markers.getLast());
+            }
+            if (target == target && opener == null) {
+                Loudness meter = new Loudness(rate, channels);
+                float[] all = floats;
+                if (encoding == Encoding.PCM16) {
+                    all = new float[count];
+                    for (int i = 0; i < count; i++) {
+                        all[i] = shorts[i] * 0x1p-15f;
+                    }
+                }
+                meter.add(all, count / channels);
+                double lufs = meter.integrated();
+                loudness((float) lufs, lufs == Double.NEGATIVE_INFINITY ? 1 : Decibels.gain((float) (target - lufs)));
             }
             return new AudioClip(this);
         }

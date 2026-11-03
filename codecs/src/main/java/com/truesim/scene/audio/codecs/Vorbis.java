@@ -11,6 +11,9 @@ import static org.lwjgl.stb.STBVorbis.stb_vorbis_stream_length_in_samples;
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.scene.audio.AudioClip;
 import com.truesim.scene.audio.ClipDecoder;
+import com.truesim.scene.audio.Decibels;
+import com.truesim.scene.audio.Loudness;
+import com.truesim.scene.audio.WavReader;
 import java.io.IOException;
 import java.lang.ref.Cleaner;
 import java.nio.ByteBuffer;
@@ -53,11 +56,20 @@ public final class Vorbis {
             long[] loop = loop(handle, frames);
             boolean streamed = stream != null ? stream
                 : frames > STREAM_SECONDS * rate || frames * channels * 4 > STREAM_BYTES;
-            AudioClip.Builder clip = AudioClip.builder(rate, channels);
+            AudioClip.Builder clip = AudioClip.builder(rate, channels).measure(WavReader.TARGET);
             if (loop[1] > loop[0]) {
                 clip.loop(loop[0], loop[1]);
             }
             if (streamed) {
+                Loudness meter = new Loudness(rate, channels); // measured by decoding once, as an importer may
+                Decoder decoder = new Decoder(handle, channels);
+                float[] chunk = new float[4096 * channels];
+                for (int n; (n = decoder.read(chunk, 0, 4096)) > 0; ) {
+                    meter.add(chunk, n);
+                }
+                double lufs = meter.integrated();
+                clip.loudness((float) lufs, lufs == Double.NEGATIVE_INFINITY ? 1
+                    : Decibels.gain((float) (WavReader.TARGET - lufs)));
                 stb_vorbis_close(handle);
                 Encoded encoded = new Encoded(data, channels);
                 return clip.streamed(frames, encoded::open, bytes.length).build();
