@@ -131,6 +131,7 @@ class VorbisTest {
             new AudioImporters(paths).register();
             assertThat(paths.importers().find(com.truesim.scene.audio.AudioAssets.CLIP, "OGG")).isNotNull();
             assertThat(paths.importers().find(com.truesim.scene.audio.AudioAssets.CLIP, "wav")).isNotNull();
+            assertThat(paths.importers().find(com.truesim.scene.audio.AudioAssets.HRTF, "hrtf")).isNotNull();
         }
     }
 }

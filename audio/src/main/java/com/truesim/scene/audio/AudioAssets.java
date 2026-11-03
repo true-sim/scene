@@ -15,6 +15,9 @@ public final class AudioAssets {
     /** Sound definitions: a tree of containers over clips, with bus, attenuation and the rest. */
     public static final AssetType<Sound> SOUND = AssetType.of("sound", Sound.class, Sound::bytes);
 
+    /** HRTF sets (§2.9): minimum-phase filters and delays per measured direction, imported from {@code .hrtf}. */
+    public static final AssetType<HrtfSet> HRTF = AssetType.of("HRTF set", HrtfSet.class, HrtfSet::bytes);
+
     private AudioAssets() {
     }
 }
