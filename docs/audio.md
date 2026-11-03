@@ -2011,6 +2011,56 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   near 11 s and grows louder in that ear; no clicks or zipper noise as it moves; HRTF and panned halves are about
   equally loud. Not done by the agent (needs ears).
 
+### Step 18: VR and ambisonics (engine, xr)
+
+- `Ambisonics`, the ambisonics bus, made with the `HrtfSpatializer` (`Spatializer.ambisonics()`): third order, 16
+  real spherical harmonics (orthonormal: checked over 20,000 points within 0.01) of the listener-relative direction,
+  so the field needs no rotation. The SH-domain filter pair per harmonic is the sum over the set's directions of the
+  direction's share of the sphere (a third of its triangles' solid angles) × the order's max-rE weight × the
+  harmonic × the ear's filter delayed by its ITD (the same windowed-sinc shift as the direct HRTF), scaled so the
+  decoded field is as loud as the direct HRTF averaged over the directions. **Deviation:** no left/right symmetry
+  halving the filters (32 filters, not 16); the decode is a plain weighted projection, not a magnitude-least-squares
+  one.
+- An HRTF voice not binaural (past the cap, or fading out of it) goes into its bus's field instead of the pan: 16
+  gains a sample, ramped over a block as it moves; joining or leaving the cap cross-fades between the field and the
+  HRTF channel (no click: second difference under 2 % of the peak). **Deviation:** one field per bus that has such
+  voices (up to 16 buses; their bus volumes and effects stay), not one ambisonics bus for the mix; a field decodes
+  while fed and for its tail after (16 forward FFTs, 32 partition products, 2 inverse FFTs a block).
+- **Ambisonic directions** against the direct HRTF, pink noise at 2 m (`AmbisonicsTest`): ITD within 1 sample at
+  0°, 30°, ±45° and 135° and 36 against 43 samples straight to the side (the third-order field narrows the widest);
+  ILD with the right sign but about half in dB (5.4 against 11.0 dB at 45°, 7.2 against 11.3 at 90°): the field is
+  blurrier, which is why the 16 most audible voices take the direct HRTF. A magnitude-least-squares decode would
+  narrow the gap; not built.
+- **CPU flat in the number of field voices** (`HrtfCostProbe`, all moving, median per 256-frame block): 16 binaural
+  voices 276 µs; with 16, 64 and 256 more in the field 347, 561 and 1,382 µs: about 4.4 µs per field voice, of which
+  a panned voice's own reading, resampling and filtering is 3.6 µs (16 panned voices: 57 µs); the decode is one per
+  field per block whatever it carries (tested with 10 and 100 voices: 20 decodes in 20 blocks; two buses, 2 a block).
+- **The head as listener:** `audio.head(sounds, pose)` with `HeadPose` (`xrInput::head` fits, so engine-audio needs
+  nothing of engine-xr) makes a node with a device listener and sets it from the pose in the plugin's
+  `beforeUpdate` (after the headset's frame began, so the eyes' predicted pose), placed by the game's
+  `scene.update()`. With `audio.output` at `AUTO`, a followed head turns the HRTF on (§2.17: headphones by default in
+  VR). The demo's knocks are `Spatial.HRTF` and, with `--vr`, heard from the head instead of the desktop camera.
+- **`XR_OCULUS_audio_device_guid`:** enabled where offered; `Headset.audioOutputDevice()` is the endpoint id (UTF-16
+  from the runtime), "" otherwise. `audio.headsetDevice(id)` matches it to SDL's devices by name: the endpoint's
+  friendly name is read from its registry properties (`reg query` of the MMDevices render key: the endpoint's name and
+  its device's description, "Headphones (Oculus Virtual Audio Device)", which is how SDL's WASAPI driver names it;
+  `HeadsetDeviceProbe` matched every active endpoint of this machine, 3 of 36 listed), and reopens the output there.
+  SteamVR does not offer the extension and sets the system's default device to the headset instead, which SDL
+  follows; then the id is "" and nothing changes.
+- **Idle and focus:** `Headset.visible()` (session visible or focused) and `focused()`; the `Xr` plugin reports
+  changes to the engine each frame (`StateReport`): idle or taken off is hidden (`visibilityChanged(false)`), a
+  system menu over the app is focus lost, and audio's background rule (`PLAY`, `LOWER`, `MUTE`) follows them.
+  **Deviation:** only changes are reported, so with a desktop window its own focus counts between headset changes
+  (the desktop plugin reports focus every frame); visibility is reported by the desktop only on window events, so
+  the headset's idle holds.
+- **Manual (not run by the agent): Quest 3 through SteamVR.** Connect the Quest 3 (Link or Air Link), start SteamVR
+  with "set playback device to the headset when SteamVR is active", then
+  `TRUESIM_XR=true ./gradlew :engine-xr:test --tests '*HeadsetTest*'` (the headset's eyes; checks the runtime) and
+  `./gradlew :engine-demo:run --args="--vr"`: the knocks play in the headset's speakers, binaural, from where the
+  rocks land as the head turns (the log says "Audio output on default" and, with Meta's runtime instead of SteamVR,
+  "playing on the headset's device ..."); take the headset off with `audio.background` = `MUTE` or `LOWER`: the sound
+  goes or drops 12 dB, and comes back when it is put on.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
