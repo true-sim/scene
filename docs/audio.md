@@ -1908,6 +1908,28 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
 - Demo: `FoxFootsteps`, the fox's four paws bound to the walk's and run's foot-down events, on bands of grass, stone
   and gravel standing in for terrain materials (the demo ground has none); steps synthesized, three per surface.
 
+### Step 15: dialogue (scene, engine)
+
+- Scene: `Line` (a path with `{locale}`, or a clip; speaker, subtitle key, cues, visemes), `Cue`, `WebVtt.parse`
+  (headers, notes, identifiers and cue settings skipped), `Visemes.rhubarb` (Rhubarb's nine shapes; weights
+  cross-faded over the first 40 ms of each cue), `Dialogue` in `Sounds.dialogue()` with `LineInstance` and
+  `DialogueEvent` (`LINE_STARTED`, `CUE_STARTED`, `CUE_ENDED`, `LINE_ENDED`, `INTERRUPTED`, plus `DROPPED` and
+  `EXPIRED`). Paths resolve through `dialogue().clips(path -> paths.ref(CLIP, path))` and `locale(...)`.
+- Rules as designed: one line per speaker; higher interrupts (100 ms fade, its open cue ended first), equal queues
+  (expiring after `queueExpiry`, 5 s), lower is dropped; `cooldown(key, seconds)` per `Line.key()` (its subtitle key,
+  else its path or clip). A line plays on `VOICE` at the highest priority, `KEEP_TIME` when virtual.
+- **Deviation:** sidecars are not read by the importers yet: the game parses a `.vtt` or Rhubarb `.json` with
+  `WebVtt.parse` / `Visemes.rhubarb` and sets them on the line; no cues from clip markers. A line without cues has one
+  cue for its whole length under its subtitle key (ended when the line ends).
+- Heard time: the sync tells each line where its listener hears it (`heard`: the clock's heard frame against the
+  voice's start frame, −1 while loading) and `heardByEngine()` stops the store's own time standing in; events fire in
+  `Dialogue.update()` (run by `Sounds.advance` and after the sync's update), within an update of the heard time
+  (tested against offline renders: within two blocks). `LineInstance.envelope()` is the voice's level from the audio
+  thread (block RMS falling over about 100 ms; `AudioRenderer.level(slot)`).
+- `Audio.indicators(listener, out)` / `AudioSync.indicators` fill `Indicators` (made once with a capacity) with the
+  loudest captioned, placed, playing sounds a device listener hears: caption, unit direction in the listener's frame,
+  azimuth, loudness (attenuation times voice gain). Allocation-free.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
