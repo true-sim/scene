@@ -13,3 +13,10 @@ dependencies {
 coverage {
     minimum = 1.0
 }
+
+// The benchmark (TRUESIM_BENCHMARK=true) measures threads sampling: JaCoCo's shared probes would make them contend.
+tasks.test {
+    if (providers.environmentVariable("TRUESIM_BENCHMARK").orNull == "true") {
+        extensions.configure<JacocoTaskExtension> { isEnabled = false } // measure the code, not its coverage probes
+    }
+}

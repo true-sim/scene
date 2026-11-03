@@ -9,6 +9,7 @@ public final class Pose {
 
     private final Animator animator;
     private final double[] scratch = new double[3];
+    private final double[] probes = new double[8];
     double weight;
 
     Pose(Animator animator) {
@@ -86,5 +87,10 @@ public final class Pose {
     /** Three doubles a modifier of the package may use between calls of its own. */
     double[] scratch() {
         return scratch;
+    }
+
+    /** Eight doubles {@link FootPlacement} keeps from its probe to its answer and finish: points, then heights. */
+    double[] probes() {
+        return probes;
     }
 }

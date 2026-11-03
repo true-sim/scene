@@ -92,6 +92,7 @@ public final class Animator {
     private final JointOverride[] overrides;
     private final double[] modifierWeights;
     private final Pose view = new Pose(this);
+    private int waiting = -1; // the modifier whose feet wait for their ground (serial part), or -1
     private final double[] model;
     private final double[] world = new double[Skeleton.TRANSFORM];
     private final double[] link = new double[Skeleton.TRANSFORM];
@@ -1069,12 +1070,48 @@ public final class Animator {
                 aim(aim);
             }
         }
-        for (int i = 0; i < modifierWeights.length; i++) {
+        modify(0);
+    }
+
+    /**
+     * The modifiers from the {@code from}th on, stopping at a {@link FootPlacement} once its feet are probed: its
+     * ground is asked in the serial part ({@link #answer}), then it and the rest go on ({@link #resume}).
+     */
+    private void modify(int from) {
+        for (int i = from; i < modifierWeights.length; i++) {
             if (modifierWeights[i] > 0) {
                 view.weight = modifierWeights[i];
-                rig.modifier(i).modify(view);
+                PoseModifier modifier = rig.modifier(i);
+                if (modifier instanceof FootPlacement feet) {
+                    feet.probe(view);
+                    waiting = i;
+                    return;
+                }
+                modifier.modify(view);
             }
         }
+    }
+
+    /** Whether a {@link FootPlacement}'s feet wait for their ground. */
+    boolean waiting() {
+        return waiting >= 0;
+    }
+
+    /** Asks the ground under the feet waiting: the serial part, on the updating thread. */
+    void answer() {
+        ((FootPlacement) rig.modifier(waiting)).answer(view);
+    }
+
+    /** Finishes the foot placement waiting and runs the modifiers after it (stopping at the next one's feet). */
+    void resume() {
+        if (waiting < 0) {
+            return;
+        }
+        int i = waiting;
+        waiting = -1;
+        view.weight = modifierWeights[i];
+        ((FootPlacement) rig.modifier(i)).finish(view);
+        modify(i + 1);
     }
 
     /** The instance's world transform (the skeleton root's parent's), from the scene's local transforms as they are. */

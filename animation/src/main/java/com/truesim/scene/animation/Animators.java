@@ -8,8 +8,9 @@ import java.util.Objects;
 
 /**
  * Every animator of a scene, updated together once a frame before the scene's own {@link SceneGraph#update()}: clips
- * move on, animators sample in parallel when given jobs, then poses are written to the scene one after another, on its
- * thread; then the events they passed go to their listeners, animator by animator. Morph weights go to a
+ * move on, animators sample in parallel when given jobs (but for foot placement's {@link Ground} probes, asked one
+ * animator after another on the updating thread between parallel parts: decision A13), then poses are written to the
+ * scene one after another, on its thread; then the events they passed go to their listeners, animator by animator. Morph weights go to a
  * {@link MorphSink} (the renderer's), the values of pointer tracks to a {@link PointerSink} (the renderer's for
  * materials, a {@code NodeVisibility} for visibility, the game's for lights and cameras).
  *
@@ -80,6 +81,12 @@ public final class Animators {
     private final JobSystem.RangeTask sample = (from, to, worker) -> {
         for (int i = from; i < to; i++) {
             animators[i].sample();
+        }
+    };
+
+    private final JobSystem.RangeTask resume = (from, to, worker) -> {
+        for (int i = from; i < to; i++) {
+            animators[i].resume();
         }
     };
 
@@ -189,10 +196,10 @@ public final class Animators {
             animators[i].tick(ticks, seconds);
         }
         ticks++;
-        if (jobs != null && count > GRAIN) {
-            jobs.parallelFor(count, GRAIN, sample);
-        } else {
-            sample.run(0, count, 0);
+        run(sample);
+        // Foot placement's ground probes in the serial part, in order (A13); the modifiers then go on in parallel
+        while (answer()) {
+            run(resume);
         }
         for (int i = 0; i < count; i++) {
             animators[i].write(scene, morphs, pointers);
@@ -200,6 +207,27 @@ public final class Animators {
         for (int i = 0; i < count; i++) {
             animators[i].dispatch(this); // in order: deterministic, whatever the threads
         }
+    }
+
+    /** Runs {@code task} over the animators: on the jobs when there are enough of them, else here. */
+    private void run(JobSystem.RangeTask task) {
+        if (jobs != null && count > GRAIN) {
+            jobs.parallelFor(count, GRAIN, task);
+        } else {
+            task.run(0, count, 0);
+        }
+    }
+
+    /** Asks the ground for the feet waiting, animator by animator on this thread; whether any were. */
+    private boolean answer() {
+        boolean any = false;
+        for (int i = 0; i < count; i++) {
+            if (animators[i].waiting()) {
+                animators[i].answer();
+                any = true;
+            }
+        }
+        return any;
     }
 
     /** Throws unless the calling thread may change the animators: any, or the clock's owner (ChangeClock.ownedBy). */
