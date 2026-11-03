@@ -2061,6 +2061,44 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
   "playing on the headset's device ..."); take the headset off with `audio.background` = `MUTE` or `LOWER`: the sound
   goes or drops 12 dB, and comes back when it is put on.
 
+### Step 19: many sounds (scene, engine)
+
+- Scene: `SoundField` (`points`, `line` for a polyline, `area` for a polygon in the horizontal plane at its vertices'
+  mean height; `nearest(k)` for points, 1 to 8, default 4; `spacing(m)`, default 2 m, for the samples a line's or an
+  area's bed sums over; `nearestTo` the nearest point, inside an area the point straight under or over the listener);
+  `Sounds.field(sound, field)` / `fireField` play one instance at the field's centre (for concurrency), and
+  `Sounds.field(id)` gives the field back.
+- **Scatters** (`AudioSync`): a sound whose root is a `Scatter` spawns its child's one-shots as fast as its rate (or
+  its curve at its parameter) times the instance's time scale says, gaps hashed between 0.5 and 1.5 of the mean; each
+  at a hashed place around the store's first device listener (within the radius, at least 1 m off, from 1 m below
+  the ears to half the radius above), a hashed clip of the child's (`Play`s under `Random`, `Sequence` or `Layer`),
+  −4 to 0 dB and ±2 semitones (**deviation:** the child's own volume and pitch ranges are not drawn); at most 8 at
+  once (`AudioSync.GRAINS`, as §2.18's k): more are not spawned, not stolen. A grain stays where it fell as the
+  listener moves. Stopping the instance stops spawning; it ends when its last grain has.
+- **Fields:** for points the k nearest to the store's first device listener play real voices, keeping their point
+  until it falls more than 10 % behind the k-th nearest; a voice let go fades over 150 ms and a new one starts at a
+  hashed place in the loop (fading in 20 ms), so neighbours never play in step. A line or an area plays one voice
+  at its nearest point, which moves with the listener. The bed is the same clip in 2D at the power sum of the
+  attenuation of every sample no voice plays (for a line or area, all samples less the nearest one's share), ramped
+  over 100 ms when it moves by 1 %. **Deviation:** fields and scatters are heard from the store's first device listener
+  (not each voice's nearest), the bed is 2D rather than ambisonic, a field's sound plays its first planned voice's
+  clip only, and fields are not occluded.
+- Measured (`ManySoundsTest`): a crowd of 5,000 points costs 5 voices (4 nearest and the bed) standing still and at
+  most 9 while walking (voices fading out as nearer points take over), allocation-free per frame; walking along a
+  120 m polyline river its level changes by at most 18 % between 60 Hz frames, never silent, with one voice and the
+  bed; inside an area the voice is under the listener (both ears within 10 %); a rain scatter at 30 drops a second
+  of 0.4 s each holds 5 to 8 grains, none once its rate parameter is 0.
+- **Not built: the ray-tracing `AudioWorld`.** Tracing through the engine's acceleration structures needs a GPU pass
+  (ray queries into a scene's top level, results read back frames later), while `AudioWorld.trace` answers at once on
+  the job system; it needs a two-phase world (`submit` this frame's rays, `collect` an earlier frame's results, the
+  occluder smoothing over the latency) in engine-audio, a segment tracer in engine-render (crossings and the instance
+  ids hit, per ray) and an adapter in engine-scene mapping instances to `AudioMaterial`s, tested against
+  `CollisionAudioWorld` on the same walls on the RX 9070 XT (skipped on devices without ray queries). Left for a later
+  change: the time went to steps 17, 18 and 20.
+- Clip: `au_step19_river_walk_then_crowd` (40 s): 20 s along a winding river 2 to 5 m off the bank (a line field of
+  synthesized water), then up to and through a plaza of 300 people (a points field, 6 nearest, of a synthesized
+  eight-talker murmur).
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
