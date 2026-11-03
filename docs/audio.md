@@ -1838,6 +1838,37 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
 - Offline renders run faster than real time, so a listening proof waits for loading between frames; a game's frame
   does not, and a late clip starts on the next bar line after it is ready.
 
+### Step 12: the DSP layer (engine, scene)
+
+- Package `com.truesim.engine.audio.dsp`: `DspNode` (`params()`, `prepare`, `process`, `reset`), `DspSetup`,
+  `DspBlock`, `Param` (set, linear and exponential ramps at sample frames, up to 32 pending; or driven by a signal),
+  `NodeParam`, `NodeType`, `Nodes` and `Patches` (registries; registering warms the type or patch for half a second
+  on the calling thread; patches keep a pool of voices, reset when given back), `Patch` and `PatchVoice`.
+- **Deviation (API):** nodes are added to a patch as factories or by type name (`g.add(Oscillator::saw)`,
+  `g.add(() -> Tube.of(1.6))`, `g.add("bitCrusher")`), since each voice makes its own; parameters are wired by name
+  (`.set("cutoff", signal)`) rather than typed setters (`.cutoff(...)`). Signals: `smooth`, `remap`, `times`, `plus`,
+  `clamp`, `below`, `envelope`, `Signal.when`, `g.mix`. Nodes run in the order their inputs and parameters need
+  (a depth-first sort), not the order added; a node reading its own output is rejected (feedback needs a delay node).
+- Built-in nodes: `Oscillator` (sine from a 4,096-point table; saw, square and triangle by polyBLEP), `Noise` (white,
+  pink; hashed PCG), `Filter` (RBJ low, high, band-pass, notch), `Delay` (and comb), `Tube` (waveguide),
+  `FiringPulses` (four-stroke, firing orders), `Crackle`, `Envelope` (AD, triggered), `Shaper` (2× oversampled soft
+  clip), `RpmBank`. **Deviation:** not yet the granular player and pitch shifter, state-variable and modal filters,
+  the FDN as a node, the bit crusher (a test's plugin node instead) or custom nodes in bus effect chains.
+- Measured: the polyBLEP saw at 2,489 Hz has its aliases below 10 kHz at −52 dB (the naive saw −17 dB; over the
+  whole band −27 dB, the two-point polyBLEP leaving more near Nyquist); square −57 dB, triangle −65 dB; the sine's
+  spurious power under −100 dB. The test bounds are −48, −52, −60 and −100 dB.
+- The V8 patch (`Vehicles.v8()`, inputs `RPM`, `LOAD`, trigger `SHIFT`) follows §3.7; its spectrum peaks at the
+  200 Hz firing rate at 3,000 rpm (and 400 Hz at 6,000 within 300 to 500 Hz: the 1.6 m tube's 589 Hz resonance is
+  louder there). A shift dips the load through an envelope.
+- **Scene:** `Patch.named(name, inputs...)` names the parameters a patch reads, so instances can set them;
+  `SoundParameter.trigger(name)` is a parameter counting `SoundInstance.trigger` calls, and a patch fires on each
+  change at the sample it is heard.
+- Patch voices are voices like clip voices (gain, pitch, Doppler, 3D, virtual, stealing): mono at the mix rate,
+  rendered into a ring of 8,192 frames as the voice reads it; a voice that was virtual for a while skips ahead rather
+  than rendering what was missed. Input changes are sent at the schedule point with at least the 5 ms ramp, mapped
+  into the patch's own frames through the voice's position and rate; an input set for a frame lands on that sample.
+- Demo: `CameraCar`, the V8 heard as if the fly camera were a car, a five-speed gearbox on the camera's speed.
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
