@@ -5,6 +5,7 @@ package com.truesim.scene.animation;
  * foot placement ({@link FootPlacement}), and the game's own. Called for every animator of the rig on the threads that
  * sample them, so it keeps no state of its own between calls (or keeps it per animator) and is thread-safe; it must
  * allocate nothing.
+ * ({@link FootPlacement} asks its {@link Ground} apart, on the updating thread, so the ground need not be thread-safe.)
  */
 @FunctionalInterface
 public interface PoseModifier {
