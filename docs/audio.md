@@ -1936,8 +1936,10 @@ Details steps 1 to 20 settled where sections 2 to 6 left them open, and where th
 - Scene: `AudioWorld` (`trace(from, to, Transmission)`), `Transmission` (low, mid, high gains), `AudioMaterial` (per
   crossing; presets from open to concrete) and `CollisionAudioWorld` over common-collision (scene-audio now depends
   on it): a query and hit per thread; a convex body counts once (a ray from inside one hits at 0, so the ray steps
-  out in doubling steps), a triangle mesh once per side; a triangle's material, else its collider's; up to 8
-  crossings and 96 casts a ray.
+  out in doubling steps, each probe cast back to the last point inside: the body's own far face first means nothing
+  lies between, another body first means the probe went into or over it, and the probe halves until it falls between
+  the two, or counts that body when it starts within a millimetre), a triangle mesh once per side; a triangle's
+  material, else its collider's; up to 8 crossings and 96 casts a ray.
 - Engine: `AudioSync.occlusion(world, jobs)` and `occlusionBudget(rays)` (64): each frame the next occluding sounds
   round-robin (placed, playing, `Occlusion.RAYS`) get rays from their nearest device listener, 4 across the radius
   of a volumetric source (`Attenuation` radius), traced on the job system each into its own result (the same on 1
