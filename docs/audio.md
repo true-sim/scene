@@ -18,7 +18,8 @@ sets (sources in section 9), and a reading of engine `README.md`, `CLAUDE.md`, `
 reviewed at high effort against the code and the cited sources (section 7 lists what the review changed, the risks
 left and the open questions).
 
-Steps 1 to 7 of section 6 are built (section 8 says how, and where the code differs); the rest is not. The decisions
+Steps 1 to 20 of section 6 are built (section 8 says how, and where the code differs), except step 19's ray-tracing
+`AudioWorld`; the "later" row is not. The decisions
 are AU1 to AU16. Sections 2 and 3 are written for them; section 5 keeps the
 options weighed (Q1 to Q16, one per decision) with the reasons, and marks where the decision differs from the first
 recommendation.
@@ -1603,7 +1604,7 @@ listeners (AU12), and block-size changes applied at an output restart with golde
 
 ## 8. As built
 
-Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the code differs from the text above
+Details steps 1 to 20 settled where sections 2 to 6 left them open, and where the code differs from the text above
 (marked **deviation**). Built on local branches `audio` of common-math, scene and engine; not released yet.
 
 ### Step 1: the hashed random moves (common-math, scene)
@@ -2098,6 +2099,29 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
 - Clip: `au_step19_river_walk_then_crowd` (40 s): 20 s along a winding river 2 to 5 m off the bank (a line field of
   synthesized water), then up to and through a plaza of 300 people (a points field, 6 nearest, of a synthesized
   eight-talker murmur).
+
+### Step 20: the benchmark and the overlay (engine)
+
+- `AudioBenchmark` (engine-audio tests, `TRUESIM_AUDIO=true ./gradlew :engine-audio:test --tests '*AudioBenchmark*'`,
+  run without coverage probes): each scene through `Sounds`, `AudioSync` and the renderer as a game runs them (60 Hz
+  frames, the listener walking and turning, 800 frames rendered a game frame in 256-frame blocks), 10 s warm, 30 s
+  timed: block time percentiles (median, p99, p99.9, max), the sync's time a frame, real voices, rendering listener
+  blocks and the bytes a block allocates (`getCurrentThreadAllocatedBytes` around each render: 0 in every scene).
+  **Deviation:** streams decode memory clips through a decoder (no Vorbis on engine-audio's test path; decoding is
+  the streaming thread's, not in the block time); in the heavy scene music stems are `HIGHEST` and ambiences and the
+  V8 `HIGH` priority, the televisions `HIGHEST`, as a game would set them (at normal priority the 1,000 loops kept
+  them virtual and the cameras rendered nothing).
+- **Measured 2026-11-03** (Ryzen 9 9950X3D, Windows 11, JDK 27 with G1, offline; the table is in the engine README):
+  the heavy scene (§2.23) takes 0.516 ms a block at the median, 1.010 ms at p99 and 1.218 ms at p99.9: under the 1.5 ms
+  target to the 99.9th percentile; the sync 0.087 ms a frame at the median and 0.172 ms at p99 (under §2.23's 0.2 ms).
+  Other scenes: 64 voices of 1,000 loops 0.219 ms; 16 HRTF voices 0.279 ms; 64 HRTF voices (16 binaural, 48 in the
+  field) 0.489 ms; 2 rendering listeners with 16 voices each 0.176 ms; 12 streams 0.065 ms; the V8 patch 0.017 ms.
+  Each run's slowest block took 17 to 24 ms (0.2 to 0.7 ms in the streams and patch runs); the cause was not looked
+  for.
+- **Deviation:** the debug overlay is `AudioOverlay`, text lines (voices real, virtual, binaural; underruns and
+  starvations; each bus's meter as peak and RMS in dB with a bar; the rendering listeners' blocks; a store's listener
+  graph: order, delayed and cut edges) rewritten in place without garbage, for a game's HUD or a log; the engine has
+  no text drawing, so nothing is drawn. The demo prints it every 5 s with `--args="--audio-overlay"`.
 
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
