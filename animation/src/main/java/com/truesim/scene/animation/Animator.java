@@ -215,6 +215,7 @@ public final class Animator {
      * the time since its last. Animators added one after another take their turns in step, so the work spreads.
      */
     public Animator updateEvery(int n) {
+        checkOwner();
         if (n < 1) {
             throw new IllegalArgumentException("Every update at most: " + n);
         }
@@ -260,6 +261,7 @@ public final class Animator {
 
     /** Sets {@code space}'s parameter: where among its clips it blends. */
     public void input(BlendSpace1 space, double parameter) {
+        checkOwner();
         rig.checkOwn(space, space.rig());
         if (!Double.isFinite(parameter)) {
             throw new IllegalArgumentException("Not a parameter: " + parameter);
@@ -294,6 +296,7 @@ public final class Animator {
     /** An override of {@code joint}'s rotation in {@code space}: off (weight 0) until given one. */
     @AllowAllocation("an override, the first time a joint has one")
     public JointOverride override(Joint joint, Space space) {
+        checkOwner();
         int j = rig.jointIndex(joint);
         Objects.requireNonNull(space, "space");
         if (overrides[j] == null) {
@@ -305,11 +308,13 @@ public final class Animator {
 
     /** Leaves {@code joint} to the game from now on: the animator neither poses nor reads it but as the scene has it. */
     public void release(Joint joint) {
+        checkOwner();
         released[rig.jointIndex(joint)] = true;
     }
 
     /** Takes {@code joint} back from the game. */
     public void hold(Joint joint) {
+        checkOwner();
         released[rig.jointIndex(joint)] = false;
     }
 
@@ -320,6 +325,7 @@ public final class Animator {
 
     /** How much {@code modifier}, one of the rig's, changes this animator's pose: 0 to 1, 1 at first. */
     public void weight(PoseModifier modifier, double weight) {
+        checkOwner();
         int i = rig.modifierIndex(modifier);
         if (i < 0) {
             throw new IllegalArgumentException("Not a modifier of the rig: " + modifier);
@@ -432,6 +438,7 @@ public final class Animator {
 
         /** Fades every motion here out over {@code fade} seconds (0: at once). */
         public void stop(double fade) {
+            checkOwner();
             checkFade(fade);
             for (int i = 0; i < count; i++) {
                 states[i].fadeOutOver(fade);
@@ -441,6 +448,7 @@ public final class Animator {
 
         /** How much the layer counts, 0 to 1: times its mask's weights, over the layers below. */
         public Playback weight(double weight) {
+            checkOwner();
             if (!(weight >= 0 && weight <= 1)) {
                 throw new IllegalArgumentException("A weight from 0 to 1: " + weight);
             }
@@ -468,6 +476,7 @@ public final class Animator {
         }
 
         private ClipState start(Motion motion, double fade, boolean loop, double fadeOut) {
+            checkOwner();
             Objects.requireNonNull(motion, "motion");
             rig.checkOwn(motion, motion.rig());
             checkFade(fade);
@@ -1561,12 +1570,14 @@ public final class Animator {
 
         /** Reaches the chain's end for world (x, y, z). */
         public IkTarget target(double x, double y, double z) {
+            checkOwner();
             set(target, x, y, z);
             return this;
         }
 
         /** Bends the middle joint toward world (x, y, z): a knee forward, an elbow out. */
         public IkTarget pole(double x, double y, double z) {
+            checkOwner();
             set(pole, x, y, z);
             hasPole = true;
             return this;
@@ -1574,12 +1585,14 @@ public final class Animator {
 
         /** Bends as the chain bends now. */
         public IkTarget noPole() {
+            checkOwner();
             hasPole = false;
             return this;
         }
 
         /** Gives the end this world rotation (a foot flat on a slope, a hand on a handle). */
         public IkTarget rotation(double x, double y, double z, double w) {
+            checkOwner();
             rotation[0] = x;
             rotation[1] = y;
             rotation[2] = z;
@@ -1591,12 +1604,14 @@ public final class Animator {
 
         /** Leaves the end's rotation to the chain. */
         public IkTarget noRotation() {
+            checkOwner();
             hasRotation = false;
             return this;
         }
 
         /** How far toward the solution, 0 (off) to 1. */
         public IkTarget weight(double weight) {
+            checkOwner();
             this.weight = checkWeight(weight);
             return this;
         }
@@ -1619,12 +1634,14 @@ public final class Animator {
 
         /** Reaches the chain's tip for world (x, y, z). */
         public FabrikTarget target(double x, double y, double z) {
+            checkOwner();
             set(target, x, y, z);
             return this;
         }
 
         /** How far toward the solution, 0 (off) to 1. */
         public FabrikTarget weight(double weight) {
+            checkOwner();
             this.weight = checkWeight(weight);
             return this;
         }
@@ -1647,12 +1664,14 @@ public final class Animator {
 
         /** Looks at world (x, y, z). */
         public AimTarget target(double x, double y, double z) {
+            checkOwner();
             set(target, x, y, z);
             return this;
         }
 
         /** How far toward it, 0 (off) to 1. */
         public AimTarget weight(double weight) {
+            checkOwner();
             this.weight = checkWeight(weight);
             return this;
         }
@@ -1676,6 +1695,7 @@ public final class Animator {
 
         /** The rotation, in its space. */
         public JointOverride rotation(double x, double y, double z, double w) {
+            checkOwner();
             rotation[0] = x;
             rotation[1] = y;
             rotation[2] = z;
@@ -1686,6 +1706,7 @@ public final class Animator {
 
         /** How far over the animation, 0 (off) to 1. */
         public JointOverride weight(double weight) {
+            checkOwner();
             this.weight = checkWeight(weight);
             return this;
         }
@@ -1757,5 +1778,21 @@ public final class Animator {
             events[i] = null;
         }
         eventCount = 0;
+    }
+
+    /**
+     * Throws unless the calling thread may change the animator: any, or the scene clock's {@code ChangeClock#ownedBy}
+     * owner. Its inputs are read while its animators update, so a change from another thread could tear them.
+     */
+    void checkOwner() {
+        Thread owner = scene.clock().owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The animator changes on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

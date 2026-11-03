@@ -74,6 +74,7 @@ public final class RenderableBounds implements AutoCloseable {
      * at once for meshes loaded already, else when they arrive. Allocates nothing when no renderable changed.
      */
     public void update() {
+        checkOwner();
         if (closed) {
             throw new IllegalStateException("The renderable bounds are closed");
         }
@@ -173,6 +174,7 @@ public final class RenderableBounds implements AutoCloseable {
     /** Lets go of every mesh held and stops listening to the cache; nodes keep the bounds they have. */
     @Override
     public void close() {
+        checkOwner();
         if (!closed) {
             closed = true;
             assets.removeListener(onLoad);
@@ -185,5 +187,19 @@ public final class RenderableBounds implements AutoCloseable {
             }
             waiting.clear();
         }
+    }
+
+    /** Throws unless the calling thread may change the bounds: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = clock.owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The renderable bounds change on " + owner.getName() + " only, not on "
+            + Thread.currentThread().getName();
     }
 }

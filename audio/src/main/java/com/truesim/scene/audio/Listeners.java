@@ -1,6 +1,7 @@
 package com.truesim.scene.audio;
 
 import com.truesim.annotations.AllowAllocation;
+import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
 import java.util.Arrays;
@@ -43,6 +44,7 @@ public final class Listeners {
     private static final byte CUT = 2;
 
     private final SceneGraph scene;
+    private final ChangeClock clock;
     private int slots;
     private int size;
     private int version;
@@ -67,19 +69,22 @@ public final class Listeners {
     private int cycles;
     private int cuts;
 
-    Listeners(SceneGraph scene) {
+    Listeners(SceneGraph scene, ChangeClock clock) {
         this.scene = scene;
+        this.clock = clock;
     }
 
     /** A device listener on {@code node}. */
     @AllowAllocation("a handle per listener")
     public Listener device(long node) {
+        checkOwner();
         return new Listener(this, add(DEVICE, node, null));
     }
 
     /** A rendering listener on {@code node}, mixing as {@code mix} says. */
     @AllowAllocation("a handle per listener")
     public Listener render(long node, ListenerMix mix) {
+        checkOwner();
         return new Listener(this, add(RENDER, node, Objects.requireNonNull(mix, "mix")));
     }
 
@@ -139,6 +144,7 @@ public final class Listeners {
 
     /** Removes {@code listener}; nothing for one removed already. */
     public void remove(long listener) {
+        checkOwner();
         int slot = slot(listener);
         if (slot >= 0) {
             kinds[slot] = FREE;
@@ -382,5 +388,18 @@ public final class Listeners {
     /** How many edges the last graph cut. */
     public int cuts() {
         return cuts;
+    }
+
+    /** Throws unless the calling thread may change the listeners: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = clock.owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The listeners change on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

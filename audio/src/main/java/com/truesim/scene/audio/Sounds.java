@@ -165,8 +165,8 @@ public final class Sounds {
         this.scene = scene;
         this.clock = clock;
         ui = scene == null;
-        listeners = new Listeners(scene);
-        reverbZones = new ReverbZones(scene);
+        listeners = new Listeners(scene, clock);
+        reverbZones = new ReverbZones(scene, clock);
         logStamps = new long[logCapacity];
         logInstances = new long[logCapacity];
         logChanges = new int[logCapacity];

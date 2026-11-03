@@ -368,4 +368,24 @@ class EffectsTest {
         SceneGraph ownedByMe = new SceneGraph(new ChangeClock().ownedBy(current));
         assertThat(new Effects(ownedByMe).play(fire(), 0, 0, 0).alive()).isTrue();
     }
+
+    @Test
+    void onlyTheScenesOwnerChangesColliders() {
+        long node = scene.create();
+        effects.colliders().plane(node, 1);
+        Thread other = new Thread(() -> { });
+        scene.clock().ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(() -> effects.colliders().sphere(node, 1, 1))
+            .withMessage("The effect colliders change on " + other.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        assertThatIllegalStateException().isThrownBy(() -> effects.colliders().plane(node, 1));
+        assertThatIllegalStateException().isThrownBy(() -> effects.colliders().box(node, 1, 1, 1, 1));
+        assertThatIllegalStateException().isThrownBy(() -> effects.colliders().capsule(node, 1, 1, 1));
+        assertThatIllegalStateException().isThrownBy(() -> effects.colliders().remove(node));
+        assertThat(effects.colliders().count()).isOne();
+        scene.clock().ownedBy(Thread.currentThread());
+        effects.colliders().remove(node); // the owner may
+        assertThat(effects.colliders().count()).isZero();
+        scene.clock().ownedBy(null);
+    }
 }

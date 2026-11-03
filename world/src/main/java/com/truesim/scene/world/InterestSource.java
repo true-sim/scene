@@ -64,6 +64,7 @@ public final class InterestSource implements AutoCloseable {
 
     /** Moves the source; its cells follow on the next {@link World#update()}. */
     public void moveTo(double newX, double newY, double newZ) {
+        world.checkOwner();
         if (newX != x || newY != y || newZ != z) {
             x = newX;
             y = newY;
@@ -78,6 +79,7 @@ public final class InterestSource implements AutoCloseable {
      * to 60 degrees and 1080 pixels.
      */
     public void setView(double fovY, double viewportHeight) {
+        world.checkOwner();
         if (!(fovY > 0 && fovY < Math.PI) || !(viewportHeight > 0)) {
             throw new IllegalArgumentException("A view needs a field of view between 0 and pi and a positive height: "
                 + fovY + ", " + viewportHeight);
@@ -122,6 +124,7 @@ public final class InterestSource implements AutoCloseable {
     /** Releases everything this source holds; cells nobody else needs unload. */
     @Override
     public void close() {
+        world.checkOwner();
         if (!closed) {
             closed = true;
             world.closed(this);

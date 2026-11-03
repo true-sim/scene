@@ -12,6 +12,7 @@ import static org.lwjgl.util.meshoptimizer.MeshOptimizer.meshopt_optimizeVertexC
 import static org.lwjgl.util.meshoptimizer.MeshOptimizer.meshopt_optimizeVertexFetchRemap;
 import static org.lwjgl.util.meshoptimizer.MeshOptimizer.meshopt_partitionClusters;
 import static org.lwjgl.util.meshoptimizer.MeshOptimizer.meshopt_simplify;
+import static org.lwjgl.util.meshoptimizer.MeshOptimizer.meshopt_simplifyWithAttributes;
 
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.scene.assets.mesh.Cone;
@@ -23,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import org.lwjgl.system.MemoryUtil;
@@ -55,14 +57,29 @@ import org.lwjgl.util.meshoptimizer.MeshoptMeshlet;
  *
  * <p>Simplification keeps original vertices, so every level shares one vertex buffer; vertices no level uses are
  * dropped, and the rest are ordered as the meshlets first use them, coarsest level first, so a mesh streaming in by
- * levels reads its vertices front to back. Submeshes are built apart and never share a meshlet. Errors are in the
- * mesh's units. The output is deterministic. Build at import or load time, not per frame; one builder per thread.
+ * levels reads its vertices front to back. A skinned mesh (joints and weights given) is simplified with its skin as
+ * attributes, so collapses stay within a joint's influence and a limb keeps its bends when posed. Submeshes are built
+ * apart and never share a meshlet. Errors are in the mesh's units. The output is deterministic. Build at import or load time, not per frame; one builder per thread.
  */
 @AllowAllocation("building meshes, offline")
 public final class MeshBuilder {
 
     /** Fewer triangles kept than this fraction counts as progress when simplifying; more, and a group stops. */
     private static final double MIN_REDUCTION = 0.85;
+
+    /**
+     * Joints one simplification tells apart: four attributes each, and meshoptimizer takes up to 32. More share them
+     * (see {@code Work.shareSlots}).
+     */
+    private static final int SKIN_SLOTS = 8;
+
+    /**
+     * How much the skin attributes weigh against positions (in the mesh's extents, as meshoptimizer scales them).
+     * Compared on bent, hard-seamed and many-jointed tubes, posed: 0.125 to 1 cut the posed deviation of coarse levels
+     * by about half against plain simplification, 0.125 the most overall and the only one better on every tube; it also
+     * adds least to the levels' errors.
+     */
+    private static final float SKIN_WEIGHT = 0.125f;
 
     private final VertexFormat format;
     private final int vertexCount;
@@ -464,10 +481,22 @@ public final class MeshBuilder {
         }
     }
 
-    /** One build's native buffers: the positions, shared by every meshoptimizer call. */
+    /**
+     * One build's native buffers: the positions, shared by every meshoptimizer call, and for a skinned mesh the skin
+     * attributes, written for the vertices of each simplification.
+     */
     @AllowAllocation("building meshes, offline")
     private final class Work implements AutoCloseable {
         final FloatBuffer nativePositions;
+        final float[] weights = attributes[VertexAttribute.WEIGHTS.ordinal()];
+        final boolean skinned = weights != null && joints != null;
+        final float[] center = new float[3];
+        float extent;
+        FloatBuffer nativeSkin;  // per vertex, four values per joint slot
+        FloatBuffer skinWeights; // per value, how much it matters
+        final int[] slotOf = new int[256]; // by joint index
+        final int[] usedJoints = new int[256];
+        long[] stars; // per vertex, the joints on its triangles: 256 bits
 
         Work() {
             if (positions == null) {
@@ -477,6 +506,24 @@ public final class MeshBuilder {
                 throw new IllegalStateException("A mesh needs a submesh");
             }
             nativePositions = MemoryUtil.memAllocFloat(positions.length).put(positions).flip();
+            if (skinned) {
+                float[] min = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE};
+                float[] max = {-Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+                for (int i = 0; i < positions.length; i++) {
+                    min[i % 3] = Math.min(min[i % 3], positions[i]);
+                    max[i % 3] = Math.max(max[i % 3], positions[i]);
+                }
+                extent = Float.MIN_NORMAL;
+                for (int axis = 0; axis < 3; axis++) {
+                    center[axis] = (min[axis] + max[axis]) / 2;
+                    extent = Math.max(extent, max[axis] - min[axis]);
+                }
+                nativeSkin = MemoryUtil.memAllocFloat(vertexCount * 4 * SKIN_SLOTS);
+                skinWeights = MemoryUtil.memAllocFloat(4 * SKIN_SLOTS);
+                for (int i = 0; i < 4 * SKIN_SLOTS; i++) {
+                    skinWeights.put(i, SKIN_WEIGHT);
+                }
+            }
         }
 
         /** Submesh {@code s}'s triangles in vertex cache order. */
@@ -634,7 +681,9 @@ public final class MeshBuilder {
 
         /**
          * Simplifies triangles towards {@code targetIndices}, keeping original vertices and their open border, so
-         * neighbors still meet. Writes the error, in mesh units, to {@code error[0]}.
+         * neighbors still meet. Writes the error, in mesh units, to {@code error[0]}. A skinned mesh is simplified
+         * with its skin as attributes (see {@link #skinAttributes}), so collapses stay within a joint's influence; its
+         * error then includes theirs.
          */
         int[] simplify(int[] indices, int targetIndices, float[] error) {
             IntBuffer in = MemoryUtil.memAllocInt(indices.length).put(indices).flip();
@@ -642,8 +691,12 @@ public final class MeshBuilder {
             FloatBuffer resultError = MemoryUtil.memAllocFloat(1);
             try {
                 int options = meshopt_SimplifyErrorAbsolute | meshopt_SimplifySparse | meshopt_SimplifyLockBorder;
-                int count = (int) meshopt_simplify(out, in, nativePositions, vertexCount, 12, targetIndices,
-                    Float.MAX_VALUE, options, resultError);
+                int slots = skinned ? skinAttributes(indices) : 0; // limits skinWeights to the slots' values
+                int count = skinned
+                    ? (int) meshopt_simplifyWithAttributes(out, in, nativePositions, vertexCount, 12, nativeSkin,
+                        16L * slots, skinWeights, null, targetIndices, Float.MAX_VALUE, options, resultError)
+                    : (int) meshopt_simplify(out, in, nativePositions, vertexCount, 12, targetIndices, Float.MAX_VALUE,
+                        options, resultError);
                 error[0] = resultError.get(0);
                 int[] result = new int[count];
                 out.get(0, result);
@@ -655,9 +708,107 @@ public final class MeshBuilder {
             }
         }
 
+        /**
+         * Writes the skin of {@code indices}' vertices as attributes and returns how many joint slots they use, four
+         * values each; limits {@code skinWeights} to them. A slot holds, per vertex, its joint's weight w and w times
+         * the vertex's position (from the mesh's center, in its extents): linear blend skinning moves a vertex to the
+         * sum over its joints of joint matrix times (w, w * position), so vertices far apart in these values move
+         * apart when posed, whatever the pose. The weights alone miss that: across a blend they change linearly, which
+         * costs nothing to collapse, while the posed surface curves there. Weights as stored, slot by slot, would
+         * compare different joints, e.g. call two vertices bound wholly to different joints alike.
+         */
+        private int skinAttributes(int[] indices) {
+            Arrays.fill(slotOf, -1);
+            int used = 0;
+            for (int index : indices) {
+                for (int k = 4 * index; k < 4 * index + 4; k++) {
+                    if (weights[k] > 0 && slotOf[joints[k]] == -1) {
+                        slotOf[joints[k]] = -2;
+                        usedJoints[used++] = joints[k];
+                    }
+                }
+            }
+            Arrays.sort(usedJoints, 0, used);
+            for (int i = 0; i < Math.min(used, SKIN_SLOTS); i++) {
+                slotOf[usedJoints[i]] = i;
+            }
+            int slots = used > SKIN_SLOTS ? shareSlots(indices, used) : used;
+            int stride = 4 * slots;
+            for (int index : indices) {
+                int base = index * stride;
+                for (int i = base; i < base + stride; i++) {
+                    nativeSkin.put(i, 0);
+                }
+                for (int k = 4 * index; k < 4 * index + 4; k++) {
+                    if (weights[k] > 0) {
+                        int at = base + 4 * slotOf[joints[k]];
+                        nativeSkin.put(at, nativeSkin.get(at) + weights[k]);
+                        for (int axis = 0; axis < 3; axis++) {
+                            float relative = (positions[3 * index + axis] - center[axis]) / extent;
+                            nativeSkin.put(at + 1 + axis, nativeSkin.get(at + 1 + axis) + weights[k] * relative);
+                        }
+                    }
+                }
+            }
+            skinWeights.limit(stride);
+            return slots;
+        }
+
+        /**
+         * Gives more joints than slots a slot each, sharing them: joints that meet around a vertex (on its triangles,
+         * the ones a collapse there weighs) get different slots, greedily in joint order; a joint whose neighbors take
+         * every slot shares by its index. Returns how many slots are used.
+         */
+        private int shareSlots(int[] indices, int used) {
+            if (stars == null) {
+                stars = new long[4 * vertexCount];
+            }
+            for (int index : indices) {
+                Arrays.fill(stars, 4 * index, 4 * index + 4, 0);
+            }
+            for (int t = 0; t < indices.length; t += 3) {
+                for (int corner = t; corner < t + 3; corner++) {
+                    for (int k = 4 * indices[corner]; k < 4 * indices[corner] + 4; k++) {
+                        if (weights[k] > 0) {
+                            for (int other = t; other < t + 3; other++) {
+                                stars[4 * indices[other] + (joints[k] >>> 6)] |= 1L << joints[k];
+                            }
+                        }
+                    }
+                }
+            }
+            long[] meets = new long[4 * 256]; // by joint, the joints it meets
+            for (int index : indices) {
+                for (int word = 0; word < 4; word++) {
+                    for (long bits = stars[4 * index + word]; bits != 0; bits &= bits - 1) {
+                        int joint = 64 * word + Long.numberOfTrailingZeros(bits);
+                        for (int w = 0; w < 4; w++) {
+                            meets[4 * joint + w] |= stars[4 * index + w];
+                        }
+                    }
+                }
+            }
+            Arrays.fill(slotOf, -1);
+            for (int i = 0; i < used; i++) {
+                int joint = usedJoints[i];
+                long taken = 0;
+                for (int word = 0; word < 4; word++) {
+                    for (long bits = meets[4 * joint + word]; bits != 0; bits &= bits - 1) {
+                        int slot = slotOf[64 * word + Long.numberOfTrailingZeros(bits)];
+                        taken |= slot >= 0 ? 1L << slot : 0;
+                    }
+                }
+                int slot = Long.numberOfTrailingZeros(~taken);
+                slotOf[joint] = slot < SKIN_SLOTS ? slot : joint % SKIN_SLOTS;
+            }
+            return SKIN_SLOTS;
+        }
+
         @Override
         public void close() {
             MemoryUtil.memFree(nativePositions);
+            MemoryUtil.memFree(nativeSkin);
+            MemoryUtil.memFree(skinWeights);
         }
     }
 }

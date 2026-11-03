@@ -164,4 +164,19 @@ class RenderableBoundsTest {
         assertThat(bounds.heldCount()).isEqualTo(69);
         bounds.close();
     }
+
+    @Test
+    void onlyTheScenesOwnerUpdatesTheBounds() {
+        RenderableBounds bounds = new RenderableBounds(new Renderables(scene), assets);
+        Thread other = new Thread(() -> { });
+        scene.clock().ownedBy(other);
+        assertThatIllegalStateException().isThrownBy(bounds::update)
+            .withMessage("The renderable bounds change on " + other.getName() + " only, not on "
+                + Thread.currentThread().getName());
+        assertThatIllegalStateException().isThrownBy(bounds::close);
+        scene.clock().ownedBy(Thread.currentThread());
+        bounds.update(); // the owner may
+        scene.clock().ownedBy(null);
+        bounds.close();
+    }
 }

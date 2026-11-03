@@ -46,6 +46,7 @@ public final class NodeVisibility implements Animators.PointerSink {
      * another node between.
      */
     public void setVisible(long node, boolean visible) {
+        checkOwner();
         if (!scene.contains(node)) {
             throw new IllegalArgumentException("Not a node of the scene: " + NodeHandle.toString(node));
         }
@@ -120,5 +121,18 @@ public final class NodeVisibility implements Animators.PointerSink {
         hidden = Arrays.copyOf(hidden, length);
         hiders = Arrays.copyOf(hiders, length);
         layers = Arrays.copyOf(layers, length);
+    }
+
+    /** Throws unless the calling thread may change visibility: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = scene.clock().owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "Visibility changes on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
 }

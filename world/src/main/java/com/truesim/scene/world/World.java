@@ -73,7 +73,7 @@ public final class World implements AutoCloseable {
     private int failed;
     private boolean closed;
     private final List<InterestSource> sources = new ArrayList<>();
-    private final Features features = new Features();
+    private final Features features;
     private JobSystem jobs;
     private InterestSource[] movedSources = new InterestSource[8];
     private final JobSystem.RangeTask selectMoved = (from, to, worker) -> {
@@ -92,6 +92,7 @@ public final class World implements AutoCloseable {
     public World(SceneGraph scene, TaskScheduler tasks) {
         this.scene = scene;
         this.tasks = tasks;
+        this.features = new Features(scene.clock());
     }
 
     /** A layer, its loader, its lane and its cells by level. */
@@ -438,6 +439,7 @@ public final class World implements AutoCloseable {
      * attach highest priority first, then coarsest. Unlimited by default.
      */
     public void setAttachBudget(int cells) {
+        checkOwner();
         if (cells < 1) {
             throw new IllegalArgumentException("The attach budget is at least one cell: " + cells);
         }
@@ -455,6 +457,7 @@ public final class World implements AutoCloseable {
      * distance, but back to coarser only this much further out.
      */
     public void setHysteresis(double fraction) {
+        checkOwner();
         if (!(fraction >= 0) || fraction > 1) {
             throw new IllegalArgumentException("Hysteresis is a fraction from 0 to 1: " + fraction);
         }
@@ -751,6 +754,11 @@ public final class World implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("The world is closed");
         }
+        checkOwner();
+    }
+
+    /** Throws on a thread other than the scene clock's owner, if it has one; for the world and its interest sources. */
+    void checkOwner() {
         Thread owner = scene.clock().owner();
         if (owner != null && Thread.currentThread() != owner) {
             throw new IllegalStateException(notOwner(owner));
@@ -769,6 +777,7 @@ public final class World implements AutoCloseable {
      * thread that submits to {@code jobs}.
      */
     public void setJobs(JobSystem jobSystem) {
+        checkOwner();
         this.jobs = jobSystem;
     }
 
@@ -778,6 +787,7 @@ public final class World implements AutoCloseable {
         if (closed) {
             return;
         }
+        checkOwner();
         for (int i = sources.size() - 1; i >= 0; i--) {
             sources.get(i).close();
         }

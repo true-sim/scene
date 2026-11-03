@@ -57,21 +57,25 @@ public final class EffectColliders {
 
     /** A plane: the XZ plane of {@code node}, particles kept on its +Y side; in {@code layers}. */
     public void plane(long node, int layers) {
+        checkOwner();
         add(node, Kind.PLANE, layers, 0, 0, 0);
     }
 
     /** A sphere of {@code radius} about {@code node}. */
     public void sphere(long node, float radius, int layers) {
+        checkOwner();
         add(node, Kind.SPHERE, layers, radius, radius, radius);
     }
 
     /** A box of half extents {@code x}, {@code y} and {@code z} along {@code node}'s axes. */
     public void box(long node, float x, float y, float z, int layers) {
+        checkOwner();
         add(node, Kind.BOX, layers, x, y, z);
     }
 
     /** A capsule of {@code radius} about {@code node}'s Y axis from {@code -halfLength} to {@code halfLength}. */
     public void capsule(long node, float radius, float halfLength, int layers) {
+        checkOwner();
         add(node, Kind.CAPSULE, layers, radius, halfLength, 0);
     }
 
@@ -107,6 +111,7 @@ public final class EffectColliders {
 
     /** Removes the colliders on {@code node}. */
     public void remove(long node) {
+        checkOwner();
         int kept = 0;
         for (int i = 0; i < count; i++) {
             if (nodes[i] != node) {
@@ -185,5 +190,19 @@ public final class EffectColliders {
     /** Its node's world rotation, a quaternion's x, y, z and w for {@code axis} 0 to 3. */
     public double rotation(int i, int axis) {
         return rotations[4 * Objects.checkIndex(i, count) + Objects.checkIndex(axis, 4)];
+    }
+
+    /** Throws unless the calling thread may change the colliders: any, or the clock's owner (ChangeClock.ownedBy). */
+    private void checkOwner() {
+        Thread owner = scene.clock().owner();
+        if (owner != null && Thread.currentThread() != owner) {
+            throw new IllegalStateException(notOwner(owner));
+        }
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notOwner(Thread owner) {
+        return "The effect colliders change on " + owner.getName() + " only, not on "
+            + Thread.currentThread().getName();
     }
 }

@@ -56,6 +56,7 @@ public final class ClipState {
 
     /** Has it keep in step with {@code group}'s other motions (null: none). */
     public ClipState sync(SyncGroup group) {
+        animator.checkOwner();
         this.group = group;
         return this;
     }
@@ -67,6 +68,7 @@ public final class ClipState {
 
     /** Has it lead its group, whatever it weighs (one at a time: the newest made to lead does). */
     public ClipState lead(boolean lead) {
+        animator.checkOwner();
         this.lead = lead;
         return this;
     }
@@ -92,6 +94,7 @@ public final class ClipState {
 
     /** Jumps to {@code seconds} into it: wrapped into it when looping, else clamped to it. */
     public ClipState time(double seconds) {
+        animator.checkOwner();
         if (!Double.isFinite(seconds)) {
             throw new IllegalArgumentException("Not a time: " + seconds);
         }
@@ -111,6 +114,7 @@ public final class ClipState {
     }
 
     public ClipState speed(double speed) {
+        animator.checkOwner();
         if (!Double.isFinite(speed)) {
             throw new IllegalArgumentException("Not a speed: " + speed);
         }
@@ -124,6 +128,7 @@ public final class ClipState {
 
     /** Whether it starts over at its end (at its start, playing backwards); else it holds its last pose. */
     public ClipState loop(boolean loop) {
+        animator.checkOwner();
         this.loop = loop;
         return this;
     }
@@ -134,11 +139,13 @@ public final class ClipState {
 
     /** Holds where it is: the pose stays, time does not move (fades go on). */
     public ClipState pause() {
+        animator.checkOwner();
         paused = true;
         return this;
     }
 
     public ClipState resume() {
+        animator.checkOwner();
         paused = false;
         return this;
     }
@@ -149,6 +156,7 @@ public final class ClipState {
     }
 
     public ClipState weight(double weight) {
+        animator.checkOwner();
         if (!(weight >= 0 && weight <= 1)) {
             throw new IllegalArgumentException("A weight from 0 to 1: " + weight);
         }
