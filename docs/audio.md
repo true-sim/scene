@@ -18,8 +18,7 @@ sets (sources in section 9), and a reading of engine `README.md`, `CLAUDE.md`, `
 reviewed at high effort against the code and the cited sources (section 7 lists what the review changed, the risks
 left and the open questions).
 
-Steps 1 to 20 of section 6 are built (section 8 says how, and where the code differs), except step 19's ray-tracing
-`AudioWorld`; the "later" row is not. The decisions
+Steps 1 to 20 of section 6 are built (section 8 says how, and where the code differs); the "later" row is not. The decisions
 are AU1 to AU16. Sections 2 and 3 are written for them; section 5 keeps the
 options weighed (Q1 to Q16, one per decision) with the reasons, and marks where the decision differs from the first
 recommendation.
@@ -2019,11 +2018,13 @@ Details steps 1 to 20 settled where sections 2 to 6 left them open, and where th
 - `Ambisonics`, the ambisonics bus, made with the `HrtfSpatializer` (`Spatializer.ambisonics()`): third order, 16
   real spherical harmonics (orthonormal: checked over 20,000 points within 0.01) of the listener-relative direction,
   so the field needs no rotation. The SH-domain filter pair per harmonic is the sum over the set's directions of the
-  direction's share of the sphere (a third of its triangles' solid angles) × the order's max-rE weight × the
-  harmonic × the ear's filter delayed by its ITD (the same windowed-sinc shift as the direct HRTF), scaled so the
-  decoded field is as loud as the direct HRTF averaged over the directions. **Deviation:** no left/right symmetry
-  halving the filters (32 filters, not 16); the decode is a plain weighted projection, not a magnitude-least-squares
-  one.
+  direction's share of the sphere (a third of its triangles' solid angles) × the harmonic × the ear's filter, fitted
+  per frequency bin by magnitude least squares (MagLS): the complex response below 1.5 kHz, the magnitude only above,
+  each direction's phase there carried on from the bin below. A plain projection with max-rE (the first decode) lost
+  the highs the third order cannot hold in phase, and the loudness scale then raised the lows: at the near ear +10.9
+  dB at 500 Hz and −7.5 dB at 6 kHz over the horizontal plane; MagLS gives 0.0 / +0.4 / +0.3 dB. The filters are
+  made once, at construction (about 131 M multiply-adds); a block costs as before. **Deviation:** no left/right
+  symmetry halving the filters (32 filters, not 16).
 - An HRTF voice not binaural (past the cap, or fading out of it) goes into its bus's field instead of the pan: 16
   gains a sample, ramped over a block as it moves; joining or leaving the cap cross-fades between the field and the
   HRTF channel (no click: second difference under 2 % of the peak). **Deviation:** one field per bus that has such
@@ -2031,9 +2032,10 @@ Details steps 1 to 20 settled where sections 2 to 6 left them open, and where th
   while fed and for its tail after (16 forward FFTs, 32 partition products, 2 inverse FFTs a block).
 - **Ambisonic directions** against the direct HRTF, pink noise at 2 m (`AmbisonicsTest`): ITD within 1 sample at
   0°, 30°, ±45° and 135° and 36 against 43 samples straight to the side (the third-order field narrows the widest);
-  ILD with the right sign but about half in dB (5.4 against 11.0 dB at 45°, 7.2 against 11.3 at 90°): the field is
-  blurrier, which is why the 16 most audible voices take the direct HRTF. A magnitude-least-squares decode would
-  narrow the gap; not built.
+  broadband ILD within 0.5 dB at all six angles (11.1 against 11.3 dB at 90°; the first decode gave 7.2, a spectral
+  imbalance, not a narrower field); per band (500 Hz / 2 kHz / 6 kHz) at 90° −6.5 / −8.2 / −23.6 dB against the
+  direct HRTF's −5.2 / −7.6 / −27.7. The field is still blurrier than the direct HRTF, which is why the 16 most
+  audible voices take it.
 - **CPU flat in the number of field voices** (`HrtfCostProbe`, all moving, median per 256-frame block): 16 binaural
   voices 276 µs; with 16, 64 and 256 more in the field 347, 561 and 1,382 µs: about 4.4 µs per field voice, of which
   a panned voice's own reading, resampling and filtering is 3.6 µs (16 panned voices: 57 µs); the decode is one per
@@ -2091,13 +2093,16 @@ Details steps 1 to 20 settled where sections 2 to 6 left them open, and where th
   120 m polyline river its level changes by at most 18 % between 60 Hz frames, never silent, with one voice and the
   bed; inside an area the voice is under the listener (both ears within 10 %); a rain scatter at 30 drops a second
   of 0.4 s each holds 5 to 8 grains, none once its rate parameter is 0.
-- **Not built: the ray-tracing `AudioWorld`.** Tracing through the engine's acceleration structures needs a GPU pass
-  (ray queries into a scene's top level, results read back frames later), while `AudioWorld.trace` answers at once on
-  the job system; it needs a two-phase world (`submit` this frame's rays, `collect` an earlier frame's results, the
-  occluder smoothing over the latency) in engine-audio, a segment tracer in engine-render (crossings and the instance
-  ids hit, per ray) and an adapter in engine-scene mapping instances to `AudioMaterial`s, tested against
-  `CollisionAudioWorld` on the same walls on the RX 9070 XT (skipped on devices without ray queries). Left for a later
-  change: the time went to steps 17, 18 and 20.
+- **The ray-tracing world** (built after the rest): engine-audio's `BatchedAudioWorld` (`submit` this frame's rays,
+  `collect` an earlier frame's results; up to 4 batches out, the smoothing hiding the latency) and `TracedAudioWorld`
+  over a `SegmentTracer`; engine-render's `SegmentTracing` traces a batch once a frame through the scene's top level
+  (the nearest 8 crossings of each segment: instance, facing, material id) and knows nothing of audio; the app joins
+  them (`SegmentTracer.of(tracing.capacity(), SegmentTracing.WORDS, tracing::submit, tracing::collect)`) and maps the
+  scene's material ids to `AudioMaterial`s. On 4,096 random rays through 25 boxes of 5 materials it matches
+  `CollisionAudioWorld` on every ray, as triangle meshes (every crossing) and as convex bodies (crossings going in;
+  one ray differed until physics' stepping out of a body counted the body behind it); a batch of 4,096 rays costs the GPU 0.04 ms, physics 7.6 to 8.7 ms on one thread (RX 9070 XT). **Deviation:** not
+  chosen automatically: without ray tracing the app gives the physics world or none; instances casting no shadows
+  are not in the top level, so they let sound through.
 - Clip: `au_step19_river_walk_then_crowd` (40 s): 20 s along a winding river 2 to 5 m off the bank (a line field of
   synthesized water), then up to and through a plaza of 300 people (a points field, 6 nearest, of a synthesized
   eight-talker murmur).
