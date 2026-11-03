@@ -1778,6 +1778,30 @@ Details steps 1 to 7 settled where sections 2 to 6 left them open, and where the
 - Fixed on the way: the renderer counted a voice whose stop was still to come as silent and ended it at the next
   choice; a fade to come or under way now counts as heard.
 
+### Step 9: the mixer (engine, scene)
+
+- Bus chains run the built-in effects made from `AudioEffect` records (`BusEffects`): RBJ biquads (`eq.lowPass`,
+  `eq.highPass`, `eq.bandPass` as low and high edges, `eq.peak`), a feed-forward `compressor` (peak envelope, gain
+  every 16 frames, ramped), the look-ahead `limiter` (its delay not compensated on a bus) and a feedback `delay`.
+  Responses match the cookbook's analytic curves within 0.005 from 125 Hz to 8 kHz.
+- Ducks follow the sidechain bus's peak of the block before (active above about −50 dBFS), with the duck's attack and
+  release as one-pole time constants: one block late whatever the bus order (**deviation:** a threshold, not a level
+  follower: the depth is all or nothing, smoothed).
+- `Mixer` (game thread) holds the layout, the player volumes and the snapshots: each fades in and out, and those
+  playing blend in priority order, each moving a bus's volume (dB from 0) or filter cutoff (from off) towards its
+  target by its intensity times its fade; the result times the player's volume is each bus's extra gain, and the
+  cutoffs the bus's snapshot low-pass and high-pass (biquads, retuned when they change). The `Audio` plugin's volumes
+  and background rule go through it; `audio.mixer()`.
+- Meters: peak and RMS per bus, post-fader, published every 1/30 s (`renderer.meterPeak(bus)`, `meterRms`).
+- The master's accessibility stage before the limiter: mono (the channels' mean at −3 dB each), balance (equal power,
+  unity in the middle), dynamic range presets `HOME` (2:1 above −24 dBFS, +3 dB) and `NIGHT` (4:1 above −30, +9 dB).
+  Settings `audio.mono`, `audio.balance`, `audio.dynamicRange`.
+- Loudness (`scene-audio`'s `Loudness`, BS.1770-4: K-weighting designed for any rate as libebur128 does, 400 ms
+  blocks overlapping 75 %, channel weights, absolute and relative gates) is measured at import (WAV, and Ogg: a
+  streamed one by decoding once) and the gain to −23 LUFS rides on each voice. **Deviation:** no per-bus target
+  offsets for music and dialogue yet; sine tests read their level within 0.1 LU, the gates and the surround weights
+  are checked against analytic values, not the EBU 3341 files (not fetched).
+
 ### Measured (2026-11-02, Ryzen 9 9950X3D, Windows 11, WASAPI through SDL 3.4, 48 kHz stereo, 256-frame blocks)
 
 - **Render cost per block** (offline, JIT warmed, `AudioDeviceProbe`): 64 voices of a looping clip at varied pitches,
