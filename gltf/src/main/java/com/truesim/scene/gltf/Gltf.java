@@ -843,13 +843,17 @@ public final class Gltf {
         if (texture(document, file, material, "normalTexture", true, builder, "normalTexture")) {
             builder.set("normalScale", (float) GltfDocument.number(normal, "scale", 1));
         }
-        if (texture(document, file, pbr, "metallicRoughnessTexture", true, builder, "ormTexture")) {
-            // The engine reads occlusion from the same texture's red: only where glTF's occlusion texture is that one.
-            Map<String, Object> occlusion = GltfDocument.object(material, "occlusionTexture");
-            int metallicRoughness = GltfDocument.integer(GltfDocument.object(pbr, "metallicRoughnessTexture"), "index",
-                -1);
-            boolean packed = GltfDocument.integer(occlusion, "index", -2) == metallicRoughness;
-            builder.set("occlusion", packed ? (float) GltfDocument.number(occlusion, "strength", 1) : 0);
+        boolean orm = texture(document, file, pbr, "metallicRoughnessTexture", true, builder, "ormTexture");
+        // Occlusion: the ORM's red where glTF's occlusion texture is the metallic-roughness one, read alike (the
+        // engine's packed fast path); else a texture of its own, with its UV set and transform. Without one, none.
+        Map<String, Object> occlusion = GltfDocument.object(material, "occlusionTexture");
+        float strength = (float) GltfDocument.number(occlusion, "strength", 1);
+        if (orm && packedOcclusion(material)) {
+            builder.set("occlusion", strength);
+        } else if (texture(document, file, material, "occlusionTexture", true, builder, "occlusionTexture")) {
+            builder.set("occlusion", strength);
+        } else if (orm) {
+            builder.set("occlusion", 0); // the ORM's red is not occlusion
         }
         Map<String, Object> extensions = GltfDocument.object(material, "extensions");
         for (Map.Entry<String, Object> entry : extensions.entrySet()) {
@@ -870,6 +874,19 @@ public final class Gltf {
         return builder.alpha(alpha, (float) GltfDocument.number(material, "alphaCutoff", 0.5))
             .doubleSided(Boolean.TRUE.equals(material.get("doubleSided")))
             .build();
+    }
+
+    /**
+     * Whether {@code material}'s occlusion texture is its metallic-roughness texture, read alike (the same UV set and
+     * transform): the engine then reads occlusion from that texture's red.
+     */
+    static boolean packedOcclusion(Map<String, Object> material) {
+        Map<String, Object> occlusion = GltfDocument.object(material, "occlusionTexture");
+        Map<String, Object> packed = GltfDocument.object(GltfDocument.object(material, "pbrMetallicRoughness"),
+            "metallicRoughnessTexture");
+        return GltfDocument.integer(occlusion, "index", -2) == GltfDocument.integer(packed, "index", -1)
+            && GltfDocument.integer(occlusion, "texCoord", 0) == GltfDocument.integer(packed, "texCoord", 0)
+            && extension(occlusion, "KHR_texture_transform").equals(extension(packed, "KHR_texture_transform"));
     }
 
     /** The engine's clearcoat feature from glTF's {@code KHR_materials_clearcoat} {@code values}. */

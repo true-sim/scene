@@ -486,7 +486,13 @@ class GltfTest {
                 "emissiveFactor": [1, 1, 0], "emissiveTexture": {"index": 0}},
                {"alphaMode": "MASK", "alphaCutoff": 0.3, "doubleSided": true,
                 "pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 1}}, "occlusionTexture": {"index": 0}},
-               {"pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}}],
+               {"pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}},
+               {"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 1}}, "occlusionTexture": {"index": 1,
+                "strength": 0.25, "extensions": {"KHR_texture_transform": {"offset": [0.5, 0]}}}},
+               {"occlusionTexture": {"index": 1, "strength": 0.75}},
+               {"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 1}}, "occlusionTexture": {"index": 1,
+                "texCoord": 1}},
+               {"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 1}}}],
              "textures": [{"source": 0}, {"source": 1}, {"source": 2}, {"extensions": {}}],
              "images": [{"uri": "paint.png"}, {"uri": "orm.png"}, {"uri": "%s"}]}
             """.formatted(base64(png(0xFF8080FF)).replace("application/octet-stream", "image/png"));
@@ -531,7 +537,25 @@ class GltfTest {
         assertThat(masked.alphaMode()).isEqualTo(MaterialData.AlphaMode.MASK);
         assertThat(masked.alphaCutoff()).isEqualTo(0.3f);
         assertThat(masked.doubleSided()).isTrue();
-        assertThat(masked.values().f32("occlusion", -1)).as("another texture's: not read").isZero();
+        assertThat(masked.values().f32("occlusion", -1)).as("another texture's: its own").isEqualTo(1);
+        assertThat(masked.values().texture("occlusionTexture"))
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://models/paint.png#linear"));
+        assertThat(paint.values().has("occlusionTexture")).as("packed: read from the ORM").isFalse();
+        MaterialData moved = load(paths.ref(RenderAssets.MATERIAL, "game://models/car.gltf#material/3"));
+        assertThat(moved.values().f32("occlusion", -1)).as("the ORM's texture read otherwise: its own")
+            .isEqualTo(0.25f);
+        assertThat(moved.values().texture("occlusionTexture"))
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://models/orm.png#linear"));
+        assertThat(moved.values().floats("occlusionTextureOffset")).containsExactly(0.5f, 0);
+        MaterialData other = load(paths.ref(RenderAssets.MATERIAL, "game://models/car.gltf#material/5"));
+        assertThat(other.values().i32("occlusionTextureTexCoord", 0)).as("another UV set: its own").isEqualTo(1);
+        MaterialData none = load(paths.ref(RenderAssets.MATERIAL, "game://models/car.gltf#material/6"));
+        assertThat(none.values().f32("occlusion", -1)).as("no occlusion texture: the ORM's red unread").isZero();
+        assertThat(none.values().has("occlusionTexture")).isFalse();
+        MaterialData alone = load(paths.ref(RenderAssets.MATERIAL, "game://models/car.gltf#material/4"));
+        assertThat(alone.values().f32("occlusion", -1)).as("without an ORM").isEqualTo(0.75f);
+        assertThat(alone.values().texture("occlusionTexture"))
+            .isEqualTo(paths.ref(RenderAssets.TEXTURE, "game://models/orm.png#linear"));
         MaterialData extension = load(paths.ref(RenderAssets.MATERIAL, "game://models/car.gltf#material/2"));
         assertThat(extension.values().has("baseColorTexture")).as("an extension's image only").isFalse();
         TextureData embedded = load(paths.ref(RenderAssets.TEXTURE, "game://models/car.gltf#image/2"));
@@ -663,7 +687,10 @@ class GltfTest {
                 "extensions": {"KHR_materials_pbrSpecularGlossiness": {"glossinessFactor": 0},
                   "KHR_materials_clearcoat": {}}},
                {"pbrMetallicRoughness": {"baseColorTexture": {"index": 2}}},
-               {"pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}}],
+               {"pbrMetallicRoughness": {"baseColorTexture": {"index": 3}}},
+               {"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 1}}, "occlusionTexture": {"index": 1,
+                "strength": 0.25, "texCoord": 1, "extensions": {"KHR_texture_transform": {"offset": [0.5, 0]}}}},
+               {"occlusionTexture": {"index": 1, "strength": 0.75}}],
              "textures": [{"source": 0, "sampler": 0},
                {"source": 1, "sampler": 1, "extensions": {"EXT_texture_webp": {"source": 2}}},
                {"extensions": {"EXT_texture_webp": {"source": 2}}}, {"extensions": {"VENDOR": {}}}],

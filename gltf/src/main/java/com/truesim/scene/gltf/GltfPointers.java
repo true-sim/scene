@@ -13,7 +13,8 @@ import java.util.function.IntFunction;
  * {@code clearcoat:strength}), a punctual light's or a camera's value, or a node's visibility. Pointers at a node's
  * translation, rotation, scale or weights are a node's tracks instead ({@link #nodeTarget}). Others are not read:
  * values the engine has no field for (a material's {@code alphaCutoff}, its emissive strength, spec-gloss, the
- * occlusion strength of an occlusion texture apart from the metallic-roughness one), and anything not listed here.
+ * transform of an occlusion texture packed with the metallic-roughness one, which follows that one's), and anything
+ * not listed here.
  */
 @AllowAllocation("importing when assets load")
 final class GltfPointers {
@@ -165,7 +166,7 @@ final class GltfPointers {
             case "normalTexture/scale":
                 return "normalScale";
             case "occlusionTexture/strength":
-                return packedOcclusion(material) ? "occlusion" : null;
+                return material.containsKey("occlusionTexture") ? "occlusion" : null;
             default:
                 break;
         }
@@ -208,6 +209,8 @@ final class GltfPointers {
                 return "emissiveTexture";
             case "normalTexture":
                 return "normalTexture";
+            case "occlusionTexture":
+                return Gltf.packedOcclusion(material) ? null : "occlusionTexture"; // packed: the ORM's transform
             default:
                 break;
         }
@@ -226,14 +229,6 @@ final class GltfPointers {
     private static String feature(String extension) {
         String name = extension.substring("KHR_materials_".length());
         return name.equals("emissive_strength") || name.equals("pbrSpecularGlossiness") ? null : name;
-    }
-
-    /** Whether the material's occlusion texture is its metallic-roughness texture: the engine reads it there. */
-    private static boolean packedOcclusion(Map<String, Object> material) {
-        int occlusion = GltfDocument.integer(GltfDocument.object(material, "occlusionTexture"), "index", -2);
-        int packed = GltfDocument.integer(GltfDocument.object(GltfDocument.object(material, "pbrMetallicRoughness"),
-            "metallicRoughnessTexture"), "index", -1);
-        return occlusion == packed;
     }
 
     /**

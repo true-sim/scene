@@ -471,8 +471,8 @@ assets.acquire(rock);
   ```
 
   The importer maps glTF pointers at `/materials/N/...` (the metallic-roughness factors, emissive, normal scale, the
-  occlusion strength where it is packed with metallic-roughness, `KHR_materials_*` factors, texture transforms of the
-  textures it reads), `/extensions/KHR_lights_punctual/lights/N/{color,intensity,range,spot/...ConeAngle}`,
+  occlusion strength, `KHR_materials_*` factors, texture transforms of the textures it reads, an occlusion texture's
+  own unless it is packed with metallic-roughness), `/extensions/KHR_lights_punctual/lights/N/{color,intensity,range,spot/...ConeAngle}`,
   `/cameras/N/{perspective,orthographic}/...` and `/nodes/N/extensions/KHR_node_visibility/visible`; pointers at a
   node's translation, rotation, scale or weights are its node tracks. Others are skipped.
 
