@@ -3,16 +3,17 @@ package com.truesim.scene.audio;
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.common.math.Maths;
 import com.truesim.common.state.ChangeClock;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
-import java.util.Arrays;
-import java.util.Objects;
 
 /**
  * The reverb zones of a world: boxes or spheres on nodes, each with a reverb (an effect record, a preset or its
  * parameters), a fade distance outside its shape, and a priority. The listener's zone sets the aux reverb, blended
- * across fades; each emitter sends to its own zone's. Cell loaders add zones in {@code attach} and remove them in
- * {@code detach}, so zones stream with cells. Used from the scene's thread; reading allocates nothing.
+ * across fades; each emitter sends to its own zone's. Zones are {@link ReverbZone} components on their nodes
+ * (application-api.md D46), so they are saved, stream with their cells and go with their nodes; a zone's id is its
+ * node's handle, and a node has one zone at most (adding another replaces it). Used from the scene's thread; reading
+ * allocates nothing.
  *
  * <pre>{@code
  * long hall = sounds.reverbZones().box(hallNode, 20, 6, 30, 2, AudioEffect.named("reverb").set("size", 0.9), 0);
@@ -29,36 +30,26 @@ public final class ReverbZones {
 
     private final SceneGraph scene;
     private final ChangeClock clock;
-    private int slots;
-    private int size;
-    private int version;
-    private boolean[] used = new boolean[4];
-    private int[] generations = new int[4];
-    private long[] nodes = new long[4];
-    /** Half extents (box) or the radius in the first (sphere, the others negative). */
-    private double[] extents = new double[12];
-    private double[] fades = new double[4];
-    private int[] priorities = new int[4];
-    private AudioEffect[] reverbs = new AudioEffect[4];
-    private double[] positions = new double[12];
-    private double[] rotations = new double[16];
+    private final ComponentStore<ReverbZone> store; // null for the UI store, which places nothing
 
     ReverbZones(SceneGraph scene, ChangeClock clock) {
         this.scene = scene;
         this.clock = clock;
+        this.store = scene == null ? null : scene.components().store(ReverbZone.TYPE);
     }
 
     /**
      * A box zone on {@code node}, {@code hx} by {@code hy} by {@code hz} metres from its centre in the node's frame,
      * fading out over {@code fade} metres outside, with {@code reverb}; higher {@code priority} wins where zones
-     * overlap. Returns its id.
+     * overlap. Returns its id: the node's handle.
      */
     public long box(long node, double hx, double hy, double hz, double fade, AudioEffect reverb, int priority) {
         checkOwner();
         if (!(hx > 0 && hy > 0 && hz > 0)) {
             throw new IllegalArgumentException("Not a box: " + hx + " by " + hy + " by " + hz);
         }
-        return add(node, hx, hy, hz, fade, reverb, priority);
+        checkNode(node);
+        return add(node, ReverbZone.box(hx, hy, hz, fade, reverb, priority));
     }
 
     /** A sphere zone on {@code node}, {@code radius} metres, as {@link #box} otherwise. */
@@ -67,131 +58,88 @@ public final class ReverbZones {
         if (!(radius > 0)) {
             throw new IllegalArgumentException("Not a radius: " + radius);
         }
-        return add(node, radius, -1, -1, fade, reverb, priority);
+        checkNode(node);
+        return add(node, ReverbZone.sphere(radius, fade, reverb, priority));
     }
 
-    private long add(long node, double a, double b, double c, double fade, AudioEffect reverb, int priority) {
+    private void checkNode(long node) {
         if (scene == null) {
             throw new IllegalStateException("The UI store has no reverb zones: its sounds are not placed");
         }
         if (!scene.contains(node)) {
             throw new IllegalArgumentException("Not a node of the scene: " + NodeHandle.toString(node));
         }
-        if (!(fade >= 0) || Double.isInfinite(fade)) {
-            throw new IllegalArgumentException("Not a fade distance: " + fade);
-        }
-        int slot = 0;
-        while (slot < slots && used[slot]) {
-            slot++;
-        }
-        if (slot == slots) {
-            if (slots == used.length) {
-                grow();
-            }
-            slots++;
-        }
-        used[slot] = true;
-        generations[slot]++;
-        nodes[slot] = node;
-        extents[3 * slot] = a;
-        extents[3 * slot + 1] = b;
-        extents[3 * slot + 2] = c;
-        fades[slot] = fade;
-        reverbs[slot] = Objects.requireNonNull(reverb, "reverb");
-        priorities[slot] = priority;
-        Placement.place(scene, node, positions, rotations, slot);
-        size++;
-        version++;
-        return (long) generations[slot] << 32 | slot;
     }
 
-    @AllowAllocation("growing with the zones")
-    private void grow() {
-        int n = 2 * used.length;
-        used = Arrays.copyOf(used, n);
-        generations = Arrays.copyOf(generations, n);
-        nodes = Arrays.copyOf(nodes, n);
-        extents = Arrays.copyOf(extents, 3 * n);
-        fades = Arrays.copyOf(fades, n);
-        priorities = Arrays.copyOf(priorities, n);
-        reverbs = Arrays.copyOf(reverbs, n);
-        positions = Arrays.copyOf(positions, 3 * n);
-        rotations = Arrays.copyOf(rotations, 4 * n);
-    }
-
-    private int slot(long zone) {
-        int slot = (int) zone;
-        return slot >= 0 && slot < slots && used[slot] && generations[slot] == (int) (zone >>> 32) ? slot : -1;
+    private long add(long node, ReverbZone zone) {
+        Placement.place(scene, node, zone.place);
+        store.set(node, zone);
+        return node;
     }
 
     /** Removes {@code zone}; nothing for one removed already. */
     public void remove(long zone) {
         checkOwner();
-        int slot = slot(zone);
-        if (slot >= 0) {
-            used[slot] = false;
-            reverbs[slot] = null;
-            size--;
-            version++;
+        if (store != null) {
+            store.remove(zone);
         }
     }
 
     public boolean alive(long zone) {
-        return slot(zone) >= 0;
+        return store != null && store.has(zone);
     }
 
     /** The zone's reverb. */
     public AudioEffect reverb(long zone) {
-        int slot = slot(zone);
-        if (slot < 0) {
+        ReverbZone z = store == null ? null : store.get(zone);
+        if (z == null) {
             throw new IllegalArgumentException("No reverb zone is " + Long.toHexString(zone));
         }
-        return reverbs[slot];
+        return z.reverb;
     }
 
     public int size() {
-        return size;
+        return store == null ? 0 : store.size();
     }
 
-    /** A count that changes whenever a zone is added or removed. */
+    /** A count that changes whenever a zone is added, replaced or removed. */
     public int version() {
-        return version;
+        return store == null ? 0 : (int) store.version();
     }
 
-    /** Visits every zone in slot order. */
+    /** Visits every zone, in the store's packed order. */
     public void forEach(Visitor visitor) {
-        for (int slot = 0; slot < slots; slot++) {
-            if (used[slot]) {
-                visitor.visit((long) generations[slot] << 32 | slot);
-            }
+        for (int i = 0; i < size(); i++) {
+            visitor.visit(store.node(i));
         }
     }
 
     /** How much of {@code zone} is at ({@code x}, {@code y}, {@code z}): 1 inside, fading to 0 over its fade. */
     public float weight(long zone, double x, double y, double z) {
-        int slot = slot(zone);
-        return slot < 0 ? 0 : weightAt(slot, x, y, z);
+        ReverbZone value = store == null ? null : store.get(zone);
+        return value == null ? 0 : weightOf(value, x, y, z);
     }
 
-    private float weightAt(int slot, double x, double y, double z) {
-        double dx = x - positions[3 * slot];
-        double dy = y - positions[3 * slot + 1];
-        double dz = z - positions[3 * slot + 2];
+    private static float weightOf(ReverbZone zone, double x, double y, double z) {
+        double[] p = zone.place;
+        double dx = x - p[0];
+        double dy = y - p[1];
+        double dz = z - p[2];
         double outside;
-        if (extents[3 * slot + 1] < 0) {
-            outside = Maths.sqrt(dx * dx + dy * dy + dz * dz) - extents[3 * slot];
+        if (zone.ey < 0) {
+            outside = Maths.sqrt(dx * dx + dy * dy + dz * dz) - zone.ex;
         } else {
             // into the node's frame: the inverse rotation, v + 2w (q x v) + 2 q x (q x v) with q conjugated
-            double qx = -rotations[4 * slot];
-            double qy = -rotations[4 * slot + 1];
-            double qz = -rotations[4 * slot + 2];
-            double qw = rotations[4 * slot + 3];
+            double qx = -p[3];
+            double qy = -p[4];
+            double qz = -p[5];
+            double qw = p[6];
             double tx = 2 * (qy * dz - qz * dy);
             double ty = 2 * (qz * dx - qx * dz);
             double tz = 2 * (qx * dy - qy * dx);
-            double lx = Math.abs(dx + qw * tx + qy * tz - qz * ty) - extents[3 * slot];
-            double ly = Math.abs(dy + qw * ty + qz * tx - qx * tz) - extents[3 * slot + 1];
-            double lz = Math.abs(dz + qw * tz + qx * ty - qy * tx) - extents[3 * slot + 2];
+            double lx = Math.abs(dx + qw * tx + qy * tz - qz * ty) - zone.ex;
+            double ly = Math.abs(dy + qw * ty + qz * tx - qx * tz) - zone.ey;
+            double lz = Math.abs(dz + qw * tz + qx * ty - qy * tx) - zone.ez;
             double ox = Math.max(lx, 0);
             double oy = Math.max(ly, 0);
             double oz = Math.max(lz, 0);
@@ -200,40 +148,33 @@ public final class ReverbZones {
         if (outside <= 0) {
             return 1;
         }
-        return outside >= fades[slot] ? 0 : (float) (1 - outside / fades[slot]);
+        return outside >= zone.fade ? 0 : (float) (1 - outside / zone.fade);
     }
 
     /**
      * The zone that rules at ({@code x}, {@code y}, {@code z}): of those with weight there, the highest priority, then
-     * the greatest weight, then the lowest slot; 0 outside every zone.
+     * the greatest weight, then the first in the store's order; 0 outside every zone.
      */
     public long strongest(double x, double y, double z) {
         int best = -1;
         float bestWeight = 0;
-        for (int slot = 0; slot < slots; slot++) {
-            if (!used[slot]) {
-                continue;
-            }
-            float w = weightAt(slot, x, y, z);
-            if (w > 0 && (best < 0 || priorities[slot] > priorities[best]
-                || priorities[slot] == priorities[best] && w > bestWeight)) {
-                best = slot;
+        int bestPriority = 0;
+        for (int i = 0; i < size(); i++) {
+            ReverbZone zone = store.value(i);
+            float w = weightOf(zone, x, y, z);
+            if (w > 0 && (best < 0 || zone.priority > bestPriority || zone.priority == bestPriority && w > bestWeight)) {
+                best = i;
                 bestWeight = w;
+                bestPriority = zone.priority;
             }
         }
-        return best < 0 ? 0 : (long) generations[best] << 32 | best;
+        return best < 0 ? 0 : store.node(best);
     }
 
-    /** Takes the zones' places from their nodes; a zone whose node was removed is removed. */
+    /** Takes the zones' places from their nodes (a removed node took its zone with it). */
     void update() {
-        for (int slot = 0; slot < slots; slot++) {
-            if (used[slot]) {
-                if (scene.contains(nodes[slot])) {
-                    Placement.place(scene, nodes[slot], positions, rotations, slot);
-                } else {
-                    remove((long) generations[slot] << 32 | slot);
-                }
-            }
+        for (int i = 0; i < size(); i++) {
+            Placement.place(scene, store.node(i), store.value(i).place);
         }
     }
 
