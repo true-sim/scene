@@ -738,6 +738,37 @@ public final class SpatialIndex implements AutoCloseable {
         return query.raycast(ox, oy, oz, dx, dy, dz, maxDistance, layerMask, hit);
     }
 
+    /**
+     * As {@link #raycast(double, double, double, double, double, double, double, int, Hit)} with a narrow phase:
+     * {@code filter} says how far along the ray each node whose box the ray enters really is (its mesh, its shape),
+     * or that the ray misses it. The nearest node by the filter's distance wins; boxes beyond the nearest hit so far
+     * are not tested, so a precise test costs only what the ray reaches (picking tests meshes this way).
+     */
+    public boolean raycast(double ox, double oy, double oz, double dx, double dy, double dz, double maxDistance,
+        int layerMask, RayFilter filter, Hit hit) {
+        query.filter = filter;
+        try {
+            return query.raycast(ox, oy, oz, dx, dy, dz, maxDistance, layerMask, hit);
+        } finally {
+            query.filter = null;
+        }
+    }
+
+    /** The narrow phase of a filtered {@link #raycast(double, double, double, double, double, double, double, int,
+     * RayFilter, Hit) raycast}. */
+    @FunctionalInterface
+    public interface RayFilter {
+
+        /**
+         * How far along the ray (in units of its direction's length) it hits {@code node}, whose box it enters at
+         * {@code boxDistance}, or {@link Double#POSITIVE_INFINITY} for a miss; distances beyond {@code max} do not
+         * count. Called only for nodes on the layer mask, possibly more than once a raycast; it must not query the
+         * index.
+         */
+        double test(long node, double boxDistance, double ox, double oy, double oz, double dx, double dy, double dz,
+            double max);
+    }
+
     /** The nodes found per view by {@link #queryFrustums}. Reuse one; it grows as needed. */
     public static final class ViewResults {
 
@@ -803,6 +834,7 @@ public final class SpatialIndex implements AutoCloseable {
     private final class Query {
 
         private Visitor visitor;
+        private RayFilter filter;
         private int mask;
         private boolean stopped;
         private int found;
@@ -985,7 +1017,14 @@ public final class SpatialIndex implements AutoCloseable {
             double t = Intersections.rayAabb(ox, oy, oz, dx, dy, dz, bounds.get(primitive, 0),
                 bounds.get(primitive, 1), bounds.get(primitive, 2), bounds.get(primitive, 3), bounds.get(primitive, 4),
                 bounds.get(primitive, 5));
-            return t <= max ? t : Double.POSITIVE_INFINITY;
+            if (t > max) {
+                return Double.POSITIVE_INFINITY;
+            }
+            if (filter == null) {
+                return t;
+            }
+            double exact = filter.test(node, t, ox, oy, oz, dx, dy, dz, max);
+            return exact <= max ? exact : Double.POSITIVE_INFINITY;
         }
     }
 
