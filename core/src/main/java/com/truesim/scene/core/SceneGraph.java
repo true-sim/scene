@@ -57,6 +57,7 @@ public final class SceneGraph {
     static final double EMPTY = Double.POSITIVE_INFINITY;
 
     private final ChangeClock clock;
+    private final Components components = new Components(this);
     private final List<Prepared> prepared = new ArrayList<>();
     private long updates;
 
@@ -183,6 +184,14 @@ public final class SceneGraph {
     /** The clock this scene stamps its changes on, e.g. for {@link ChangeClock#cursor()}. */
     public ChangeClock clock() {
         return clock;
+    }
+
+    /**
+     * The components on this scene's nodes (application-api.md D46): cameras, lights, pick shapes, a game's own. A
+     * removed node loses its components with it.
+     */
+    public Components components() {
+        return components;
     }
 
     // ---------------------------------------------------------------- nodes
@@ -338,7 +347,9 @@ public final class SceneGraph {
             for (int child = firstChild[current]; child != NONE; child = nextSibling[child]) {
                 stack[top++] = child;
             }
-            log(stamp, NodeHandle.of(current, generation[current]), NodeChange.REMOVED);
+            long handle = NodeHandle.of(current, generation[current]);
+            log(stamp, handle, NodeChange.REMOVED);
+            components.nodeRemoved(handle);
             alive[current] = false;
             pending[current] = 0;
             version[current] = stamp;
