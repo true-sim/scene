@@ -4,6 +4,7 @@ import com.truesim.annotations.AllowAllocation;
 import com.truesim.common.math.random.Hash;
 import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.assets.AssetRef;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
 import java.util.Arrays;
@@ -90,6 +91,12 @@ public final class Sounds {
     private final SceneGraph scene;
     private final ChangeClock clock;
     private final boolean ui;
+    // the emitter components followed: by node slot, the node and what it plays
+    private final ComponentStore<SoundEmitter> emitters;
+    private final ComponentStore.Visitor onEmitter = this::emitterChanged;
+    private long emittersSeen = -1;
+    private long[] emitNodes = new long[0];
+    private long[] emitIds = new long[0];
     private final Listeners listeners;
     private final ReverbZones reverbZones;
     private final Plans plans = new Plans();
@@ -167,6 +174,7 @@ public final class Sounds {
         ui = scene == null;
         listeners = new Listeners(scene, clock);
         reverbZones = new ReverbZones(scene, clock);
+        emitters = scene == null ? null : scene.components().store(SoundEmitter.TYPE);
         logStamps = new long[logCapacity];
         logInstances = new long[logCapacity];
         logChanges = new int[logCapacity];
@@ -1024,6 +1032,9 @@ public final class Sounds {
             throw new IllegalArgumentException("Not a time step: " + ticks);
         }
         now += ticks;
+        if (!ui) {
+            followEmitters();
+        }
         planPending();
         for (int slot = 0; slot < slots; slot++) {
             if (states[slot] == FREE) {
@@ -1157,4 +1168,69 @@ public final class Sounds {
     private static String notOwner(Thread owner) {
         return "The sounds change on " + owner.getName() + " only, not on " + Thread.currentThread().getName();
     }
+    // ---------------------------------------------------------------- emitter components
+
+    /**
+     * Follows the {@link SoundEmitter} components (application-api.md D46): each added or replaced one plays its sound on its node, each
+     * removed one (or its node) stops it. Called by the advance; allocates nothing once grown.
+     */
+    private void followEmitters() {
+        if (!emitters.changesSince(emittersSeen, onEmitter)) {
+            for (int slot = 0; slot < emitNodes.length; slot++) { // fell behind: match what is there
+                if (!emitters.has(emitNodes[slot])) {
+                    stop(emitIds[slot]);
+                    emitNodes[slot] = NodeHandle.NONE;
+                    emitIds[slot] = 0;
+                }
+            }
+            for (int i = 0; i < emitters.size(); i++) {
+                if (emitted(emitters.node(i)) == 0) {
+                    emit(emitters.node(i), emitters.value(i));
+                }
+            }
+        }
+        emittersSeen = clock.now();
+    }
+
+    private void emitterChanged(long node, int changes) {
+        int slot = emitSlot(node);
+        if (slot >= 0) {
+            stop(emitIds[slot]);
+            emitNodes[slot] = NodeHandle.NONE;
+            emitIds[slot] = 0;
+        }
+        SoundEmitter emitter = (changes & ComponentStore.REMOVED) == 0 ? emitters.get(node) : null;
+        if (emitter != null) {
+            emit(node, emitter);
+        }
+    }
+
+    private void emit(long node, SoundEmitter emitter) {
+        int slot = NodeHandle.index(node);
+        if (slot >= emitNodes.length) {
+            growEmitters(slot + 1);
+        }
+        emitNodes[slot] = node;
+        emitIds[slot] = fire(emitter.sound(), node);
+    }
+
+    @AllowAllocation("growing with the scene")
+    private void growEmitters(int length) {
+        int n = Math.max(length, emitNodes.length * 2);
+        emitNodes = java.util.Arrays.copyOf(emitNodes, n);
+        emitIds = java.util.Arrays.copyOf(emitIds, n);
+    }
+
+    /** The sound {@code node}'s {@link SoundEmitter} plays now, or 0 (none, or it ended). */
+    public long emitted(long node) {
+        int slot = emitSlot(node);
+        return slot >= 0 && alive(emitIds[slot]) ? emitIds[slot] : 0;
+    }
+
+    /** {@code node}'s slot among the emitters followed, or -1. */
+    private int emitSlot(long node) {
+        int slot = NodeHandle.index(node);
+        return slot < emitNodes.length && emitNodes[slot] == node ? slot : -1;
+    }
+
 }

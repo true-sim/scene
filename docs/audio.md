@@ -421,8 +421,10 @@ nothing of the engine; servers and tools use it):
 - **Components** (built 2026-11-04 with D46): listeners and reverb zones are components of their nodes,
   `AudioListener` (`truesim.audio.listener`) and `ReverbZone` (`truesim.audio.reverb-zone`), in the scene's component
   stores; `Listeners` and `ReverbZones` are the world's views of them, their ids the nodes' handles (one of each per
-  node; adding another replaces it), and they go with their nodes. The engine's audio sync reads the stores. Playing
-  sounds stay instances of `Sounds` (events, not state of a node).
+  node; adding another replaces it), and they go with their nodes. The engine's audio sync reads the stores. A node's
+  own sound is a `SoundEmitter` component (`truesim.audio.emitter`): `Sounds.advance` plays it on the node when added
+  or replaced and stops it when the component or the node goes (`sounds.emitted(node)`); one-shot events stay
+  `play`/`fire` instances.
 
 **scene, new module `scene-audio-codecs`** (scene-audio, LWJGL `stb` and `opus` with natives; as
 `scene-meshbuild` takes meshoptimizer): importers registered by extension through `PathAssets.importers()`

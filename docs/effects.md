@@ -761,6 +761,8 @@ back.
   - step 4 measures 8 curves of 8 keys at a million particles; the reviewer note on E18 says what follows if it costs.
 - **Colliders and attractors** are scene objects too: `EffectColliders` on nodes (plane, sphere, box, capsule), each
   an `EffectCollider` component of its node (D46, since 2026-11-04: one per node, saved, gone with the node).
+  A node's own effect (a torch's flame) is an `EffectEmitter` component, started by `Effects.advance` while it is
+  there (`effects.emitted(node)`).
   Effects use them by layer mask (Godot). Collision response is bounce (restitution, friction), stick (attach to the
   surface), slide, or kill. Each can send a collision event. Per emitter (E10), a **chain** of methods, the first the
   device and target support being used (`Collide.rays().orElse(Collide.depth())`):

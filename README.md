@@ -562,8 +562,8 @@ scene.remove(orc);                                             // its components
 - **Systems ignore what they do not know:** a type no system reads is carried along (and saved).
 - **Built in:** `CameraLens` (D129: a camera looks along its node's -Z; perspective or orthographic; the engine sets its
   renderer camera from the node), `LightSource` (point, spot or directional along -Z, colour times candela or lux; the
-  engine places it in its lights), `Pickable`, `Selected`, `Hovered` (below), and scene-audio's `AudioListener` and
-  `ReverbZone`. `ModelData.spawn` gives a model's nodes their cameras, lights and pick shapes.
+  engine places it in its lights), `Pickable`, `Selected`, `Hovered` (below), scene-audio's `AudioListener`,
+  `ReverbZone` and `SoundEmitter`, scene-effects' `EffectCollider` and `EffectEmitter`. `ModelData.spawn` gives a model's nodes their cameras, lights and pick shapes.
 
 ### Picking
 
