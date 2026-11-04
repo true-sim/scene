@@ -157,6 +157,34 @@ class SpatialIndexTest {
     }
 
     @Test
+    void filteredRaycastsFindTheNearestNodeByTheNarrowPhase() {
+        long hollow = box(0, 0, -3, Mobility.STATIC); // its box is hit first, its shape is missed
+        long dynamic = box(0, 0, -5, Mobility.DYNAMIC);
+        long solid = box(0, 0, -8, Mobility.STATIC);
+        long other = box(0, 0, -10, Mobility.STATIC);
+        scene.setLayers(other, PICKABLE.mask());
+        update();
+        List<Long> tested = new ArrayList<>();
+        double[] far = {0};
+        SpatialIndex.RayFilter shapes = (node, box, ox, oy, oz, dx, dy, dz, max) -> {
+            tested.add(node);
+            return node == hollow ? Double.POSITIVE_INFINITY : node == dynamic ? box + far[0] : box + 0.25;
+        };
+        SpatialIndex.Hit hit = new SpatialIndex.Hit();
+        assertThat(index.raycast(0, 0, 0, 0, 0, -1, 100, WORLD.mask(), shapes, hit)).isTrue();
+        assertThat(hit.node()).isEqualTo(dynamic);
+        assertThat(hit.distance()).isEqualTo(4.5);
+        assertThat(tested).contains(hollow, solid).doesNotContain(other); // only nodes on the mask
+        far[0] = 1000; // the dynamic node's shape is beyond the ray's reach: the static one behind it wins
+        assertThat(index.raycast(0, 0, 0, 0, 0, -1, 100, WORLD.mask(), shapes, hit)).isTrue();
+        assertThat(hit.node()).isEqualTo(solid);
+        assertThat(hit.distance()).isEqualTo(7.75);
+        assertThat(index.raycast(0, 0, 0, 0, 0, -1, 4, WORLD.mask(), shapes, hit)).isFalse();
+        assertThat(index.raycast(0, 0, 0, 0, 0, -1, 100, WORLD.mask(), hit)).isTrue(); // unfiltered again
+        assertThat(hit.node()).isEqualTo(hollow);
+    }
+
+    @Test
     void emptyIndexesAnswerNothing() {
         update();
         assertThat(inBox(-1, -1, -1, 1, 1, 1, ALL)).isEmpty();
