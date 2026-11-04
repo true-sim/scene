@@ -418,9 +418,13 @@ nothing of the engine; servers and tools use it):
 - `Music`, the music state machine over an `AudioClock` interface (the engine's clock, or a test's fake one);
   `AudioWorld`, the occlusion interface (§2.11), thread-safe and allocation-free like `ParticleWorld` and animation's
   `Ground`.
-- **Components.** The application API plans components on nodes (D46, D129) but the scene has none yet; listeners
-  and reverb zones are therefore entries in stores keyed by node, as effects are, and gain a component form when D46
-  is built.
+- **Components** (built 2026-11-04 with D46): listeners and reverb zones are components of their nodes,
+  `AudioListener` (`truesim.audio.listener`) and `ReverbZone` (`truesim.audio.reverb-zone`), in the scene's component
+  stores; `Listeners` and `ReverbZones` are the world's views of them, their ids the nodes' handles (one of each per
+  node; adding another replaces it), and they go with their nodes. The engine's audio sync reads the stores. A node's
+  own sound is a `SoundEmitter` component (`truesim.audio.emitter`): `Sounds.advance` plays it on the node when added
+  or replaced and stops it when the component or the node goes (`sounds.emitted(node)`); one-shot events stay
+  `play`/`fire` instances.
 
 **scene, new module `scene-audio-codecs`** (scene-audio, LWJGL `stb` and `opus` with natives; as
 `scene-meshbuild` takes meshoptimizer): importers registered by extension through `PathAssets.importers()`
@@ -1576,7 +1580,7 @@ table.
 - **Rendering listener feedback** can still sound harsh before the howl detector reacts (8 blocks, 43 ms).
 - **SteamVR's device switching** was checked from its settings and reports, not tested; Quest Link and Virtual
   Desktop appear as their own endpoints and follow the same default-device path.
-- **No components** yet: listeners and reverb zones as stores will need an adapter when D46 lands.
+- **Components** (since D46, 2026-11-04): listeners and reverb zones are node components; no adapter was needed.
 - **Effects' change-log consumers** in engine-app do not exist yet (no `EffectBindings`), so `AudioBindings` is the
   first engine consumer of a scene store's log and sets the pattern.
 

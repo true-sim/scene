@@ -247,10 +247,23 @@ class CollisionTest {
         assertThatIllegalArgumentException().isThrownBy(() -> colliders.plane(n, 1));
         long m = node(0, 0, 0);
         for (int i = 0; i < 9; i++) {
-            colliders.sphere(m, i, 1); // growing
+            colliders.sphere(node(i, 0, 0), i, 1); // growing
         }
         assertThat(colliders.count()).isEqualTo(9);
         assertThat(colliders.size(8, 0)).isEqualTo(8);
+        // one per node, a component of it: another replaces it, removing takes it away
+        colliders.capsule(m, 1, 2, 3);
+        colliders.box(m, 1, 2, 3, 3);
+        assertThat(colliders.count()).isEqualTo(10);
+        assertThat(scene.components().get(m, EffectCollider.TYPE).kind()).isEqualTo(EffectColliders.Kind.BOX);
+        assertThat(scene.components().get(m, EffectCollider.TYPE).size(2)).isEqualTo(3);
+        assertThat(scene.components().get(m, EffectCollider.TYPE)).hasToString("BOX collider in layers 3");
+        colliders.remove(m);
+        colliders.remove(m);
+        assertThat(colliders.count()).isEqualTo(9);
+        scene.components().set(m, EffectCollider.TYPE, EffectCollider.plane(1));
+        effects.advance(0.01);
+        assertThat(colliders.count()).as("set through the components").isEqualTo(10);
     }
 
     @Test

@@ -25,6 +25,16 @@ final class Placement {
         }
     }
 
+    /** Writes {@code node}'s world position and rotation to {@code place[0..6]}. */
+    static void place(SceneGraph scene, long node, double[] place) {
+        TransformArray world = scene.worldTransforms();
+        MemorySegment s = world.segment();
+        long base = NodeHandle.index(node) * world.stride();
+        for (int i = 0; i < 7; i++) {
+            place[i] = s.get(ValueLayout.JAVA_DOUBLE, base + 8L * i);
+        }
+    }
+
     /** The squared distance between point {@code a} of {@code pa} and point {@code b} of {@code pb}. */
     static double distanceSquared(double[] pa, int a, double[] pb, int b) {
         double dx = pa[3 * a] - pb[3 * b];

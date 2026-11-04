@@ -11,6 +11,10 @@ import com.truesim.scene.animation.Skeleton;
 import com.truesim.scene.assets.AssetId;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
+import com.truesim.scene.core.CameraLens;
+import com.truesim.scene.core.Components;
+import com.truesim.scene.core.LightSource;
+import com.truesim.scene.core.Pickable;
 import com.truesim.scene.core.SceneGraph;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -208,6 +212,61 @@ class ModelDataTest {
         assertThatIllegalArgumentException().isThrownBy(() -> new ModelData(List.of(
             new ModelData.Node("x", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -2))));
     }
+    @Test
+    void spawningGivesNodesTheirCameraLightAndPickableComponents() {
+        SceneGraph scene = new SceneGraph(new ChangeClock());
+        Renderables renderables = new Renderables(scene);
+        List<ModelData.Light> lights = List.of(
+            new ModelData.Light("bulb", ModelData.LightKind.POINT, 1, 0.5, 0.25, 40, 8, 0, 0),
+            new ModelData.Light("torch", ModelData.LightKind.SPOT, 1, 1, 1, 100, 0, 0.2, 0.5),
+            new ModelData.Light("sun", ModelData.LightKind.DIRECTIONAL, 1, 1, 0.9, 3, 5, 0, 0));
+        List<ModelData.Camera> cameras = List.of(ModelData.Camera.perspective("eye", 1.1, 0, 0.05, 0),
+            ModelData.Camera.orthographic("map", 4, 3, 1, 21));
+        ModelData model = new ModelData(List.of(
+            new ModelData.Node("car", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1, List.of(), -1,
+                List.of(), -1, Pickable.Shape.MESH),
+            new ModelData.Node("body", 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(PAINT), true, 0, List.of(), -1,
+                List.of(), 0),
+            ModelData.Node.of("wheel", 0, WHEEL, List.of()).withPick(Pickable.Shape.BOUNDS),
+            ModelData.Node.of("trunk", 0, null, List.of()),
+            ModelData.Node.of("lid", 3, BODY, List.of()),
+            new ModelData.Node("lamp", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(), true, 1, List.of(), -1,
+                List.of(), 1),
+            new ModelData.Node("sky", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, 2)),
+            lights, List.of(), cameras);
+        long[] nodes = model.spawn(scene, renderables, scene.create());
+        Components c = scene.components();
+        assertThat(c.get(nodes[0], Pickable.TYPE).shape()).as("its own mark, on a group").isEqualTo(Pickable.Shape.MESH);
+        assertThat(c.get(nodes[1], Pickable.TYPE).shape()).as("inherited from the group").isEqualTo(Pickable.Shape.MESH);
+        assertThat(c.get(nodes[2], Pickable.TYPE).shape()).as("its own").isEqualTo(Pickable.Shape.BOUNDS);
+        assertThat(c.has(nodes[3], Pickable.TYPE)).as("a group says nothing: passes it on").isFalse();
+        assertThat(c.get(nodes[4], Pickable.TYPE).shape()).isEqualTo(Pickable.Shape.MESH);
+        assertThat(c.has(nodes[5], Pickable.TYPE)).isFalse();
+        LightSource bulb = c.get(nodes[1], LightSource.TYPE);
+        assertThat(bulb.kind()).isEqualTo(LightSource.Kind.POINT);
+        assertThat(bulb.green()).isEqualTo(0.5f);
+        assertThat(bulb.intensity()).isEqualTo(40);
+        assertThat(bulb.range()).isEqualTo(8);
+        LightSource torch = c.get(nodes[5], LightSource.TYPE);
+        assertThat(torch.kind()).isEqualTo(LightSource.Kind.SPOT);
+        assertThat(torch.range()).as("no range: the inverse square").isEqualTo(LightSource.NO_RANGE);
+        assertThat(torch.outerCone()).isEqualTo(0.5);
+        LightSource sun = c.get(nodes[6], LightSource.TYPE);
+        assertThat(sun.kind()).isEqualTo(LightSource.Kind.DIRECTIONAL);
+        assertThat(sun.range()).as("a directional light has none").isEqualTo(LightSource.NO_RANGE);
+        CameraLens eye = c.get(nodes[1], CameraLens.TYPE);
+        assertThat(eye.orthographic()).isFalse();
+        assertThat(eye.fovY()).isEqualTo(1.1);
+        assertThat(eye.near()).isEqualTo(0.05);
+        CameraLens map = c.get(nodes[5], CameraLens.TYPE);
+        assertThat(map.orthographic()).isTrue();
+        assertThat(map.halfHeight()).isEqualTo(3);
+        assertThat(map.depth()).isEqualTo(20);
+        assertThat(c.has(nodes[0], CameraLens.TYPE)).isFalse();
+        assertThat(model.nodes().get(2).withoutSkin().pick()).as("kept").isEqualTo(Pickable.Shape.BOUNDS);
+        assertThatIllegalArgumentException().isThrownBy(() -> model.nodes().get(0).withPick(Pickable.Shape.CUSTOM));
+    }
+
     @Test
     void linesAreCheckedAndNamedByNodes() {
         AssetRef<LineData> outline = AssetRef.of(RenderAssets.LINES, new AssetId(3, 1));

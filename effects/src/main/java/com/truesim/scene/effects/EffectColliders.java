@@ -2,6 +2,7 @@ package com.truesim.scene.effects;
 
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.common.math.TransformArray;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
 import java.lang.foreign.MemorySegment;
@@ -14,7 +15,9 @@ import java.util.Objects;
  * each on a node (moving and turning with it) and in layers that {@link Collide#colliders collision modules} pick by
  * mask, as Godot's particle colliders are. A scene's effects have one set ({@link Effects#colliders()}); each
  * {@link Effects#advance} takes their nodes' world transforms, so the GPU kernel and {@link CpuSimulation} see the
- * same colliders. Sizes are in metres: node scales do not apply. A collider whose node is removed goes with it.
+ * same colliders. Sizes are in metres: node scales do not apply. Colliders are {@link EffectCollider} components of
+ * their nodes (application-api.md D46): saved with the scene, gone with their nodes, one per node (adding another
+ * replaces it); their indices here hold from one advance (or add or remove) to the next.
  *
  * <pre>{@code
  * EffectColliders colliders = effects.colliders();
@@ -42,6 +45,8 @@ public final class EffectColliders {
     private static final Kind[] KINDS = Kind.values();
 
     private final SceneGraph scene;
+    private final ComponentStore<EffectCollider> store;
+    // The colliders as of the last advance (or add or remove), by index.
     private long[] nodes = new long[4];
     private int[] kinds = new int[4];
     private int[] layers = new int[4];
@@ -53,105 +58,89 @@ public final class EffectColliders {
     /** Colliders on nodes of {@code scene}. */
     EffectColliders(SceneGraph scene) {
         this.scene = Objects.requireNonNull(scene, "scene");
+        this.store = scene.components().store(EffectCollider.TYPE);
     }
 
     /** A plane: the XZ plane of {@code node}, particles kept on its +Y side; in {@code layers}. */
     public void plane(long node, int layers) {
         checkOwner();
-        add(node, Kind.PLANE, layers, 0, 0, 0);
+        add(node, EffectCollider.plane(layers));
     }
 
     /** A sphere of {@code radius} about {@code node}. */
     public void sphere(long node, float radius, int layers) {
         checkOwner();
-        add(node, Kind.SPHERE, layers, radius, radius, radius);
+        add(node, EffectCollider.sphere(radius, layers));
     }
 
     /** A box of half extents {@code x}, {@code y} and {@code z} along {@code node}'s axes. */
     public void box(long node, float x, float y, float z, int layers) {
         checkOwner();
-        add(node, Kind.BOX, layers, x, y, z);
+        add(node, EffectCollider.box(x, y, z, layers));
     }
 
     /** A capsule of {@code radius} about {@code node}'s Y axis from {@code -halfLength} to {@code halfLength}. */
     public void capsule(long node, float radius, float halfLength, int layers) {
         checkOwner();
-        add(node, Kind.CAPSULE, layers, radius, halfLength, 0);
+        add(node, EffectCollider.capsule(radius, halfLength, layers));
     }
 
-    @AllowAllocation("colliders are added when the scene is set up")
-    private void add(long node, Kind kind, int mask, float x, float y, float z) {
+    private void add(long node, EffectCollider collider) {
         if (!scene.contains(node)) {
             throw new IllegalArgumentException("Not a node of the scene: " + NodeHandle.toString(node));
         }
-        if (mask < 0 || mask > ALL_LAYERS) {
-            throw new IllegalArgumentException("Not a layer mask of 24 bits: " + mask);
-        }
-        if (!(x >= 0 && y >= 0 && z >= 0)) {
-            throw new IllegalArgumentException("Not a size: " + x + ", " + y + ", " + z);
-        }
-        if (count == nodes.length) {
-            int n = 2 * count;
-            nodes = Arrays.copyOf(nodes, n);
-            kinds = Arrays.copyOf(kinds, n);
-            layers = Arrays.copyOf(layers, n);
-            sizes = Arrays.copyOf(sizes, 3 * n);
-            positions = Arrays.copyOf(positions, 3 * n);
-            rotations = Arrays.copyOf(rotations, 4 * n);
-        }
-        int i = count++;
-        nodes[i] = node;
-        kinds[i] = kind.ordinal();
-        layers[i] = mask;
-        sizes[3 * i] = x;
-        sizes[3 * i + 1] = y;
-        sizes[3 * i + 2] = z;
-        take(i);
+        store.set(node, collider);
+        snapshot();
     }
 
-    /** Removes the colliders on {@code node}. */
+    /** Removes the collider on {@code node}. */
     public void remove(long node) {
         checkOwner();
-        int kept = 0;
-        for (int i = 0; i < count; i++) {
-            if (nodes[i] != node) {
-                move(i, kept++);
-            }
+        if (store.remove(node)) {
+            snapshot();
         }
-        count = kept;
     }
 
-    private void move(int from, int to) {
-        nodes[to] = nodes[from];
-        kinds[to] = kinds[from];
-        layers[to] = layers[from];
-        System.arraycopy(sizes, 3 * from, sizes, 3 * to, 3);
-        System.arraycopy(positions, 3 * from, positions, 3 * to, 3);
-        System.arraycopy(rotations, 4 * from, rotations, 4 * to, 4);
-    }
-
-    /** Takes the colliders' nodes' world transforms; those of removed nodes go. Allocates nothing. */
+    /** Takes the colliders' nodes' world transforms (a removed node took its collider with it). Allocates nothing. */
     void update() {
-        int kept = 0;
-        for (int i = 0; i < count; i++) {
-            if (scene.contains(nodes[i])) {
-                move(i, kept);
-                take(kept++);
-            }
-        }
-        count = kept;
+        snapshot();
     }
 
-    private void take(int i) {
+    /** Takes the store's colliders, where their nodes are now. */
+    private void snapshot() {
+        int n = store.size();
+        if (n > nodes.length) {
+            grow(Math.max(n, 2 * nodes.length));
+        }
         TransformArray world = scene.worldTransforms();
         MemorySegment s = world.segment();
-        long base = NodeHandle.index(nodes[i]) * world.stride();
-        for (int axis = 0; axis < 3; axis++) {
-            positions[3 * i + axis] = s.get(ValueLayout.JAVA_DOUBLE, base + 8L * axis);
+        for (int i = 0; i < n; i++) {
+            EffectCollider c = store.value(i);
+            nodes[i] = store.node(i);
+            kinds[i] = c.kind().ordinal();
+            layers[i] = c.layers();
+            for (int axis = 0; axis < 3; axis++) {
+                sizes[3 * i + axis] = c.size(axis);
+            }
+            long base = NodeHandle.index(nodes[i]) * world.stride();
+            for (int axis = 0; axis < 3; axis++) {
+                positions[3 * i + axis] = s.get(ValueLayout.JAVA_DOUBLE, base + 8L * axis);
+            }
+            for (int axis = 0; axis < 4; axis++) {
+                rotations[4 * i + axis] = s.get(ValueLayout.JAVA_DOUBLE, base + 24 + 8L * axis);
+            }
         }
-        for (int axis = 0; axis < 4; axis++) {
-            rotations[4 * i + axis] = s.get(ValueLayout.JAVA_DOUBLE, base + 24 + 8L * axis);
-        }
+        count = n;
+    }
+
+    @AllowAllocation("colliders are added when the scene is set up")
+    private void grow(int n) {
+        nodes = Arrays.copyOf(nodes, n);
+        kinds = Arrays.copyOf(kinds, n);
+        layers = Arrays.copyOf(layers, n);
+        sizes = Arrays.copyOf(sizes, 3 * n);
+        positions = Arrays.copyOf(positions, 3 * n);
+        rotations = Arrays.copyOf(rotations, 4 * n);
     }
 
     /** How many colliders there are. */

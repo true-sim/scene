@@ -2,6 +2,7 @@ package com.truesim.scene.audio;
 
 import com.truesim.annotations.AllowAllocation;
 import com.truesim.common.state.ChangeClock;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
 import java.util.Arrays;
@@ -18,12 +19,16 @@ import java.util.Objects;
  * sounds.play(TV_SPEAKER, tvNode).input(cctv);
  * }</pre>
  *
+ * <p>Listeners are {@link AudioListener} components on their nodes (application-api.md D46): saved with the scene,
+ * gone with their nodes, and set through the scene's components as well as here. A listener's id is its node's handle;
+ * a node has one listener at most (adding another replaces it).
+ *
  * <p>The listener graph has an edge M → L when rendering listener L hears a sound playing M's mix. After each
  * {@link Sounds#advance}, {@link #order} lists the rendering listeners so that each comes after those it hears
  * (rendered in that order, a chain adds no delay); edges closing a cycle are {@link #delayed} (they read the previous
  * block: one block of delay, which also makes feedback well defined); edges past a chain of {@value #MAX_CHAIN}
- * rendering listeners are {@link #cut}. A listener never hears its own re-emission (no self edge). Ids carry a
- * generation, as sound ids do. Used from the scene's thread; reading and the graph allocate nothing once grown.
+ * rendering listeners are {@link #cut}. A listener never hears its own re-emission (no self edge). Used from the
+ * scene's thread; reading and the graph allocate nothing once grown.
  */
 public final class Listeners {
 
@@ -36,26 +41,23 @@ public final class Listeners {
         void visit(long listener);
     }
 
-    private static final byte FREE = 0;
-    private static final byte DEVICE = 1;
-    private static final byte RENDER = 2;
     private static final byte EDGE = 0;
     private static final byte DELAYED = 1;
     private static final byte CUT = 2;
 
     private final SceneGraph scene;
     private final ChangeClock clock;
-    private int slots;
-    private int size;
-    private int version;
-    private byte[] kinds = new byte[4];
-    private int[] generations = new int[4];
-    private long[] nodes = new long[4];
-    private ListenerMix[] mixes = new ListenerMix[4];
-    private double[] positions = new double[12];
-    private double[] rotations = new double[16];
+    private final ComponentStore<AudioListener> store; // null for the UI store, which places nothing
 
-    // The graph, rebuilt each advance.
+    // The listeners as of the last advance (or add or remove): their slots for the store's own work.
+    private int slots;
+    private long[] nodes = new long[4];
+    private AudioListener[] values = new AudioListener[4];
+    private double[] positions = new double[12];
+
+    // The graph, rebuilt each advance, over the slots it was solved for.
+    private long[] solved = new long[4];
+    private int solvedCount;
     private int edgeCount;
     private int[] edgeFrom = new int[8];
     private int[] edgeTo = new int[8];
@@ -72,141 +74,106 @@ public final class Listeners {
     Listeners(SceneGraph scene, ChangeClock clock) {
         this.scene = scene;
         this.clock = clock;
+        this.store = scene == null ? null : scene.components().store(AudioListener.TYPE);
     }
 
     /** A device listener on {@code node}. */
     @AllowAllocation("a handle per listener")
     public Listener device(long node) {
         checkOwner();
-        return new Listener(this, add(DEVICE, node, null));
+        return new Listener(this, add(node, AudioListener.device()));
     }
 
     /** A rendering listener on {@code node}, mixing as {@code mix} says. */
     @AllowAllocation("a handle per listener")
     public Listener render(long node, ListenerMix mix) {
         checkOwner();
-        return new Listener(this, add(RENDER, node, Objects.requireNonNull(mix, "mix")));
+        return new Listener(this, add(node, AudioListener.render(Objects.requireNonNull(mix, "mix"))));
     }
 
-    private long add(byte kind, long node, ListenerMix mix) {
+    private long add(long node, AudioListener listener) {
         if (scene == null) {
             throw new IllegalStateException("The UI store has no listeners: its sounds are not placed");
         }
         if (!scene.contains(node)) {
             throw new IllegalArgumentException("Not a node of the scene: " + NodeHandle.toString(node));
         }
-        int slot = 0;
-        while (slot < slots && kinds[slot] != FREE) {
-            slot++;
-        }
-        if (slot == slots) {
-            if (slots == kinds.length) {
-                grow();
-            }
-            slots++;
-        }
-        kinds[slot] = kind;
-        generations[slot]++;
-        nodes[slot] = node;
-        mixes[slot] = mix;
-        Placement.place(scene, node, positions, rotations, slot);
-        size++;
-        version++;
-        return id(slot);
+        Placement.place(scene, node, listener.place);
+        store.set(node, listener);
+        snapshot();
+        return node;
     }
 
-    @AllowAllocation("growing with the listeners")
-    private void grow() {
-        int n = 2 * kinds.length;
-        kinds = Arrays.copyOf(kinds, n);
-        generations = Arrays.copyOf(generations, n);
-        nodes = Arrays.copyOf(nodes, n);
-        mixes = Arrays.copyOf(mixes, n);
-        positions = Arrays.copyOf(positions, 3 * n);
-        rotations = Arrays.copyOf(rotations, 4 * n);
-        order = Arrays.copyOf(order, n);
-        marks = Arrays.copyOf(marks, n);
-        depths = Arrays.copyOf(depths, n);
-        stack = Arrays.copyOf(stack, n);
-        stackEdge = Arrays.copyOf(stackEdge, n);
-    }
-
-    private long id(int slot) {
-        return (long) generations[slot] << 32 | slot;
-    }
-
-    /** The slot of a listener's id, or -1 once removed. */
+    /** The slot of a listener's id as of the last snapshot, or -1. */
     int slot(long listener) {
-        int slot = (int) listener;
-        return slot >= 0 && slot < slots && kinds[slot] != FREE && generations[slot] == (int) (listener >>> 32) ? slot
-            : -1;
+        for (int slot = 0; slot < slots; slot++) {
+            if (nodes[slot] == listener) {
+                return slot;
+            }
+        }
+        return -1;
     }
 
     /** Removes {@code listener}; nothing for one removed already. */
     public void remove(long listener) {
         checkOwner();
-        int slot = slot(listener);
-        if (slot >= 0) {
-            kinds[slot] = FREE;
-            mixes[slot] = null;
-            size--;
-            version++;
+        if (store != null && store.remove(listener)) {
+            snapshot();
         }
     }
 
     public boolean alive(long listener) {
-        return slot(listener) >= 0;
+        return store != null && store.has(listener);
     }
 
     /** Whether {@code listener} renders a mix of its own (else it is a device listener). */
     public boolean rendering(long listener) {
-        return kinds[held(listener)] == RENDER;
+        return held(listener).rendering();
     }
 
     public long node(long listener) {
-        return nodes[held(listener)];
+        held(listener);
+        return listener;
     }
 
     /** A rendering listener's mix; {@code null} for a device listener. */
     public ListenerMix mix(long listener) {
-        return mixes[held(listener)];
+        return held(listener).mix();
     }
 
     /** Component {@code axis} of where {@code listener} is, as of the last advance. */
     public double position(long listener, int axis) {
-        return positions[3 * held(listener) + Objects.checkIndex(axis, 3)];
+        return held(listener).position(axis);
     }
 
     /** Component {@code axis} (x, y, z, w) of {@code listener}'s rotation, as of the last advance. */
     public double rotation(long listener, int axis) {
-        return rotations[4 * held(listener) + Objects.checkIndex(axis, 4)];
+        return held(listener).rotation(axis);
     }
 
     /** How many listeners there are. */
     public int size() {
-        return size;
+        return store == null ? 0 : store.size();
     }
 
-    /** A count that changes whenever a listener is added or removed. */
+    /** A count that changes whenever a listener is added, replaced or removed. */
     public int version() {
-        return version;
+        return store == null ? 0 : (int) store.version();
     }
 
-    /** Visits every listener, in slot order. */
+    /** Visits every listener, in the store's packed order. */
     public void forEach(Visitor visitor) {
-        for (int slot = 0; slot < slots; slot++) {
-            if (kinds[slot] != FREE) {
-                visitor.visit(id(slot));
-            }
+        for (int i = 0; i < size(); i++) {
+            visitor.visit(store.node(i));
         }
     }
 
-    private int held(long listener) {
-        int slot = slot(listener);
-        if (slot < 0) {
+    private AudioListener held(long listener) {
+        AudioListener value = store == null ? null : store.get(listener);
+        if (value == null) {
             throw new IllegalArgumentException(gone(listener));
         }
-        return slot;
+        return value;
     }
 
     @AllowAllocation("diagnostics")
@@ -221,39 +188,68 @@ public final class Listeners {
     }
 
     boolean renderingAt(int slot) {
-        return kinds[slot] == RENDER;
+        return values[slot].rendering();
     }
 
     ListenerMix mixAt(int slot) {
-        return mixes[slot];
+        return values[slot].mix();
     }
 
     boolean deviceAt(int slot) {
-        return kinds[slot] == DEVICE;
+        return !values[slot].rendering();
     }
 
     double[] positions() {
         return positions;
     }
 
-    /** Takes the listeners' places from their nodes; a listener whose node was removed is removed. */
+    /** Takes the listeners' places from their nodes (a removed node took its listener with it). */
     void update() {
-        for (int slot = 0; slot < slots; slot++) {
-            if (kinds[slot] != FREE) {
-                if (scene.contains(nodes[slot])) {
-                    Placement.place(scene, nodes[slot], positions, rotations, slot);
-                } else {
-                    remove(id(slot));
-                }
-            }
+        for (int i = 0; i < size(); i++) {
+            Placement.place(scene, store.node(i), store.value(i).place);
         }
+        snapshot();
+    }
+
+    /** Takes the store's listeners as the slots. */
+    private void snapshot() {
+        int n = size();
+        if (n > nodes.length) {
+            grow(n);
+        }
+        for (int slot = 0; slot < n; slot++) {
+            nodes[slot] = store.node(slot);
+            AudioListener value = store.value(slot);
+            values[slot] = value;
+            System.arraycopy(value.place, 0, positions, 3 * slot, 3);
+        }
+        for (int slot = n; slot < slots; slot++) {
+            values[slot] = null;
+        }
+        slots = n;
+    }
+
+    @AllowAllocation("growing with the listeners")
+    private void grow(int at) {
+        int n = Math.max(at, 2 * nodes.length);
+        nodes = Arrays.copyOf(nodes, n);
+        values = Arrays.copyOf(values, n);
+        positions = Arrays.copyOf(positions, 3 * n);
+        solved = Arrays.copyOf(solved, n);
+        order = Arrays.copyOf(order, n);
+        marks = Arrays.copyOf(marks, n);
+        depths = Arrays.copyOf(depths, n);
+        stack = Arrays.copyOf(stack, n);
+        stackEdge = Arrays.copyOf(stackEdge, n);
     }
 
     // The graph.
 
-    /** Starts the graph over: no edges. */
+    /** Starts the graph over: no edges, over the slots as they are now. */
     void clearGraph() {
         edgeCount = 0;
+        System.arraycopy(nodes, 0, solved, 0, slots);
+        solvedCount = slots;
     }
 
     /** Adds the edge M → L for rendering listeners in slots {@code from} and {@code to}, once. */
@@ -285,13 +281,14 @@ public final class Listeners {
      * edges reaching past a chain of {@link #MAX_CHAIN} are cut.
      */
     void solveGraph() {
-        Arrays.fill(marks, 0, slots, (byte) 0);
+        int n = solvedCount;
+        Arrays.fill(marks, 0, n, (byte) 0);
         orderCount = 0;
         cycles = 0;
         cuts = 0;
         int finished = 0;
-        for (int root = 0; root < slots; root++) {
-            if (kinds[root] != RENDER || marks[root] != 0) {
+        for (int root = 0; root < n; root++) {
+            if (!values[root].rendering() || marks[root] != 0) {
                 continue;
             }
             int top = 0;
@@ -306,7 +303,7 @@ public final class Listeners {
                 }
                 if (e == edgeCount) {
                     marks[at] = 2;
-                    order[slots - 1 - finished++] = at; // reverse finishing order, filled from the end
+                    order[n - 1 - finished++] = at; // reverse finishing order, filled from the end
                     top--;
                     continue;
                 }
@@ -322,7 +319,7 @@ public final class Listeners {
                 }
             }
         }
-        System.arraycopy(order, slots - finished, order, 0, finished);
+        System.arraycopy(order, n - finished, order, 0, finished);
         orderCount = finished;
         for (int i = 0; i < orderCount; i++) {
             depths[order[i]] = 0;
@@ -349,7 +346,7 @@ public final class Listeners {
 
     /** Rendering listener {@code i} in rendering order: each after those it hears through a chain. */
     public long order(int i) {
-        return id(order[Objects.checkIndex(i, orderCount)]);
+        return solved[order[Objects.checkIndex(i, orderCount)]];
     }
 
     /** Whether rendering listener {@code to} hears {@code from} at all, through a sound playing its mix. */
@@ -370,11 +367,20 @@ public final class Listeners {
     }
 
     private int edgeIndex(long from, long to) {
-        int f = slot(from);
-        int t = slot(to);
+        int f = solvedSlot(from);
+        int t = solvedSlot(to);
         for (int e = 0; e < edgeCount; e++) {
             if (edgeFrom[e] == f && edgeTo[e] == t) {
                 return e;
+            }
+        }
+        return -1;
+    }
+
+    private int solvedSlot(long listener) {
+        for (int slot = 0; slot < solvedCount; slot++) {
+            if (solved[slot] == listener) {
+                return slot;
             }
         }
         return -1;
