@@ -33,6 +33,11 @@ class RenderablePickingTest {
 
     /** A unit square in z = 0, its corners weighing joint 0 alone when {@code skinned}. */
     private static MeshData quad(boolean skinned) {
+        return quad(skinned, false);
+    }
+
+    /** {@link #quad(boolean)}, with a morph target lifting every corner 1 along +Z when {@code morph}. */
+    private static MeshData quad(boolean skinned, boolean morph) {
         float[] positions = {-0.5f, -0.5f, 0, 0.5f, -0.5f, 0, 0.5f, 0.5f, 0, -0.5f, 0.5f, 0};
         MeshData.Builder b = MeshData.builder(skinned ? VertexFormat.of(VertexAttribute.JOINTS,
             VertexAttribute.WEIGHTS) : VertexFormat.POSITIONS_ONLY, 4).positions(positions);
@@ -42,6 +47,9 @@ class RenderablePickingTest {
                 weights[4 * v] = 1;
             }
             b.joints(new int[16]).weights(weights).jointPalette(new int[] {0});
+        }
+        if (morph) {
+            b.morphTarget("lift", new float[] {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1}, null, null);
         }
         return b.meshlet(new int[] {0, 1, 2, 3}, new int[] {0, 1, 2, 0, 2, 3}, 0, new Sphere(0, 0, 0, 1), Cone.NONE)
             .build();
@@ -162,6 +170,43 @@ class RenderablePickingTest {
             .lod(new Sphere(0, 0, 0, 1), 1, new Sphere(0, 0, 0, 1), Double.POSITIVE_INFINITY)
             .build();
         assertThat(PickMeshes.build(mesh).triangleCount()).as("the coarser meshlet left out").isOne();
+    }
+
+    @Test
+    void morphTargetsMoveTheVerticesBeforeSkinning() {
+        AssetRef<MeshData> lifted = AssetRef.of(RenderAssets.MESH, new AssetId(7, 4));
+        AssetRef<MeshData> skinnedLifted = AssetRef.of(RenderAssets.MESH, new AssetId(7, 5));
+        loaded.put(lifted, quad(false, true));
+        loaded.put(skinnedLifted, quad(true, true));
+        long face = node(lifted);
+        renderables.setMorphWeights(face, new double[] {0}, 0, 1);
+        update();
+        PickHits hits = new PickHits(1);
+        picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
+        assertThat(hits.distance(0)).as("no weights: at rest, the shared mesh").isCloseTo(10, within(1e-6));
+        assertThat(picking.geometry(face)).isSameAs(picking.pickMeshes().of(loaded.get(lifted)));
+        renderables.setMorphWeights(face, new double[] {0.5}, 0, 1);
+        picker.beginFrame();
+        picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
+        assertThat(hits.distance(0)).as("lifted half way").isCloseTo(9.5, within(1e-3));
+        long poses = picking.poses();
+        picker.beginFrame();
+        picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
+        assertThat(picking.poses()).as("the same weights: not posed again").isEqualTo(poses);
+        renderables.setMorphWeights(face, new double[] {1}, 0, 1);
+        picker.beginFrame();
+        picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
+        assertThat(hits.distance(0)).isCloseTo(9, within(1e-3));
+        // morphed, then skinned: lifted, then carried by the bone
+        long body = node(skinnedLifted);
+        long bone = scene.create();
+        scene.setTranslation(bone, 2, 0, 0);
+        renderables.setSkin(body, new SkinBinding(new long[] {bone}, IDENTITY));
+        renderables.setMorphWeights(body, new double[] {1}, 0, 1);
+        update();
+        picker.pick(2.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
+        assertThat(hits.node(0)).isEqualTo(body);
+        assertThat(hits.distance(0)).isCloseTo(9, within(1e-3));
     }
 
     @Test

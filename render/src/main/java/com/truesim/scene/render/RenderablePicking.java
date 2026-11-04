@@ -22,7 +22,8 @@ import java.util.function.Function;
  * a skinned one is posed on the CPU for its node, against the joints as they are now: its vertices skinned by their
  * joints' world transforms relative to the node (as the renderer poses them), then its triangle BVH refit, only when a
  * ray reaches its box and its joints moved since the last pose. So a character is picked where it is drawn this frame,
- * without waiting for the GPU (application-api.md, picking: no added latency). Morph targets are not applied.
+ * without waiting for the GPU (application-api.md, picking: no added latency). Morph targets move the vertices
+ * first, by the renderable's weights ({@link Renderables#setMorphWeights}), as the renderer applies them.
  *
  * <pre>{@code
  * picker.resolver(new RenderablePicking(renderables, ref -> cache.loaded(ref)));   // null until a mesh is loaded
@@ -34,6 +35,10 @@ import java.util.function.Function;
 public final class RenderablePicking implements ScenePicker.Resolver {
 
     private static final ValueLayout.OfDouble DOUBLE = ValueLayout.JAVA_DOUBLE;
+    private static final ValueLayout.OfShort U16 = ValueLayout.JAVA_SHORT_UNALIGNED
+        .withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
+    private static final ValueLayout.OfInt U32 = ValueLayout.JAVA_INT_UNALIGNED
+        .withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
 
     private final Renderables renderables;
     private final Function<AssetRef<MeshData>, MeshData> meshes;
@@ -81,21 +86,28 @@ public final class RenderablePicking implements ScenePicker.Resolver {
         if (mesh == null) {
             return null;
         }
-        SkinBinding skin = renderables.skin(node);
-        if (skin == null || mesh.jointCount() == 0) {
+        SkinBinding binding = renderables.skin(node);
+        SkinBinding skin = binding != null && mesh.jointCount() > 0 ? binding : null;
+        if (skin == null && !morphed(node, mesh)) {
             return pickMeshes.of(mesh);
         }
         Skinned s = skinned(node, mesh, skin);
         long moved = scene.version(node);
         int present = 0;
-        for (int j = 0; j < skin.jointCount(); j++) {
+        for (int j = 0; skin != null && j < skin.jointCount(); j++) {
             long jointNode = skin.joint(j);
             if (scene.contains(jointNode)) {
                 moved = Math.max(moved, scene.version(jointNode));
                 present++;
             }
         }
-        if (moved != s.posedAt || present != s.present) { // moved, or a joint was removed
+        boolean reweighed = false;
+        for (int t = 0; t < s.morphWeights.length; t++) {
+            float w = renderables.morphWeight(node, t);
+            reweighed |= w != s.morphWeights[t];
+            s.morphWeights[t] = w;
+        }
+        if (moved != s.posedAt || present != s.present || reweighed) { // moved, a joint removed, weights changed
             pose(node, s);
             s.posedAt = moved;
             s.present = present;
@@ -103,7 +115,18 @@ public final class RenderablePicking implements ScenePicker.Resolver {
         return s.mesh;
     }
 
-    /** The skinned copy of {@code node}, made (or remade, for another mesh or skin) when needed. */
+    /** Whether {@code node}'s renderable weighs any of its mesh's morph targets. */
+    private boolean morphed(long node, MeshData mesh) {
+        int count = Math.min(renderables.morphWeightCount(node), mesh.morphTargetCount());
+        for (int t = 0; t < count; t++) {
+            if (renderables.morphWeight(node, t) != 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The posed copy of {@code node}, made (or remade, for another mesh or skin) when needed. */
     private Skinned skinned(long node, MeshData mesh, SkinBinding skin) {
         int slot = NodeHandle.index(node);
         if (slot >= skinned.length) {
@@ -122,9 +145,18 @@ public final class RenderablePicking implements ScenePicker.Resolver {
         skinned = Arrays.copyOf(skinned, Math.max(length, skinned.length * 2));
     }
 
-    /** Poses {@code s}'s vertices: each the weighted sum of its joints' skinning matrices applied to its rest place. */
+    /**
+     * Poses {@code s}'s vertices as the renderer does: each rest place moved by its morph targets' deltas times their
+     * weights (glTF: morphing before skinning), then, skinned, the weighted sum of its joints' skinning matrices applied.
+     */
     private void pose(long node, Skinned s) {
         poses++;
+        if (s.skin == null) {
+            morph(s, s.mesh.positions());
+            s.mesh.refit();
+            return;
+        }
+        float[] rest = morph(s, s.morphed);
         TransformArray world = scene.worldTransforms();
         matrix(world, NodeHandle.index(node), nodeMatrix);
         invert(nodeMatrix, nodeInverse);
@@ -144,7 +176,6 @@ public final class RenderablePicking implements ScenePicker.Resolver {
             multiply(joint, bind, s.scratch);
             multiply(nodeInverse, s.scratch, s.matrices, j * 12);
         }
-        float[] rest = s.rest;
         float[] out = s.mesh.positions();
         int vertices = rest.length / 3;
         for (int v = 0; v < vertices; v++) {
@@ -170,6 +201,21 @@ public final class RenderablePicking implements ScenePicker.Resolver {
             out[v * 3 + 2] = (float) pz;
         }
         s.mesh.refit();
+    }
+
+    /** {@code s}'s rest places moved by its morph deltas and weights, into {@code out}; returns it. */
+    private static float[] morph(Skinned s, float[] out) {
+        System.arraycopy(s.rest, 0, out, 0, s.rest.length);
+        int vertices = s.rest.length / 3;
+        for (int v = 0; v < vertices; v++) {
+            for (int r = s.recordStart[v]; r < s.recordStart[v + 1]; r++) {
+                float w = s.morphWeights[s.recordTarget[r]];
+                out[v * 3] += w * s.recordDelta[r * 3];
+                out[v * 3 + 1] += w * s.recordDelta[r * 3 + 1];
+                out[v * 3 + 2] += w * s.recordDelta[r * 3 + 2];
+            }
+        }
+        return out;
     }
 
     /** Slot {@code slot}'s transform (translation, rotation, scale) as 3 rows of 4. */
@@ -259,6 +305,11 @@ public final class RenderablePicking implements ScenePicker.Resolver {
         final double[] matrices;
         final double[] scratch = new double[12];
         final PickMesh mesh;
+        final float[] morphed;      // the rest places morphed, before skinning
+        final float[] morphWeights; // the weights posed with
+        final int[] recordStart;    // by vertex: its first morph record, the next vertex's after its last
+        final int[] recordTarget;
+        final float[] recordDelta;
         long posedAt = -1;
         int present;
 
@@ -278,6 +329,9 @@ public final class RenderablePicking implements ScenePicker.Resolver {
                 rest[v * 3] = (float) p[0];
                 rest[v * 3 + 1] = (float) p[1];
                 rest[v * 3 + 2] = (float) p[2];
+                if (skin == null) {
+                    continue;
+                }
                 data.joints(v, j);
                 data.unorm4(VertexAttribute.WEIGHTS, v, p);
                 for (int i = 0; i < 4; i++) {
@@ -285,8 +339,27 @@ public final class RenderablePicking implements ScenePicker.Resolver {
                     weights[v * 4 + i] = (float) p[i];
                 }
             }
-            matrices = new double[12 * skin.jointCount()];
+            matrices = new double[12 * (skin == null ? 0 : skin.jointCount())];
             mesh = new PickMesh(rest.clone(), PickMeshes.indices(data));
+            morphed = new float[rest.length];
+            morphWeights = new float[data.morphTargetCount()];
+            // the morph records, by vertex: each a target and its position delta
+            MemorySegment offsets = data.morphOffsets();
+            MemorySegment records = data.morphRecords();
+            recordStart = new int[vertices + 1];
+            int count = morphWeights.length == 0 ? 0 : offsets.get(U32, 4L * vertices);
+            recordTarget = new int[count];
+            recordDelta = new float[3 * count];
+            for (int v = 0; v <= vertices && morphWeights.length > 0; v++) {
+                recordStart[v] = offsets.get(U32, 4L * v);
+            }
+            for (int r = 0; r < count; r++) {
+                long o = (long) MeshData.MORPH_RECORD_BYTES * r;
+                recordTarget[r] = records.get(U16, o) & 0xffff;
+                for (int i = 0; i < 3; i++) {
+                    recordDelta[3 * r + i] = Float.float16ToFloat(records.get(U16, o + 2 + 2L * i));
+                }
+            }
         }
     }
 }

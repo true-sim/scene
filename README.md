@@ -591,7 +591,7 @@ picker.pickFrustum(marquee, Pickable.DEFAULT_LAYERS, node -> select(node));
 - **Meshes from renderables:** `RenderablePicking` resolves `Pickable.mesh()` to the node's mesh asset's shared
   `PickMesh` (`PickMeshes`: its leaf meshlets' triangles); a skinned mesh is posed on the CPU for its node against its
   joints as they are now (refit only when a ray reaches it and its joints moved), so characters are picked where they
-  are drawn this frame, with no frame of delay. Morph targets are not applied.
+  are drawn this frame, with no frame of delay; morph targets move the vertices first, by the renderable's weights.
 - **Selection is data:** `Selected` marks selected nodes (saved); `Hovered` marks nodes a pointer is over (runtime
   state). The engine's `SceneSelection` and outline read and write them; game code may too.
 - **Models:** a model node's `pick` (`ModelData.Node.withPick`) makes its spawned node pickable; on a node without a
