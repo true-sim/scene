@@ -20,7 +20,7 @@ example, takes core, world and collision without any render data.
 
 | Module            | Contents                                                                                  | Status      |
 |-------------------|-------------------------------------------------------------------------------------------|-------------|
-| `scene-core`      | node handles, the transform hierarchy, bounds, layers, change tracking, spatial queries   | milestone 1 |
+| `scene-core`      | node handles, the transform hierarchy, bounds, layers, change tracking, spatial queries, components, picking | milestone 1 |
 | `scene-world`     | worlds and instances, cells, data layers, interest sources, multi-level streaming         | milestone 2 |
 | `scene-collision` | each cell's colliders and terrain heights, on common-collision shapes                    | milestone 3 |
 | `scene-assets`    | asset references and the cache; meshes, materials, textures, animation, sprites, tilesets  | milestone 4 |
@@ -534,6 +534,75 @@ vertices and triangles; 64 / 124 by default when built), culled and drawn on the
 - **Measured** (`MeshBuildBenchmark`, 524,288 triangles): flat 445 ms, 5,422 meshlets, 5.5 MB; cluster hierarchy
   715 ms, 12,291 meshlets in 10 levels down to 25, 9.1 MB; six discrete LODs 1.1 s.
 
+### Components
+
+Nodes carry components besides their transforms (the engine's application-api.md D46): cameras, lights, pick shapes,
+listeners, a game's own. A component type is a typed key with a stable name, so saves can name it; its values live in a
+sparse set per type and scene (`ComponentStore`), never in per-node maps, so finding a node's component, adding and
+removing one cost the same however many there are, and the values are packed for iteration:
+
+```java
+public static final ComponentType<Health> HEALTH = ComponentType.of("acme.health", Health.class);
+
+scene.components().set(orc, HEALTH, new Health(40));
+Health h = scene.components().get(orc, HEALTH);                // null without one
+ComponentStore<LightSource> lights = scene.components().store(LightSource.TYPE);
+for (int i = 0; i < lights.size(); i++) { ... lights.node(i) ... lights.value(i) ... }   // allocates nothing
+lights.changesSince(since, (node, changes) -> ...);            // ADDED, CHANGED, REMOVED on the scene's clock
+scene.remove(orc);                                             // its components go with it, logged REMOVED
+```
+
+- **Names:** lower case words joined by dots, dashes or underscores, prefixed by the owner (`truesim.` for the
+  engine's); a name is taken once per process, so plugins cannot shadow each other. `ComponentType.byName` finds a type
+  for a save, once its class is loaded. Runtime state (`Hovered`) is a `transientOf` type, which saves skip.
+- **Changes** follow the scene's rules: stamped on its `ChangeClock`, refused off its owner thread, a log a consumer
+  reads since its mark (rebuilding by iterating when it fell behind). Values changed in place say so with
+  `store.changed(node)`; the engine's own (`CameraLens`, `LightSource`, `Pickable`) count a `version()` their syncs
+  compare instead.
+- **Systems ignore what they do not know:** a type no system reads is carried along (and saved).
+- **Built in:** `CameraLens` (D129: a camera looks along its node's -Z; perspective or orthographic; the engine sets its
+  renderer camera from the node), `LightSource` (point, spot or directional along -Z, colour times candela or lux; the
+  engine places it in its lights), `Pickable`, `Selected`, `Hovered` (below), and scene-audio's `AudioListener` and
+  `ReverbZone`. `ModelData.spawn` gives a model's nodes their cameras, lights and pick shapes.
+
+### Picking
+
+Pointer picking is scene data plus an engine-independent narrow phase; the engine's scene interaction and the UI's scene
+bridge both use it. A node is pickable when it has a `Pickable` component: hit by its box (free: the spatial index has
+tested it), by triangles (its own `PickGeometry`, or its renderable's mesh), or by a test of its own; on pick layers
+(a mask queries ask for), and switched on or off.
+
+```java
+components.set(door, Pickable.TYPE, Pickable.bounds());
+components.set(statue, Pickable.TYPE, Pickable.mesh());                 // its renderable's mesh
+ScenePicker picker = new ScenePicker(scene, index)
+    .resolver(new RenderablePicking(renderables, ref -> cache.loaded(ref)));
+PickHits hits = new PickHits(4);                                         // pass-through goes 4 deep
+picker.beginFrame();                                                     // after scene.update() and index.update()
+picker.pick(ox, oy, oz, dx, dy, dz, 1000, Pickable.DEFAULT_LAYERS, hits);
+hits.node(0); hits.distance(0); hits.part(0); hits.point(0, xyz);        // nearest first
+picker.pickFrustum(marquee, Pickable.DEFAULT_LAYERS, node -> select(node));
+```
+
+- **Cost follows what is pickable:** `SpatialIndex.raycast` with a narrow phase (`RayFilter`); nodes without a
+  pickable return at once, meshes build their triangle BVH (`PickMesh`) on the first ray that reaches them.
+- **Once per ray and frame:** a frame's picks are kept, so a second pick of the same ray (bit for bit) copies them:
+  the engine's interaction and the UI picking one pointer cost one raycast.
+- **Meshes from renderables:** `RenderablePicking` resolves `Pickable.mesh()` to the node's mesh asset's shared
+  `PickMesh` (`PickMeshes`: its leaf meshlets' triangles); a skinned mesh is posed on the CPU for its node against its
+  joints as they are now (refit only when a ray reaches it and its joints moved), so characters are picked where they
+  are drawn this frame, with no frame of delay. Morph targets are not applied.
+- **Selection is data:** `Selected` marks selected nodes (saved); `Hovered` marks nodes a pointer is over (runtime
+  state). The engine's `SceneSelection` and outline read and write them; game code may too.
+- **Models:** a model node's `pick` (`ModelData.Node.withPick`) makes its spawned node pickable; on a node without a
+  mesh it passes down to the nodes with meshes below it that say nothing, so a whole car is clickable by its root and
+  events bubble to it. In glTF it is the node extra `"truesim.pickable"`: `"bounds"`, `"mesh"`, or `true` for bounds
+  (`false`, absent or unknown values: not pickable):
+
+  ```json
+  {"name": "door", "mesh": 3, "extras": {"truesim.pickable": "mesh"}}
+  ```
+
 ### Render data: renderables, materials, textures
 
 `scene-render` says what draws on which node, as data; the engine decides how. A renderable is a mesh with a material per
@@ -686,7 +755,9 @@ renders it (`engine-audio`), servers and tools use it without a sound card. The 
 - **`Sounds`**, the sounds of a world, shaped on `Effects`: slots with generations and inert handles, `play` (a handle)
   and `fire` (an id, allocating nothing), a change log on the scene's clock, ticks, pause and time scale, concurrency
   at start, each instance's voices planned from its seed (the same picks on every machine), `Listeners` with the
-  listener graph (order, cycles delayed by a block, chains cut), `ReverbZones`, and `Sounds.ui()`.
+  listener graph (order, cycles delayed by a block, chains cut), `ReverbZones`, and `Sounds.ui()`. Listeners and
+  reverb zones are components of their nodes (`AudioListener`, `ReverbZone`; see "Components"): saved with the
+  scene, gone with their nodes, their ids the nodes' handles.
 - **`Music`** over an `AudioClock`: a `Score` of segments (clips or stems), states with playlists, quantized
   transitions with transition segments and start positions, stems by parameter, stingers and `pauseWith`; it writes
   frame-stamped commands and reports bars, beats, markers and transitions as heard.
