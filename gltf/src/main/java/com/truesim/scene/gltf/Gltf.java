@@ -13,6 +13,7 @@ import com.truesim.scene.assets.PathAssets;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.assets.mesh.VertexAttribute;
 import com.truesim.scene.assets.mesh.VertexFormat;
+import com.truesim.scene.core.Pickable;
 import com.truesim.scene.meshbuild.MeshBuilder;
 import com.truesim.scene.render.ImageImporter;
 import com.truesim.scene.render.LineData;
@@ -60,6 +61,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class Gltf {
 
     private static final List<String> EXTENSIONS = List.of("gltf", "glb");
+    /** The node extra marking a node pickable: {@code "bounds"}, {@code "mesh"}, or {@code true} for bounds. */
+    public static final String PICKABLE_EXTRA = "truesim.pickable";
 
     private final PathAssets paths;
     private final Map<AssetPath, SoftReference<GltfDocument>> documents = new ConcurrentHashMap<>();
@@ -367,7 +370,7 @@ public final class Gltf {
         }
         modelIndex[index] = at;
         out.add(new ModelData.Node(name, parent, t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], mesh,
-            materials, visible, light, lines, skin, weights, GltfDocument.integer(node, "camera", -1)));
+            materials, visible, light, lines, skin, weights, GltfDocument.integer(node, "camera", -1), pick(node)));
         for (double child : GltfDocument.numbers(node, "children")) {
             add(document, file, (int) child, at, out, depth + 1, modelIndex);
         }
@@ -1005,4 +1008,19 @@ public final class Gltf {
             ? TextureData.ColorSpace.LINEAR : TextureData.ColorSpace.SRGB;
         return ImageImporter.read(new ByteArrayInputStream(bytes), colorSpace, path.toString());
     }
+
+    /**
+     * How a node's {@code extras} mark it pickable ({@link #PICKABLE_EXTRA}): {@code "bounds"} or {@code "mesh"} (case
+     * aside), {@code true} for bounds; null without the extra, for {@code false}, and for a value it does not know (a
+     * newer file's: the node is spawned, just not pickable).
+     */
+    static Pickable.Shape pick(Map<String, Object> node) {
+        Object value = GltfDocument.object(node, "extras").get(PICKABLE_EXTRA);
+        if (Boolean.TRUE.equals(value)) {
+            return Pickable.Shape.BOUNDS;
+        }
+        Pickable.Shape shape = value instanceof String name ? Pickable.Shape.named(name) : null;
+        return shape == Pickable.Shape.CUSTOM ? null : shape;
+    }
+
 }

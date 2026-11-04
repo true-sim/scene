@@ -5,6 +5,10 @@ import com.truesim.scene.animation.AnimationClip;
 import com.truesim.scene.animation.Skeleton;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
+import com.truesim.scene.core.CameraLens;
+import com.truesim.scene.core.Components;
+import com.truesim.scene.core.LightSource;
+import com.truesim.scene.core.Pickable;
 import com.truesim.scene.core.SceneGraph;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -201,17 +205,31 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
      * @param skin the index in {@link #skins()} of the skin its mesh is deformed by, or -1
      * @param morphWeights its mesh's morph target weights at rest ({@link MeshData#morphTargetCount()}); empty for none
      * @param camera the index of its camera in {@link #cameras()}, or -1
+     * @param pick how it is picked once spawned ({@link Pickable}), or null for not by itself: on a node without a mesh,
+     *     the nodes with meshes below it that say nothing are picked so (their events bubble up to it)
      */
     public record Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
         double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh, List<AssetRef<MaterialData>> materials,
         boolean visible, int light, List<AssetRef<LineData>> lines, int skin, List<Double> morphWeights,
-        int camera) {
+        int camera, Pickable.Shape pick) {
 
         public Node {
             Objects.requireNonNull(name, "name");
             materials = List.copyOf(materials);
             lines = List.copyOf(lines);
             morphWeights = List.copyOf(morphWeights);
+            if (pick == Pickable.Shape.CUSTOM) {
+                throw new IllegalArgumentException("A model node is picked by its bounds or its mesh, not a custom test");
+            }
+        }
+
+        /** A node not picked by itself. */
+        public Node(String name, int parent, double tx, double ty, double tz, double rx, double ry, double rz,
+            double rw, double sx, double sy, double sz, AssetRef<MeshData> mesh,
+            List<AssetRef<MaterialData>> materials, boolean visible, int light, List<AssetRef<LineData>> lines,
+            int skin, List<Double> morphWeights, int camera) {
+            this(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines, skin,
+                morphWeights, camera, null);
         }
 
         /** A node of no camera. */
@@ -256,7 +274,13 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
         /** This node, of no skin: its mesh drawn as it is. */
         public Node withoutSkin() {
             return new Node(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines,
-                -1, morphWeights, camera);
+                -1, morphWeights, camera, pick);
+        }
+
+        /** This node, picked as {@code shape} says once spawned (null: not by itself). */
+        public Node withPick(Pickable.Shape shape) {
+            return new Node(name, parent, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz, mesh, materials, visible, light, lines,
+                skin, morphWeights, camera, shape);
         }
 
         /** A node at the origin, unrotated and unscaled. */
@@ -369,8 +393,9 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
     /**
      * Places the model's nodes in {@code scene}, its roots under {@code parent} ({@link SceneGraph#create(long)}'s
      * parent: a node of the game's), with their transforms, and their meshes in {@code renderables}. Hidden nodes, and
-     * their children, are put on no layer. Lights are the engine's to place ({@link #lights()}). Returns the scene
-     * nodes, by the model's node index.
+     * their children, are put on no layer. Nodes get their components (application-api.md D46): a {@link CameraLens}
+     * for a camera, a {@link LightSource} for a light (the engine's syncs place them), a {@link Pickable} where the
+     * model marks them pickable ({@link Node#pick()}). Returns the scene nodes, by the model's node index.
      */
     public long[] spawn(SceneGraph scene, Renderables renderables, long parent) {
         return spawn(scene, renderables, parent, null);
@@ -405,7 +430,9 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
                 }
             }
             placed[i] = created;
+            components(scene.components(), node, created);
         }
+        pickables(scene.components(), placed);
         // Skins last: their joints may come after the nodes they deform. Hidden nodes once their children are placed.
         for (int i = 0; i < placed.length; i++) {
             Node node = nodes.get(i);
@@ -422,6 +449,48 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
             }
         }
         return placed;
+    }
+
+    /** Gives a spawned node its camera and light components. */
+    private void components(Components components, Node node, long created) {
+        if (node.camera() >= 0) {
+            Camera c = cameras.get(node.camera());
+            components.set(created, CameraLens.TYPE, c.orthographic()
+                ? CameraLens.orthographic(Math.abs(c.ymag()), c.zfar() - c.znear())
+                : CameraLens.perspective(c.yfov(), c.znear()));
+        }
+        if (node.light() >= 0) {
+            Light l = lights.get(node.light());
+            float r = (float) l.r();
+            float g = (float) l.g();
+            float b = (float) l.b();
+            LightSource source = switch (l.kind()) {
+                case POINT -> LightSource.point(r, g, b, l.intensity());
+                case SPOT -> LightSource.spot(r, g, b, l.intensity(), l.innerCone(), l.outerCone());
+                case DIRECTIONAL -> LightSource.directional(r, g, b, l.intensity());
+            };
+            if (l.range() > 0 && l.kind() != LightKind.DIRECTIONAL) {
+                source.range(l.range());
+            }
+            components.set(created, LightSource.TYPE, source);
+        }
+    }
+
+    /**
+     * Makes the nodes the model marks pickable so: a node with a mesh by its own mark; a node without one passes its
+     * mark down to the nodes with meshes below it that have none of their own.
+     */
+    private void pickables(Components components, long[] placed) {
+        Pickable.Shape[] inherited = new Pickable.Shape[placed.length];
+        for (int i = 0; i < placed.length; i++) {
+            Node node = nodes.get(i);
+            Pickable.Shape from = node.parent() < 0 ? null : inherited[node.parent()];
+            Pickable.Shape own = node.pick() != null ? node.pick() : from;
+            inherited[i] = node.mesh() == null ? own : from;
+            if (own != null && (node.mesh() != null || node.pick() != null)) {
+                components.set(placed[i], Pickable.TYPE, Pickable.of(own));
+            }
+        }
     }
 
     /** The index of the first node called {@code name}, or -1. */

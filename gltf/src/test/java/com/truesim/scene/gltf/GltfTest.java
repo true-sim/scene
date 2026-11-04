@@ -15,6 +15,7 @@ import com.truesim.scene.assets.PathAssets;
 import com.truesim.scene.assets.PathSource;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.assets.mesh.VertexAttribute;
+import com.truesim.scene.core.Pickable;
 import com.truesim.scene.render.ImageImporter;
 import com.truesim.scene.render.LineData;
 import com.truesim.scene.render.MaterialData;
@@ -419,6 +420,24 @@ class GltfTest {
         assertThat(model.nodes()).extracting(ModelData.Node::camera).containsExactly(0, 1, -1);
         assertThat(model.cameras()).containsExactly(ModelData.Camera.perspective("wide", 0.8, 1.5, 0.05, 200),
             ModelData.Camera.orthographic("", 4, 3, 0.5, 20));
+    }
+
+    @Test
+    void nodeExtrasMarkNodesPickable() throws Exception {
+        String json = """
+            {"asset": {"version": "2.0"}, "scenes": [{"nodes": [0, 1, 2, 3, 4, 5]}],
+             "nodes": [{"name": "door", "extras": {"truesim.pickable": "mesh"}},
+               {"name": "crate", "extras": {"truesim.pickable": "Bounds"}},
+               {"name": "flag", "extras": {"truesim.pickable": true}},
+               {"name": "off", "extras": {"truesim.pickable": false}},
+               {"name": "odd", "extras": {"truesim.pickable": "custom"}},
+               {"name": "plain", "extras": {"truesim.pickable": "laser"}}]}
+            """;
+        Files.writeString(dir.resolve("picks.gltf"), json);
+        ModelData model = load(paths.ref(RenderAssets.MODEL, "game://picks.gltf"));
+        assertThat(model.nodes()).extracting(ModelData.Node::pick).containsExactly(Pickable.Shape.MESH,
+            Pickable.Shape.BOUNDS, Pickable.Shape.BOUNDS, null, null, null);
+        assertThat(Gltf.PICKABLE_EXTRA).isEqualTo("truesim.pickable");
     }
 
     @Test
