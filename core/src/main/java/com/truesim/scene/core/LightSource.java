@@ -11,6 +11,7 @@ import com.truesim.annotations.AllowAllocation;
  * long lamp = scene.create(room);
  * scene.components().set(lamp, LightSource.TYPE, LightSource.point(1, 0.85f, 0.7f, 40).range(12));
  * light.intensity(0);                                 // switched off in place: the sync follows
+ * light.shadow(ShadowSpec.maps(ShadowSpec.AUTO));      // shadows by a map, sized by the engine
  * }</pre>
  *
  * <p>Colour is linear; intensity is candela for point and spot lights (the illuminance at 1 m), lux for directional
@@ -43,7 +44,7 @@ public final class LightSource {
     private double range = NO_RANGE;
     private double innerCone;
     private double outerCone = Math.PI / 4;
-    private boolean castsShadows;
+    private ShadowSpec shadow = ShadowSpec.NONE;
     private long version;
 
     private LightSource(Kind kind) {
@@ -111,9 +112,12 @@ public final class LightSource {
         return this;
     }
 
-    /** Sets whether it casts shadows (where the renderer gives it a shadow technique); returns it. */
-    public LightSource castsShadows(boolean on) {
-        castsShadows = on;
+    /**
+     * Sets how it casts shadows ({@link ShadowSpec}; {@link ShadowSpec#NONE}: none, as at first); returns it. The
+     * engine's shadow owner follows it from the next frame, without a rebuild.
+     */
+    public LightSource shadow(ShadowSpec spec) {
+        shadow = java.util.Objects.requireNonNull(spec, "spec");
         version++;
         return this;
     }
@@ -157,8 +161,14 @@ public final class LightSource {
         return outerCone;
     }
 
+    /** How it casts shadows. */
+    public ShadowSpec shadow() {
+        return shadow;
+    }
+
+    /** Whether it casts shadows: its {@link #shadow() spec}'s method is not {@link ShadowMethod#NONE}. */
     public boolean castsShadows() {
-        return castsShadows;
+        return shadow.casts();
     }
 
     /** A count its setters raise: a sync compares it to see a change made in place. */
