@@ -81,7 +81,8 @@ class RenderableBoundsTest {
         assertThat(scene.localBounds(b)).isEqualTo(box(1));
         assertThat(assets.holders(mesh(1))).isEqualTo(2);
         bounds.update(); // nothing changed
-        renderables.set(b, renderables.get(b).withMaterials(List.of(MaterialData.DEFAULT.ref())).withCastsShadows(false));
+        renderables.set(b,
+            renderables.get(b).withMaterials(List.of(MaterialData.DEFAULT.ref())).withCastsShadows(false));
         bounds.update(); // the same mesh: nothing to follow
         assertThat(assets.holders(mesh(1))).isEqualTo(2);
         // A new mesh: the old box stays until the new one arrives.

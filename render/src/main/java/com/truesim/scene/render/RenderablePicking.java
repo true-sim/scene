@@ -18,8 +18,8 @@ import java.util.Objects;
 import java.util.function.Function;
 
 /**
- * Picks nodes by their {@link Renderable}s' meshes: the {@link ScenePicker.Resolver} of {@code Pickable.mesh()} pickables
- * given no geometry, as models spawn them. A static mesh is its asset's shared {@link PickMesh} ({@link PickMeshes});
+ * Picks nodes by their {@link Renderable}s' meshes: the {@link ScenePicker.Resolver} of {@code Pickable.mesh()}
+ * pickables given no geometry, as models spawn them. A static mesh is its asset's shared {@link PickMesh} ({@link PickMeshes});
  * a skinned one is posed on the CPU for its node, against the joints as they are now: its vertices skinned by their
  * joints' world transforms relative to the node (as the renderer poses them), then its triangle BVH refit, only when a
  * ray reaches its box and its joints moved since the last pose. So a character is picked where it is drawn this frame,

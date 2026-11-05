@@ -16,8 +16,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Bounds every {@link Renderable}'s node by its mesh: the mesh's box, from the moment the mesh has loaded, so spatial queries
- * (picking, gameplay, culling on the CPU) find renderables without anyone setting their bounds. Holds each mesh in the
+ * Bounds every {@link Renderable}'s node by its mesh: the mesh's box, from the moment the mesh has loaded, so spatial
+ * queries (picking, gameplay, culling on the CPU) find renderables without anyone setting their bounds. Holds each mesh in the
  * asset cache while a renderable uses it, so it loads even where nothing draws (a server).
  *
  * <pre>{@code
@@ -67,7 +67,7 @@ public final class RenderableBounds implements AutoCloseable {
     private boolean started;
     private boolean closed;
 
-    /** Bounds the nodes of {@code scene} that have a {@link Renderable} by their meshes, loaded through {@code assets}. */
+    /** Bounds the nodes of {@code scene} with a {@link Renderable} by their meshes, loaded through {@code assets}. */
     @AllowAllocation("created rarely")
     public RenderableBounds(SceneGraph scene, AssetCache assets) {
         this.scene = Objects.requireNonNull(scene, "scene");

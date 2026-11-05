@@ -125,8 +125,8 @@ assets.ownedBy(mainThread);          // the asset cache has no clock: it is name
 ```
 
 The clock's owner covers the scene graph, the spatial index, the world (its interest sources and features too),
-components (renderables among them), renderable bounds and node visibility, animators (and each animator's inputs: playback, clip states,
-IK and look-at targets, overrides), sounds (their listeners and reverb zones) and effects (their colliders). Reads and
+components (renderables among them), renderable bounds and node visibility, animators (and each animator's inputs:
+playback, clip states, IK and look-at targets, overrides), sounds (their listeners and reverb zones) and effects (their colliders). Reads and
 queries are not checked. Without an owner (the default) nothing is checked; the check is a field read and a compare.
 Work handed to a `JobSystem` (above) runs on its workers by design and changes nothing it does not own.
 
@@ -623,7 +623,7 @@ long rock = scene.create();
 renderables.set(rock, Renderable.of(ROCK_MESH, List.of(STONE, MOSS)));   // submesh 0 stone, 1 and on moss
 renderables.set(rock, renderables.get(rock).withCastsShadows(false));    // logged CHANGED | SHADOWS
 
-renderables.changesSince(since, (node, changes) -> ...);   // ADDED, REMOVED, CHANGED with MESH, MATERIALS, SHADOWS, SKIN
+renderables.changesSince(since, (node, changes) -> ...);   // ADDED, REMOVED, CHANGED with MESH, MATERIALS, ...
 scene.remove(rock);                                        // its renderable goes at once, logged REMOVED
 ```
 
