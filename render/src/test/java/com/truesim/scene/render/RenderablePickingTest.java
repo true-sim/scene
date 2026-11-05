@@ -12,6 +12,7 @@ import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.assets.mesh.Sphere;
 import com.truesim.scene.assets.mesh.VertexAttribute;
 import com.truesim.scene.assets.mesh.VertexFormat;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.PickHits;
 import com.truesim.scene.core.PickMesh;
@@ -56,16 +57,16 @@ class RenderablePickingTest {
     }
 
     private final SceneGraph scene = new SceneGraph(new ChangeClock());
-    private final Renderables renderables = new Renderables(scene);
+    private final ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
     private final SpatialIndex index = new SpatialIndex(scene);
     private final Map<AssetRef<MeshData>, MeshData> loaded = new HashMap<>();
-    private final RenderablePicking picking = new RenderablePicking(renderables, loaded::get);
+    private final RenderablePicking picking = new RenderablePicking(scene, loaded::get);
     private final ScenePicker picker = new ScenePicker(scene, index).resolver(picking);
 
     private long node(AssetRef<MeshData> mesh) {
         long node = scene.create();
         scene.setLocalBounds(node, -5, -5, -1, 5, 5, 1);
-        renderables.set(node, mesh, List.of());
+        renderables.set(node, Renderable.of(mesh, List.of()));
         scene.components().set(node, Pickable.TYPE, Pickable.mesh());
         return node;
     }
@@ -101,7 +102,7 @@ class RenderablePickingTest {
         long body = node(SKINNED);
         long bone = scene.create();
         scene.setTranslation(bone, 2, 0, 0);
-        renderables.setSkin(body, new SkinBinding(new long[] {bone}, IDENTITY));
+        renderables.set(body, renderables.get(body).withSkin(new SkinBinding(new long[] {bone}, IDENTITY)));
         update();
         PickHits hits = new PickHits(2);
         assertThat(picker.pick(2.2, 0, 10, 0, 0, -1, 100, 1, hits)).as("where the bone took it").isOne();
@@ -139,11 +140,11 @@ class RenderablePickingTest {
         loaded.put(QUAD, quad(false));
         long body = node(SKINNED);
         long bone = scene.create();
-        renderables.setSkin(body, new SkinBinding(new long[] {bone}, IDENTITY));
+        renderables.set(body, renderables.get(body).withSkin(new SkinBinding(new long[] {bone}, IDENTITY)));
         update();
         PickMesh first = (PickMesh) picking.geometry(body);
         assertThat(picking.geometry(body)).as("kept").isSameAs(first);
-        renderables.setSkin(body, new SkinBinding(new long[] {bone, bone}, new float[32]));
+        renderables.set(body, renderables.get(body).withSkin(new SkinBinding(new long[] {bone, bone}, new float[32])));
         assertThat(picking.geometry(body)).as("another skin").isNotSameAs(first);
         PickMesh second = (PickMesh) picking.geometry(body);
         loaded.put(SKINNED, quad(true));
@@ -152,11 +153,11 @@ class RenderablePickingTest {
         scene.remove(body);
         long other = node(SKINNED);
         assertThat(NodeHandle.index(other)).isEqualTo(NodeHandle.index(body));
-        renderables.setSkin(other, new SkinBinding(new long[] {bone}, IDENTITY));
+        renderables.set(other, renderables.get(other).withSkin(new SkinBinding(new long[] {bone}, IDENTITY)));
         assertThat(picking.geometry(other)).isNotSameAs(second);
         // a skin on a mesh of no joints: drawn as it is, so picked so
         long rigid = node(QUAD);
-        renderables.setSkin(rigid, new SkinBinding(new long[] {bone}, IDENTITY));
+        renderables.set(rigid, renderables.get(rigid).withSkin(new SkinBinding(new long[] {bone}, IDENTITY)));
         assertThat(picking.geometry(rigid)).isSameAs(picking.pickMeshes().of(loaded.get(QUAD)));
     }
 
@@ -179,13 +180,13 @@ class RenderablePickingTest {
         loaded.put(lifted, quad(false, true));
         loaded.put(skinnedLifted, quad(true, true));
         long face = node(lifted);
-        renderables.setMorphWeights(face, new double[] {0}, 0, 1);
+        MorphWeights.write(scene, face, new double[] {0}, 0, 1);
         update();
         PickHits hits = new PickHits(1);
         picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
         assertThat(hits.distance(0)).as("no weights: at rest, the shared mesh").isCloseTo(10, within(1e-6));
         assertThat(picking.geometry(face)).isSameAs(picking.pickMeshes().of(loaded.get(lifted)));
-        renderables.setMorphWeights(face, new double[] {0.5}, 0, 1);
+        MorphWeights.write(scene, face, new double[] {0.5}, 0, 1);
         picker.beginFrame();
         picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
         assertThat(hits.distance(0)).as("lifted half way").isCloseTo(9.5, within(1e-3));
@@ -193,7 +194,7 @@ class RenderablePickingTest {
         picker.beginFrame();
         picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
         assertThat(picking.poses()).as("the same weights: not posed again").isEqualTo(poses);
-        renderables.setMorphWeights(face, new double[] {1}, 0, 1);
+        MorphWeights.write(scene, face, new double[] {1}, 0, 1);
         picker.beginFrame();
         picker.pick(0.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
         assertThat(hits.distance(0)).isCloseTo(9, within(1e-3));
@@ -201,12 +202,16 @@ class RenderablePickingTest {
         long body = node(skinnedLifted);
         long bone = scene.create();
         scene.setTranslation(bone, 2, 0, 0);
-        renderables.setSkin(body, new SkinBinding(new long[] {bone}, IDENTITY));
-        renderables.setMorphWeights(body, new double[] {1}, 0, 1);
+        renderables.set(body, renderables.get(body).withSkin(new SkinBinding(new long[] {bone}, IDENTITY)));
+        MorphWeights.write(scene, body, new double[] {1}, 0, 1);
         update();
         picker.pick(2.2, 0.2, 10, 0, 0, -1, 100, 1, hits);
         assertThat(hits.node(0)).isEqualTo(body);
         assertThat(hits.distance(0)).isCloseTo(9, within(1e-3));
+        // skinned, no weights: at rest before skinning
+        long unweighed = node(skinnedLifted);
+        renderables.set(unweighed, renderables.get(unweighed).withSkin(new SkinBinding(new long[] {bone}, IDENTITY)));
+        assertThat(picking.geometry(unweighed)).isNotNull();
     }
 
     @Test

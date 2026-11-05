@@ -21,7 +21,9 @@ import java.util.Objects;
  *
  * <p>Changes are logged on the scene's {@link ChangeClock}, as the scene graph's own: a consumer keeps a
  * {@code ChangeCursor} mark and reads what changed since; when it fell too far behind ({@link #changesSince} returns
- * false) it rebuilds by iterating. A value changed in place is reported by {@link #changed}. A node removed from the
+ * false) it rebuilds by iterating. A value changed in place is reported by {@link #changed}. A type that declares its
+ * values' fields ({@link ComponentType#of(String, Class, ComponentType.Fields)}) logs, with {@link #CHANGED}, the bits of
+ * the fields a replacing value changed (from {@link #FIELD} up), and nothing when it changed none. A node removed from the
  * scene loses its components at once, logged {@link #REMOVED}. Iteration order is the packed order: deterministic for
  * the same calls, but changed by removals (the last component moves into the gap).
  *
@@ -38,9 +40,16 @@ public final class ComponentStore<T> {
     public static final int CHANGED = 1 << 1;
     /** The node's component was removed, or the node itself; its handle may be stale. Reported alone. */
     public static final int REMOVED = 1 << 2;
+    /** The first of the bits a type's declared fields use, each with {@link #CHANGED}: {@code FIELD << i}. */
+    public static final int FIELD = 1 << 3;
+    /** Every bit a type's fields may use. */
+    public static final int FIELDS = ~(FIELD - 1) & Integer.MAX_VALUE;
 
-    /** The most changes a store keeps for consumers: past it, the oldest go and a consumer that late rebuilds. */
-    public static final int MAX_LOG = 1 << 14;
+    /**
+     * The most changes a store keeps for consumers: past it, the oldest go and a consumer that late rebuilds. As many as
+     * a scene graph keeps by default ({@link SceneGraph#DEFAULT_LOG_CAPACITY}); the log grows to it only as needed.
+     */
+    public static final int MAX_LOG = SceneGraph.DEFAULT_LOG_CAPACITY;
 
     /** Receives changes. */
     @FunctionalInterface
@@ -93,18 +102,24 @@ public final class ComponentStore<T> {
         return scene;
     }
 
-    /** Gives {@code node} {@code value} as its component of this type, replacing the one it had. */
+    /**
+     * Gives {@code node} {@code value} as its component of this type, replacing the one it had: logged
+     * {@link #CHANGED}, with the bits of the fields that differ for a type that declares them (nothing when none does).
+     */
     public void set(long node, T value) {
         checkOwner();
         type.cast(Objects.requireNonNull(value, "value"));
-        if (!scene.contains(node)) {
-            throw new IllegalArgumentException(notInScene(node));
-        }
         int d = dense(node);
         if (d >= 0) {
+            int fields = type.changedFields(values[d], value);
             values[d] = value;
-            log(node, CHANGED);
+            if (fields != 0) {
+                log(node, CHANGED | fields);
+            }
             return;
+        }
+        if (!scene.contains(node)) {
+            throw new IllegalArgumentException(notInScene(node));
         }
         int slot = NodeHandle.index(node);
         if (slot >= sparse.length) {
@@ -124,9 +139,25 @@ public final class ComponentStore<T> {
      * it; throws if the node has none.
      */
     public void changed(long node) {
+        changed(node, 0);
+    }
+
+    /**
+     * Reports that {@code node}'s component was changed in place in {@code fields} (bits from {@link #FIELD} up), so
+     * consumers following the log see which; throws if the node has none.
+     */
+    public void changed(long node, int fields) {
         checkOwner();
+        if ((fields & ~FIELDS) != 0) {
+            throw new IllegalArgumentException(notFields(fields));
+        }
         held(node);
-        log(node, CHANGED);
+        log(node, CHANGED | fields);
+    }
+
+    @AllowAllocation("diagnostics")
+    private static String notFields(int fields) {
+        return "Not field bits: " + Integer.toBinaryString(fields);
     }
 
     /** Takes {@code node}'s component away; false if it had none. */

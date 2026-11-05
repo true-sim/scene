@@ -6,6 +6,7 @@ import com.truesim.scene.animation.Skeleton;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.core.CameraLens;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.Components;
 import com.truesim.scene.core.LightSource;
 import com.truesim.scene.core.Pickable;
@@ -22,7 +23,7 @@ import java.util.Set;
  *
  * <pre>{@code
  * ModelData car = cache.get(paths.ref(RenderAssets.MODEL, "game://models/car.gltf"));
- * long[] nodes = car.spawn(scene, renderables, scene.create());     // the model's nodes under a node of the game's
+ * long[] nodes = car.spawn(scene, scene.create());     // the model's nodes under a node of the game's
  * }</pre>
  *
  * @param nodes the nodes, each parent before its children
@@ -198,7 +199,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
      * @param sy scale y
      * @param sz scale z
      * @param mesh its mesh, or null for a node that only groups
-     * @param materials the materials of its mesh's submeshes ({@link Renderables#set}); empty without a mesh
+     * @param materials the materials of its mesh's submeshes ({@link Renderable#of}); empty without a mesh
      * @param visible whether it shows, with its children; hidden nodes are spawned but drawn on no layer
      * @param light the index of its light in {@link #lights()}, or -1
      * @param lines its points and lines, beside its mesh; drawn once the renderer draws them
@@ -392,21 +393,23 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
 
     /**
      * Places the model's nodes in {@code scene}, its roots under {@code parent} ({@link SceneGraph#create(long)}'s
-     * parent: a node of the game's), with their transforms, and their meshes in {@code renderables}. Hidden nodes, and
-     * their children, are put on no layer. Nodes get their components (application-api.md D46): a {@link CameraLens}
+     * parent: a node of the game's), with their transforms. Hidden nodes, and their children, are put on no layer.
+     * Nodes get their components (application-api.md D46): a {@link Renderable} for a mesh (skinned by its skin's
+     * joints), {@link MorphWeights} for a mesh's default morph weights, a {@link CameraLens}
      * for a camera, a {@link LightSource} for a light (the engine's syncs place them), a {@link Pickable} where the
      * model marks them pickable ({@link Node#pick()}). Returns the scene nodes, by the model's node index.
      */
-    public long[] spawn(SceneGraph scene, Renderables renderables, long parent) {
-        return spawn(scene, renderables, parent, null);
+    public long[] spawn(SceneGraph scene, long parent) {
+        return spawn(scene, parent, null);
     }
 
     /**
-     * Places the model's nodes as {@link #spawn(SceneGraph, Renderables, long)} does, hiding its hidden nodes by
+     * Places the model's nodes as {@link #spawn(SceneGraph, long)} does, hiding its hidden nodes by
      * {@code visibility} (null: by putting them and their children on no layer), so that animating their visibility
      * shows them ({@code KHR_node_visibility}).
      */
-    public long[] spawn(SceneGraph scene, Renderables renderables, long parent, NodeVisibility visibility) {
+    public long[] spawn(SceneGraph scene, long parent, NodeVisibility visibility) {
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
         long[] placed = new long[nodes.size()];
         boolean[] shown = new boolean[nodes.size()];
         for (int i = 0; i < placed.length; i++) {
@@ -420,13 +423,13 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
                 scene.setLayers(created, 0);
             }
             if (node.mesh() != null) {
-                renderables.set(created, node.mesh(), node.materials());
+                renderables.set(created, Renderable.of(node.mesh(), node.materials()));
                 if (!node.morphWeights().isEmpty()) {
                     double[] weights = new double[node.morphWeights().size()];
                     for (int w = 0; w < weights.length; w++) {
                         weights[w] = node.morphWeights().get(w);
                     }
-                    renderables.setMorphWeights(created, weights, 0, weights.length);
+                    MorphWeights.write(scene, created, weights, 0, weights.length);
                 }
             }
             placed[i] = created;
@@ -445,7 +448,8 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
                 for (int j = 0; j < joints.length; j++) {
                     joints[j] = placed[skin.joint(j)];
                 }
-                renderables.setSkin(placed[i], new SkinBinding(joints, skin.inverseBindMatrices()));
+                renderables.set(placed[i],
+                    renderables.get(placed[i]).withSkin(new SkinBinding(joints, skin.inverseBindMatrices())));
             }
         }
         return placed;

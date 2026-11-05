@@ -89,14 +89,13 @@ class NodeVisibilityTest {
 
     @Test
     void modelsSpawnedWithItAreHiddenByItAndAnimatorsShowThem() {
-        Renderables renderables = new Renderables(scene);
         ModelData model = new ModelData(List.of(
             new ModelData.Node("hidden", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), false, -1),
             new ModelData.Node("child", 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(), true, -1),
             new ModelData.Node("shown", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1)));
         NodeVisibility visibility = new NodeVisibility(scene);
         long root = scene.create();
-        long[] nodes = model.spawn(scene, renderables, root, visibility);
+        long[] nodes = model.spawn(scene, root, visibility);
         assertThat(scene.layers(nodes[0])).isZero();
         assertThat(scene.layers(nodes[1])).isZero();
         assertThat(scene.layers(nodes[2])).isEqualTo(scene.layers(root));

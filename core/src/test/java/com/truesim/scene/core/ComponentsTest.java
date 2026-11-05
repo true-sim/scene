@@ -22,6 +22,17 @@ class ComponentsTest {
     static final ComponentType<Health> HEALTH = ComponentType.of("test.health", Health.class);
     static final ComponentType<String> NOTE = ComponentType.transientOf("test.note", String.class);
     static final ComponentType<String> UNUSED = ComponentType.of("test.unused-type_2", String.class);
+    /** A component with declared fields: a sprite's image and tint. */
+    record Sprite(String image, int tint) {
+        static final int IMAGE = ComponentStore.FIELD;
+        static final int TINT = ComponentStore.FIELD << 1;
+
+        static int changed(Sprite before, Sprite after) {
+            return (before.image.equals(after.image) ? 0 : IMAGE) | (before.tint == after.tint ? 0 : TINT);
+        }
+    }
+
+    static final ComponentType<Sprite> SPRITE = ComponentType.of("test.sprite", Sprite.class, Sprite::changed);
     static final ComponentType<?>[] MANY = new ComponentType<?>[20];
 
     static {
@@ -226,6 +237,42 @@ class ComponentsTest {
             sink.set(scene.components().get(nodes[9], HEALTH));
             store.changed(nodes[3]);
             store.changesSince(since, visitor);
+        });
+    }
+
+    @Test
+    void typesWithFieldsLogWhichFieldsChanged() {
+        SceneGraph scene = new SceneGraph(new ChangeClock());
+        ComponentStore<Sprite> sprites = scene.components().store(SPRITE);
+        assertThat(SPRITE.hasFields()).isTrue();
+        assertThat(HEALTH.hasFields()).isFalse();
+        assertThat(HEALTH.changedFields(new Health(1), new Health(1))).as("no fields: always changed")
+            .isEqualTo(ComponentStore.CHANGED);
+        long knight = scene.create();
+        sprites.set(knight, new Sprite("knight.png", 0xffffff));
+        long since = scene.clock().now();
+        long version = sprites.version();
+        List<Integer> logged = new ArrayList<>();
+        sprites.set(knight, new Sprite("knight.png", 0xffffff));
+        assertThat(sprites.version()).as("an equal value changes nothing").isEqualTo(version);
+        sprites.set(knight, new Sprite("knight.png", 0xff0000));
+        sprites.set(knight, new Sprite("rider.png", 0x00ff00));
+        sprites.changed(knight, Sprite.IMAGE);
+        sprites.changesSince(since, (node, changes) -> logged.add(changes));
+        assertThat(logged).containsExactly(ComponentStore.CHANGED | Sprite.TINT,
+            ComponentStore.CHANGED | Sprite.IMAGE | Sprite.TINT, ComponentStore.CHANGED | Sprite.IMAGE);
+        assertThat(ComponentStore.FIELDS & (ComponentStore.ADDED | ComponentStore.CHANGED | ComponentStore.REMOVED))
+            .isZero();
+        assertThatIllegalArgumentException().isThrownBy(() -> sprites.changed(knight, ComponentStore.REMOVED));
+        ComponentType<Sprite> wrong = ComponentType.of("test.sprite-wrong", Sprite.class, (a, b) -> ComponentStore.ADDED);
+        ComponentStore<Sprite> wrongs = scene.components().store(wrong);
+        wrongs.set(knight, new Sprite("a", 1));
+        assertThatIllegalStateException().isThrownBy(() -> wrongs.set(knight, new Sprite("b", 1)));
+        Sprite[] two = {new Sprite("knight.png", 1), new Sprite("knight.png", 2)};
+        assertAllocationFree(() -> {
+            for (int i = 0; i < 2; i++) {
+                sprites.set(knight, two[i]);
+            }
         });
     }
 }

@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  *     .set("base.baseColor", 0.6f, 0.05f, 0.05f, 1).set("flakes", 0.4f)
  *     .feature("clearcoat", coat -> coat.set("roughness", 0.05f))
  *     .build();
- * renderables.set(node, carMesh, List.of(carPaint.ref()));   // equal data, one material
+ * renderables.set(node, Renderable.of(carMesh, List.of(carPaint.ref())));   // equal data, one material
  * }</pre>
  *
  * <p>Values are floats, integers, vectors of 2 to 4 floats (colors among them) and textures. A field the data does not

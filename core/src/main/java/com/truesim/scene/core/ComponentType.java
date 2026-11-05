@@ -24,6 +24,10 @@ import java.util.regex.Pattern;
  * read. Types whose values are runtime state (hover, a playing sound's handle) are {@linkplain #transientOf transient}:
  * saves skip them.
  *
+ * <p>A type may declare its values' fields ({@link #of(String, Class, Fields)}): replacing a value then logs which fields
+ * differ, as bits from {@link ComponentStore#FIELD} up, so a consumer re-uploads only what changed (a material swap,
+ * not the mesh), and replacing a value by an equal one logs nothing.
+ *
  * <p>Stores are per scene ({@link Components}); systems that do not know a type never see it.
  *
  * @param <T> the class of its values
@@ -35,30 +39,51 @@ public final class ComponentType<T> {
     private static final Object LOCK = new Object();
     private static int next;
 
+    /**
+     * The fields of a type's values that differ between two of them, as bits from {@link ComponentStore#FIELD} up
+     * (within {@link ComponentStore#FIELDS}); 0 when the values are equal. Must not allocate: it runs on every set.
+     */
+    @FunctionalInterface
+    public interface Fields<T> {
+
+        int changed(T before, T after);
+    }
+
     private final String name;
     private final Class<T> valueType;
     private final boolean saved;
+    private final Fields<? super T> fields;
     private final int id;
 
-    private ComponentType(String name, Class<T> valueType, boolean saved, int id) {
+    private ComponentType(String name, Class<T> valueType, boolean saved, Fields<? super T> fields, int id) {
         this.name = name;
         this.valueType = valueType;
         this.saved = saved;
+        this.fields = fields;
         this.id = id;
     }
 
     /** A saved component type named {@code name}, holding values of {@code valueType}. */
     public static <T> ComponentType<T> of(String name, Class<T> valueType) {
-        return register(name, valueType, true);
+        return register(name, valueType, true, null);
+    }
+
+    /**
+     * A saved component type whose values have {@code fields}: replacing a value logs {@link ComponentStore#CHANGED}
+     * with the bits of the fields that differ, and nothing when none does.
+     */
+    public static <T> ComponentType<T> of(String name, Class<T> valueType, Fields<? super T> fields) {
+        return register(name, valueType, true, Objects.requireNonNull(fields, "fields"));
     }
 
     /** A component type whose values are runtime state, never saved (hovered, a pointer's capture). */
     public static <T> ComponentType<T> transientOf(String name, Class<T> valueType) {
-        return register(name, valueType, false);
+        return register(name, valueType, false, null);
     }
 
     @AllowAllocation("types are declared once, as constants")
-    private static <T> ComponentType<T> register(String name, Class<T> valueType, boolean saved) {
+    private static <T> ComponentType<T> register(String name, Class<T> valueType, boolean saved,
+        Fields<? super T> fields) {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(valueType, "valueType");
         if (!NAME.matcher(name).matches()) {
@@ -69,7 +94,7 @@ public final class ComponentType<T> {
             if (BY_NAME.containsKey(name)) {
                 throw new IllegalArgumentException("A component type is named " + name + " already");
             }
-            ComponentType<T> type = new ComponentType<>(name, valueType, saved, next++);
+            ComponentType<T> type = new ComponentType<>(name, valueType, saved, fields, next++);
             BY_NAME.put(name, type);
             return type;
         }
@@ -93,6 +118,32 @@ public final class ComponentType<T> {
     /** Whether saves keep it (false for {@linkplain #transientOf runtime state}). */
     public boolean saved() {
         return saved;
+    }
+
+    /** Whether it declares its values' fields ({@link #of(String, Class, Fields)}). */
+    public boolean hasFields() {
+        return fields != null;
+    }
+
+    /**
+     * The fields that differ from {@code before} to {@code after} (bits from {@link ComponentStore#FIELD} up), or 0 when
+     * none does; without declared fields, always {@link ComponentStore#CHANGED} (a value set again may have changed in
+     * place).
+     */
+    public int changedFields(T before, T after) {
+        if (fields == null) {
+            return ComponentStore.CHANGED;
+        }
+        int changed = fields.changed(before, after);
+        if ((changed & ~ComponentStore.FIELDS) != 0) {
+            throw new IllegalStateException(notFields(changed));
+        }
+        return changed;
+    }
+
+    @AllowAllocation("diagnostics")
+    private String notFields(int changed) {
+        return name + " reported changes that are not field bits: " + Integer.toBinaryString(changed);
     }
 
     /** A small number of its own, for stores kept in arrays: dense from 0 in the order types were declared. */
