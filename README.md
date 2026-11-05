@@ -621,14 +621,19 @@ sets a new one, and the store logs the fields that changed:
 ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
 long rock = scene.create();
 renderables.set(rock, Renderable.of(ROCK_MESH, List.of(STONE, MOSS)));   // submesh 0 stone, 1 and on moss
-renderables.set(rock, renderables.get(rock).withCastsShadows(false));    // logged CHANGED | SHADOWS
+Renderable.setCastsShadows(scene, rock, false);                          // logged CHANGED | SHADOWS
+Renderable.setMaterials(scene, rock, List.of(GLOWING_STONE, MOSS));      // logged CHANGED | MATERIALS
 
 renderables.changesSince(since, (node, changes) -> ...);   // ADDED, REMOVED, CHANGED with MESH, MATERIALS, ...
 scene.remove(rock);                                        // its renderable goes at once, logged REMOVED
 ```
 
-- **Swapping without allocating:** `withMaterials` and the other `with` methods make a new value; a game switching a
-  node between looks every frame keeps the values and sets them, which allocates nothing.
+- **One field at a time, without allocating:** `Renderable.setMesh`, `setMaterials`, `setCastsShadows` and `setSkin`
+  give the node a value with that field changed and log just its bit. They keep the last 8 values each node had
+  (`Renderable.RECENT_TYPE`, a runtime component, not saved) and reuse an equal one, so switching a node between looks
+  every frame (shadows on and off, two material lists) allocates nothing once each look was made. Values stay
+  immutable: one read before keeps what it had. The `with` methods always make a new value; `store.set` of values a
+  game keeps also allocates nothing.
 - **Morph weights** are a component of their own, `MorphWeights` (`truesim.morph-weights`), written in place every
   frame and not logged: `MorphWeights.write(scene, node, weights, offset, count)` fits an animator's morph sink.
 

@@ -270,4 +270,90 @@ class RenderableTest {
             morphs.get(node).weight(1);
         });
     }
+
+    @Test
+    void settersChangeOneFieldAndLogJustItsBit() {
+        ChangeCursor cursor = clock.cursor();
+        long rock = scene.create();
+        float[] identity = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        SkinBinding skin = new SkinBinding(new long[] {rock}, identity);
+        renderables.set(rock, Renderable.of(ROCK, List.of(STONE)));
+        Renderable first = renderables.get(rock);
+        cursor.mark();
+        Renderable.setCastsShadows(scene, rock, false);
+        Renderable.setMaterials(scene, rock, new ArrayList<>(List.of(MOSS))); // copied, as the value keeps it
+        Renderable.setMesh(scene, rock, TREE);
+        Renderable.setSkin(scene, rock, skin);
+        Renderable.setSkin(scene, rock, new SkinBinding(new long[] {rock}, identity.clone())); // equal: nothing
+        Renderable.setMaterials(scene, rock, List.of(MOSS));                                    // the same: nothing
+        assertThat(changes(cursor.mark())).containsExactly(line(rock, CHANGED | Renderable.SHADOWS),
+            line(rock, CHANGED | Renderable.MATERIALS), line(rock, CHANGED | Renderable.MESH),
+            line(rock, CHANGED | Renderable.SKIN));
+        Renderable now = renderables.get(rock);
+        assertThat(now.mesh()).isEqualTo(TREE);
+        assertThat(now.materials()).containsExactly(MOSS);
+        assertThat(now.castsShadows()).isFalse();
+        assertThat(now.skin()).isEqualTo(skin);
+        assertThat(first.castsShadows()).as("values stay as they were made").isTrue();
+        // Back to what it was: the value it had, reused.
+        Renderable.setSkin(scene, rock, null);
+        Renderable.setMesh(scene, rock, ROCK);
+        Renderable.setMaterials(scene, rock, List.of(STONE));
+        Renderable.setCastsShadows(scene, rock, true);
+        assertThat(renderables.get(rock)).isSameAs(first);
+        Renderable.Recent recent = scene.components().get(rock, Renderable.RECENT_TYPE);
+        assertThat(recent.size()).isEqualTo(5);
+        assertThat(Renderable.RECENT_TYPE.saved()).as("runtime state").isFalse();
+        // More looks than are kept: the least recently used go.
+        for (int i = 0; i < 2 * Renderable.RECENT; i++) {
+            Renderable.setMaterials(scene, rock, List.of(i % 2 == 0 ? STONE : MOSS, i % 3 == 0 ? STONE : MOSS,
+                AssetRef.of(RenderAssets.MATERIAL, AssetId.parse(String.format("%032x", 100 + i)))));
+        }
+        assertThat(recent.size()).isEqualTo(Renderable.RECENT);
+        // Misuse.
+        long bare = scene.create();
+        assertThatIllegalArgumentException().isThrownBy(() -> Renderable.setCastsShadows(scene, bare, false))
+            .withMessageContaining("No renderable");
+        assertThatNullPointerException().isThrownBy(() -> Renderable.setMesh(scene, rock, null));
+        assertThatNullPointerException().isThrownBy(() -> Renderable.setMaterials(scene, rock, null));
+        clock.ownedBy(new Thread(() -> { }));
+        assertThatIllegalStateException().isThrownBy(() -> Renderable.setCastsShadows(scene, rock, false));
+    }
+
+    @Test
+    void togglingShadowsAndSwappingMaterialsEveryFrameAllocatesNothing() {
+        long rock = scene.create();
+        renderables.set(rock, Renderable.of(ROCK, List.of(STONE)));
+        List<AssetRef<MaterialData>> stone = List.of(STONE);
+        List<AssetRef<MaterialData>> mossy = List.of(MOSS, STONE);
+        long[] since = {clock.now()};
+        int[] frame = {0};
+        int[] shadows = {0};
+        int[] materials = {0};
+        int[] other = {0};
+        ComponentStore.Visitor count = (node, changes) -> {
+            if (changes == (CHANGED | Renderable.SHADOWS)) {
+                shadows[0]++;
+            } else if (changes == (CHANGED | Renderable.MATERIALS)) {
+                materials[0]++;
+            } else {
+                other[0]++;
+            }
+        };
+        Runnable oneFrame = () -> {
+            boolean even = frame[0]++ % 2 == 0;
+            Renderable.setCastsShadows(scene, rock, !even);
+            Renderable.setMaterials(scene, rock, even ? mossy : stone);
+            scene.update();
+            renderables.changesSince(since[0], count);
+            since[0] = clock.now();
+        };
+        // Warmed past the change log's growth (two entries a frame, up to ComponentStore.MAX_LOG); then rounds of
+        // 10,000 frames.
+        assertAllocationFree(oneFrame, ComponentStore.MAX_LOG, 10_000, 5);
+        assertThat(shadows[0]).as("a shadow change every frame").isEqualTo(frame[0]);
+        assertThat(materials[0]).as("a material change every frame").isEqualTo(frame[0]);
+        assertThat(other[0]).isZero();
+        assertThat(scene.components().get(rock, Renderable.RECENT_TYPE).size()).isEqualTo(4);
+    }
 }
