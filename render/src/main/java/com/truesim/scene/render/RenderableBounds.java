@@ -5,6 +5,7 @@ import com.truesim.common.state.ChangeClock;
 import com.truesim.scene.assets.AssetCache;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.SceneGraph;
 import java.util.ArrayList;
@@ -15,17 +16,16 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Bounds every renderable's node by its mesh: the mesh's box, from the moment the mesh has loaded, so spatial queries
+ * Bounds every {@link Renderable}'s node by its mesh: the mesh's box, from the moment the mesh has loaded, so spatial queries
  * (picking, gameplay, culling on the CPU) find renderables without anyone setting their bounds. Holds each mesh in the
  * asset cache while a renderable uses it, so it loads even where nothing draws (a server).
  *
  * <pre>{@code
- * RenderableBounds bounds = new RenderableBounds(renderables, assets);
+ * RenderableBounds bounds = new RenderableBounds(scene, assets);
  *
  * // every frame, after the frame boundary (tasks.drainCompleted(): meshes arrive):
- * bounds.update();         // follows renderables added, changed and removed
+ * bounds.update();         // follows renderables added, removed and given other meshes
  * scene.update();          // the bounds count from here on
- * renderables.update();
  * }</pre>
  *
  * <p>A node's bounds are its mesh's while it has a renderable: bounds set on it otherwise are replaced when the mesh
@@ -34,11 +34,19 @@ import java.util.Objects;
  */
 public final class RenderableBounds implements AutoCloseable {
 
-    private final Renderables renderables;
+    /** Changes that leave the mesh as it was: not followed. */
+    private static final int NOT_MESH = ComponentStore.CHANGED | Renderable.MATERIALS | Renderable.SHADOWS
+        | Renderable.SKIN;
+
+    private final ComponentStore<Renderable> renderables;
     private final SceneGraph scene;
     private final ChangeClock clock;
     private final AssetCache assets;
-    private final Renderables.Visitor onChange = (node, changes) -> follow(node);
+    private final ComponentStore.Visitor onChange = (node, changes) -> {
+        if ((changes & ~NOT_MESH) != 0) {
+            follow(node);
+        }
+    };
     private final AssetCache.Listener onLoad = new AssetCache.Listener() {
         @Override
         public void loaded(AssetRef<?> ref, Object data) {
@@ -59,19 +67,20 @@ public final class RenderableBounds implements AutoCloseable {
     private boolean started;
     private boolean closed;
 
-    /** Bounds the nodes of {@code renderables} by their meshes, loaded through {@code assets}. */
+    /** Bounds the nodes of {@code scene} that have a {@link Renderable} by their meshes, loaded through {@code assets}. */
     @AllowAllocation("created rarely")
-    public RenderableBounds(Renderables renderables, AssetCache assets) {
-        this.renderables = Objects.requireNonNull(renderables, "renderables");
+    public RenderableBounds(SceneGraph scene, AssetCache assets) {
+        this.scene = Objects.requireNonNull(scene, "scene");
         this.assets = Objects.requireNonNull(assets, "assets");
-        this.scene = renderables.scene();
+        this.renderables = scene.components().store(Renderable.TYPE);
         this.clock = scene.clock();
         assets.addListener(onLoad);
     }
 
     /**
-     * Follows the renderables added, changed and removed since the last update: their nodes take their meshes' bounds,
-     * at once for meshes loaded already, else when they arrive. Allocates nothing when no renderable changed.
+     * Follows the renderables added, removed and given other meshes since the last update: their nodes take their
+     * meshes' bounds, at once for meshes loaded already, else when they arrive. Allocates nothing when no renderable
+     * changed.
      */
     public void update() {
         checkOwner();
@@ -94,7 +103,9 @@ public final class RenderableBounds implements AutoCloseable {
                 follow(nodes[index]);
             }
         }
-        renderables.forEach(this::follow);
+        for (int i = 0; i < renderables.size(); i++) {
+            follow(renderables.node(i));
+        }
     }
 
     /** Makes what is held for {@code node}'s slot match its renderable now. */
@@ -105,7 +116,8 @@ public final class RenderableBounds implements AutoCloseable {
             nodes = Arrays.copyOf(nodes, Math.max(index + 1, 2 * nodes.length));
             meshes = Arrays.copyOf(meshes, nodes.length);
         }
-        AssetRef<MeshData> mesh = renderables.has(node) && scene.contains(node) ? renderables.mesh(node) : null;
+        Renderable renderable = renderables.get(node);
+        AssetRef<MeshData> mesh = renderable != null ? renderable.mesh() : null;
         if (nodes[index] == node && Objects.equals(meshes[index], mesh)) {
             return;
         }

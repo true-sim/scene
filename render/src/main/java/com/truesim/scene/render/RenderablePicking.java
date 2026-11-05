@@ -5,6 +5,7 @@ import com.truesim.common.math.TransformArray;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.assets.mesh.VertexAttribute;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.NodeHandle;
 import com.truesim.scene.core.PickGeometry;
 import com.truesim.scene.core.PickMesh;
@@ -17,16 +18,16 @@ import java.util.Objects;
 import java.util.function.Function;
 
 /**
- * Picks nodes by their renderables' meshes: the {@link ScenePicker.Resolver} of {@code Pickable.mesh()} pickables
+ * Picks nodes by their {@link Renderable}s' meshes: the {@link ScenePicker.Resolver} of {@code Pickable.mesh()} pickables
  * given no geometry, as models spawn them. A static mesh is its asset's shared {@link PickMesh} ({@link PickMeshes});
  * a skinned one is posed on the CPU for its node, against the joints as they are now: its vertices skinned by their
  * joints' world transforms relative to the node (as the renderer poses them), then its triangle BVH refit, only when a
  * ray reaches its box and its joints moved since the last pose. So a character is picked where it is drawn this frame,
  * without waiting for the GPU (application-api.md, picking: no added latency). Morph targets move the vertices
- * first, by the renderable's weights ({@link Renderables#setMorphWeights}), as the renderer applies them.
+ * first, by the node's {@link MorphWeights}, as the renderer applies them.
  *
  * <pre>{@code
- * picker.resolver(new RenderablePicking(renderables, ref -> cache.loaded(ref)));   // null until a mesh is loaded
+ * picker.resolver(new RenderablePicking(scene, ref -> cache.loaded(ref)));   // null until a mesh is loaded
  * }</pre>
  *
  * <p>{@code meshes} gives a mesh asset's data once loaded, null before (the node is hit by its box until then); it must
@@ -40,7 +41,8 @@ public final class RenderablePicking implements ScenePicker.Resolver {
     private static final ValueLayout.OfInt U32 = ValueLayout.JAVA_INT_UNALIGNED
         .withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
 
-    private final Renderables renderables;
+    private final ComponentStore<Renderable> renderables;
+    private final ComponentStore<MorphWeights> morphs;
     private final Function<AssetRef<MeshData>, MeshData> meshes;
     private final PickMeshes pickMeshes;
     private final SceneGraph scene;
@@ -52,19 +54,22 @@ public final class RenderablePicking implements ScenePicker.Resolver {
     private final double[] joint = new double[12];
     private final double[] bind = new double[12];
 
-    /** Picks {@code renderables}' meshes, their data from {@code meshes}, sharing the pick meshes of {@code pickMeshes}. */
-    public RenderablePicking(Renderables renderables, Function<AssetRef<MeshData>, MeshData> meshes,
-        PickMeshes pickMeshes) {
-        this.renderables = Objects.requireNonNull(renderables, "renderables");
+    /**
+     * Picks the meshes of {@code scene}'s renderables, their data from {@code meshes}, sharing the pick meshes of
+     * {@code pickMeshes}.
+     */
+    public RenderablePicking(SceneGraph scene, Function<AssetRef<MeshData>, MeshData> meshes, PickMeshes pickMeshes) {
+        this.scene = Objects.requireNonNull(scene, "scene");
         this.meshes = Objects.requireNonNull(meshes, "meshes");
         this.pickMeshes = Objects.requireNonNull(pickMeshes, "pickMeshes");
-        this.scene = renderables.scene();
+        this.renderables = scene.components().store(Renderable.TYPE);
+        this.morphs = scene.components().store(MorphWeights.TYPE);
     }
 
-    /** As {@link #RenderablePicking(Renderables, Function, PickMeshes)} with pick meshes of its own. */
+    /** As {@link #RenderablePicking(SceneGraph, Function, PickMeshes)} with pick meshes of its own. */
     @AllowAllocation("set up once")
-    public RenderablePicking(Renderables renderables, Function<AssetRef<MeshData>, MeshData> meshes) {
-        this(renderables, meshes, new PickMeshes());
+    public RenderablePicking(SceneGraph scene, Function<AssetRef<MeshData>, MeshData> meshes) {
+        this(scene, meshes, new PickMeshes());
     }
 
     /** The shared pick meshes. */
@@ -79,16 +84,18 @@ public final class RenderablePicking implements ScenePicker.Resolver {
 
     @Override
     public PickGeometry geometry(long node) {
-        if (!renderables.has(node)) {
+        Renderable renderable = renderables.get(node);
+        if (renderable == null) {
             return null;
         }
-        MeshData mesh = meshes.apply(renderables.mesh(node));
+        MeshData mesh = meshes.apply(renderable.mesh());
         if (mesh == null) {
             return null;
         }
-        SkinBinding binding = renderables.skin(node);
+        SkinBinding binding = renderable.skin();
         SkinBinding skin = binding != null && mesh.jointCount() > 0 ? binding : null;
-        if (skin == null && !morphed(node, mesh)) {
+        MorphWeights weights = morphs.get(node);
+        if (skin == null && !morphed(weights, mesh)) {
             return pickMeshes.of(mesh);
         }
         Skinned s = skinned(node, mesh, skin);
@@ -103,7 +110,7 @@ public final class RenderablePicking implements ScenePicker.Resolver {
         }
         boolean reweighed = false;
         for (int t = 0; t < s.morphWeights.length; t++) {
-            float w = renderables.morphWeight(node, t);
+            float w = weights != null ? weights.weight(t) : 0;
             reweighed |= w != s.morphWeights[t];
             s.morphWeights[t] = w;
         }
@@ -115,11 +122,11 @@ public final class RenderablePicking implements ScenePicker.Resolver {
         return s.mesh;
     }
 
-    /** Whether {@code node}'s renderable weighs any of its mesh's morph targets. */
-    private boolean morphed(long node, MeshData mesh) {
-        int count = Math.min(renderables.morphWeightCount(node), mesh.morphTargetCount());
+    /** Whether {@code weights} (or null: none) weigh any of {@code mesh}'s morph targets. */
+    private static boolean morphed(MorphWeights weights, MeshData mesh) {
+        int count = weights == null ? 0 : Math.min(weights.count(), mesh.morphTargetCount());
         for (int t = 0; t < count; t++) {
-            if (renderables.morphWeight(node, t) != 0) {
+            if (weights.weight(t) != 0) {
                 return true;
             }
         }

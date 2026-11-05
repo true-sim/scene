@@ -21,7 +21,7 @@ for root motion, events and hit tests):
   weights or a float curve; step, linear or cubic spline; key times and values as floats), events, sync markers.
 - `Skeleton` (parents, names, rest pose; from a model's nodes); `Rig` (built once per model, shared by its instances:
   clips bound to joints, masks, layers, IK); `Animator` (one per spawned instance); `Animators` (all of a scene's, updated
-  together, like `Renderables`).
+  together).
 - `Pose`: local transforms, in doubles as the scene graph keeps them; sampler, blending, IK solvers, `PoseModifier`.
 
 **scene-assets** `MeshData` gains optional sections: a joint palette (mesh joint to skin joint: 8-bit joints still work for
@@ -29,8 +29,8 @@ skins of more than 256 joints), each joint's rest-pose box of the vertices it mo
 (sparse per-vertex deltas of position, normal, tangent, and each target's largest move).
 
 **scene-render**: `ModelData` gains skins (joints, inverse bind matrices), each node's skin, default morph weights and
-camera, cameras, and the model's animations (`model.animation("Walk")`). `Renderables` binds a skin and morph weights to a
-node; `spawn()` sets them.
+camera, cameras, and the model's animations (`model.animation("Walk")`). A node's `Renderable` binds a skin and its
+`MorphWeights` component holds morph weights; `spawn()` sets them.
 
 **scene-gltf** reads skins, `JOINTS_n`/`WEIGHTS_n` (the four largest, renormalized), morph targets, animations
 (`file.gltf#animation/N`) and cameras, and keeps the map from glTF node indices to the model's.
@@ -65,7 +65,7 @@ static final SyncGroup LOCOMOTION = SyncGroup.of("locomotion");
 static final SyncMarker LEFT_DOWN = SyncMarker.of("leftFootDown"), RIGHT_DOWN = SyncMarker.of("rightFootDown");
 
 // Quick: play a model's animation.
-long[] nodes = knight.spawn(scene, renderables, root);
+long[] nodes = knight.spawn(scene, root);
 Animator a = animators.add(root, knight, nodes);
 a.play(knight.animation("Walk")).speed(1.2f).time(0.5);
 

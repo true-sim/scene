@@ -12,6 +12,7 @@ import com.truesim.scene.assets.AssetId;
 import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.core.CameraLens;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.Components;
 import com.truesim.scene.core.LightSource;
 import com.truesim.scene.core.Pickable;
@@ -37,18 +38,18 @@ class ModelDataTest {
     @Test
     void modelsSpawnTheirNodesUnderAParent() {
         SceneGraph scene = new SceneGraph(new ChangeClock());
-        Renderables renderables = new Renderables(scene);
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
         ModelData car = car();
         long garage = scene.create();
-        long[] nodes = car.spawn(scene, renderables, garage);
+        long[] nodes = car.spawn(scene, garage);
         assertThat(nodes).hasSize(4);
         assertThat(scene.parent(nodes[0])).isEqualTo(garage);
         assertThat(scene.parent(nodes[2])).isEqualTo(nodes[0]);
         assertThat(scene.local(nodes[2]).translation().z()).isEqualTo(1.5);
         assertThat(scene.local(nodes[2]).scale().x()).isEqualTo(2);
         assertThat(renderables.has(nodes[0])).as("a group: nothing drawn").isFalse();
-        assertThat(renderables.mesh(nodes[2])).isEqualTo(WHEEL);
-        assertThat(renderables.materials(nodes[2])).containsExactly(RUBBER, PAINT);
+        assertThat(renderables.get(nodes[2]).mesh()).isEqualTo(WHEEL);
+        assertThat(renderables.get(nodes[2]).materials()).containsExactly(RUBBER, PAINT);
         assertThat(car.references()).containsExactly(BODY, PAINT, WHEEL, RUBBER);
         assertThat(car.find("wheel")).isEqualTo(2);
         assertThat(car.find("trunk")).isEqualTo(-1);
@@ -66,17 +67,17 @@ class ModelDataTest {
             ModelData.Node.of("wheel", 1, WHEEL, List.of())), List.of(),
             List.of(new ModelData.Skin("arm", new int[] {1}, identity, -1)));
         SceneGraph scene = new SceneGraph(new ChangeClock());
-        Renderables renderables = new Renderables(scene);
-        long[] nodes = model.spawn(scene, renderables, scene.create());
-        assertThat(renderables.skin(nodes[0])).isEqualTo(new SkinBinding(new long[] {nodes[1]}, identity));
-        assertThat(renderables.skin(nodes[2])).isNull();
-        // A node's own morph weights are set on its renderable.
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
+        long[] nodes = model.spawn(scene, scene.create());
+        assertThat(renderables.get(nodes[0]).skin()).isEqualTo(new SkinBinding(new long[] {nodes[1]}, identity));
+        assertThat(renderables.get(nodes[2]).skin()).isNull();
+        // A node's own morph weights are its MorphWeights component.
         ModelData.Node face = new ModelData.Node("face", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, BODY, List.of(), true, -1,
             List.of(), -1, List.of(0.5, 0.25));
-        long[] faces = new ModelData(List.of(face)).spawn(scene, renderables, scene.create());
-        assertThat(renderables.morphWeightCount(faces[0])).isEqualTo(2);
-        assertThat(renderables.morphWeight(faces[0], 1)).isEqualTo(0.25f);
-        assertThat(renderables.morphWeightCount(nodes[2])).isZero();
+        long[] faces = new ModelData(List.of(face)).spawn(scene, scene.create());
+        assertThat(scene.components().get(faces[0], MorphWeights.TYPE).count()).isEqualTo(2);
+        assertThat(scene.components().get(faces[0], MorphWeights.TYPE).weight(1)).isEqualTo(0.25f);
+        assertThat(scene.components().has(nodes[2], MorphWeights.TYPE)).as("no weights of its own").isFalse();
     }
 
     @Test
@@ -191,7 +192,6 @@ class ModelDataTest {
     @Test
     void hiddenNodesAndTheirChildrenAreOnNoLayerAndLightsAreNamed() {
         SceneGraph scene = new SceneGraph(new ChangeClock());
-        Renderables renderables = new Renderables(scene);
         ModelData.Light lamp = new ModelData.Light("lamp", ModelData.LightKind.POINT, 1, 1, 1, 10, 0, 0, 0);
         ModelData model = new ModelData(List.of(
             new ModelData.Node("hidden", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), false, -1),
@@ -199,7 +199,7 @@ class ModelDataTest {
             new ModelData.Node("shown", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, -1)),
             List.of(lamp));
         long root = scene.create();
-        long[] nodes = model.spawn(scene, renderables, root);
+        long[] nodes = model.spawn(scene, root);
         assertThat(scene.layers(nodes[0])).isZero();
         assertThat(scene.layers(nodes[1])).as("under a hidden node").isZero();
         assertThat(scene.layers(nodes[2])).isEqualTo(scene.layers(root));
@@ -215,7 +215,6 @@ class ModelDataTest {
     @Test
     void spawningGivesNodesTheirCameraLightAndPickableComponents() {
         SceneGraph scene = new SceneGraph(new ChangeClock());
-        Renderables renderables = new Renderables(scene);
         List<ModelData.Light> lights = List.of(
             new ModelData.Light("bulb", ModelData.LightKind.POINT, 1, 0.5, 0.25, 40, 8, 0, 0),
             new ModelData.Light("torch", ModelData.LightKind.SPOT, 1, 1, 1, 100, 0, 0.2, 0.5),
@@ -234,7 +233,7 @@ class ModelDataTest {
                 List.of(), 1),
             new ModelData.Node("sky", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, null, List.of(), true, 2)),
             lights, List.of(), cameras);
-        long[] nodes = model.spawn(scene, renderables, scene.create());
+        long[] nodes = model.spawn(scene, scene.create());
         Components c = scene.components();
         assertThat(c.get(nodes[0], Pickable.TYPE).shape()).as("its own mark, on a group").isEqualTo(Pickable.Shape.MESH);
         assertThat(c.get(nodes[1], Pickable.TYPE).shape()).as("inherited from the group").isEqualTo(Pickable.Shape.MESH);

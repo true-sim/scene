@@ -125,7 +125,7 @@ assets.ownedBy(mainThread);          // the asset cache has no clock: it is name
 ```
 
 The clock's owner covers the scene graph, the spatial index, the world (its interest sources and features too),
-renderables, renderable bounds and node visibility, animators (and each animator's inputs: playback, clip states,
+components (renderables among them), renderable bounds and node visibility, animators (and each animator's inputs: playback, clip states,
 IK and look-at targets, overrides), sounds (their listeners and reverb zones) and effects (their colliders). Reads and
 queries are not checked. Without an owner (the default) nothing is checked; the check is a field read and a compare.
 Work handed to a `JobSystem` (above) runs on its workers by design and changes nothing it does not own.
@@ -392,7 +392,7 @@ assets.acquire(rock);
 - **Fragments name assets in a file:** `game://models/car.gltf#mesh/0` is one mesh of the file, its own asset and id;
   `rock.png#linear` reads the image as data rather than colors. Redirects move the file, fragments stay with it.
 - **Models and images:** `RenderAssets.MODEL` is a `ModelData`, a node tree naming meshes and materials, placed with
-  `spawn(scene, renderables, parent)`; `ImageImporter` reads PNG and JPEG into textures through the JDK.
+  `spawn(scene, parent)`; `ImageImporter` reads PNG and JPEG into textures through the JDK.
 - **glTF** (`scene-gltf`): `new Gltf(paths).register()` imports `.gltf` and `.glb` one part per asset: the file is
   its default scene as a model, `#mesh/N` a mesh (a submesh per primitive, built into a cluster hierarchy; smooth
   normals where missing), `#material/N` a metallic-roughness material, `#animation/N` an animation clip, `#image/N` an embedded image. External images
@@ -414,7 +414,7 @@ assets.acquire(rock);
   a sink (the renderer's). Clips find nodes by index on their own model and by name on other rigs:
 
   ```java
-  long[] nodes = model.spawn(scene, renderables, scene.create());
+  long[] nodes = model.spawn(scene, scene.create());
   Animator hero = animators.add(model.skeleton(), nodes);
   hero.play(cache.get(model.animation("Walk"))).speed(1.2);
   animators.update(dt);
@@ -464,7 +464,7 @@ assets.acquire(rock);
 
   ```java
   NodeVisibility visibility = new NodeVisibility(scene);
-  long[] nodes = model.spawn(scene, renderables, root, visibility);   // hidden nodes hidden by it
+  long[] nodes = model.spawn(scene, root, visibility);   // hidden nodes hidden by it
   animators.pointerSink(visibility.andThen(renderer).andThen((animator, pointer, values, offset, count) -> {
       if (pointer.target() == AnimationPointer.Target.LIGHT) lamps.set(animator, pointer, values[offset]);
   }));
@@ -559,11 +559,18 @@ scene.remove(orc);                                             // its components
   reads since its mark (rebuilding by iterating when it fell behind). Values changed in place say so with
   `store.changed(node)`; the engine's own (`CameraLens`, `LightSource`, `Pickable`) count a `version()` their syncs
   compare instead.
+- **Changes by field:** a type may declare its values' fields (`ComponentType.of(name, class, fields)`, a function
+  telling which differ between two values, as bits from `ComponentStore.FIELD` up). Replacing a value then logs
+  `CHANGED` with the bits of the fields that changed, and nothing when none did, so a consumer redoes only that part:
+  `Renderable` reports `MESH`, `MATERIALS`, `SHADOWS` and `SKIN`, and a material swap re-uploads materials only.
+  `store.changed(node, fields)` reports a change made in place.
 - **Systems ignore what they do not know:** a type no system reads is carried along (and saved).
 - **Built in:** `CameraLens` (D129: a camera looks along its node's -Z; perspective or orthographic; the engine sets its
   renderer camera from the node), `LightSource` (point, spot or directional along -Z, colour times candela or lux; the
-  engine places it in its lights), `Pickable`, `Selected`, `Hovered` (below), scene-audio's `AudioListener`,
-  `ReverbZone` and `SoundEmitter`, scene-effects' `EffectCollider` and `EffectEmitter`. `ModelData.spawn` gives a model's nodes their cameras, lights and pick shapes.
+  engine places it in its lights), `Pickable`, `Selected`, `Hovered` (below), scene-render's `Renderable` and
+  `MorphWeights` (below), scene-audio's `AudioListener`, `ReverbZone` and `SoundEmitter`, scene-effects'
+  `EffectCollider` and `EffectEmitter`. `ModelData.spawn` gives a model's nodes their renderables, morph weights,
+  cameras, lights and pick shapes.
 
 ### Picking
 
@@ -576,7 +583,7 @@ tested it), by triangles (its own `PickGeometry`, or its renderable's mesh), or 
 components.set(door, Pickable.TYPE, Pickable.bounds());
 components.set(statue, Pickable.TYPE, Pickable.mesh());                 // its renderable's mesh
 ScenePicker picker = new ScenePicker(scene, index)
-    .resolver(new RenderablePicking(renderables, ref -> cache.loaded(ref)));
+    .resolver(new RenderablePicking(scene, ref -> cache.loaded(ref)));
 PickHits hits = new PickHits(4);                                         // pass-through goes 4 deep
 picker.beginFrame();                                                     // after scene.update() and index.update()
 picker.pick(ox, oy, oz, dx, dy, dz, 1000, Pickable.DEFAULT_LAYERS, hits);
@@ -591,7 +598,7 @@ picker.pickFrustum(marquee, Pickable.DEFAULT_LAYERS, node -> select(node));
 - **Meshes from renderables:** `RenderablePicking` resolves `Pickable.mesh()` to the node's mesh asset's shared
   `PickMesh` (`PickMeshes`: its leaf meshlets' triangles); a skinned mesh is posed on the CPU for its node against its
   joints as they are now (refit only when a ray reaches it and its joints moved), so characters are picked where they
-  are drawn this frame, with no frame of delay; morph targets move the vertices first, by the renderable's weights.
+  are drawn this frame, with no frame of delay; morph targets move the vertices first, by the node's `MorphWeights`.
 - **Selection is data:** `Selected` marks selected nodes (saved); `Hovered` marks nodes a pointer is over (runtime
   state). The engine's `SceneSelection` and outline read and write them; game code may too.
 - **Models:** a model node's `pick` (`ModelData.Node.withPick`) makes its spawned node pickable; on a node without a
@@ -605,23 +612,29 @@ picker.pickFrustum(marquee, Pickable.DEFAULT_LAYERS, node -> select(node));
 
 ### Render data: renderables, materials, textures
 
-`scene-render` says what draws on which node, as data; the engine decides how. A renderable is a mesh with a material per
-submesh, placed by its node's world transform and filtered by its node's layers:
+`scene-render` says what draws on which node, as data; the engine decides how. A `Renderable` is a component (see
+Components, saved as `truesim.renderable`): a mesh with a material per submesh, placed by its node's world transform
+and filtered by its node's layers, casting shadows or not, deformed by a skin or not. Values are immutable; a change
+sets a new one, and the store logs the fields that changed:
 
 ```java
-Renderables renderables = new Renderables(scene);
+ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
 long rock = scene.create();
-renderables.set(rock, ROCK_MESH, List.of(STONE, MOSS));   // submesh 0 stone, submeshes 1 and on moss
-renderables.setCastsShadows(rock, false);
+renderables.set(rock, Renderable.of(ROCK_MESH, List.of(STONE, MOSS)));   // submesh 0 stone, 1 and on moss
+renderables.set(rock, renderables.get(rock).withCastsShadows(false));    // logged CHANGED | SHADOWS
 
-scene.update();
-renderables.update();                                       // drops renderables of nodes removed from the scene
-renderables.changesSince(since, (node, changes) -> ...);    // ADDED, REMOVED, MESH, MATERIALS, SHADOWS
+renderables.changesSince(since, (node, changes) -> ...);   // ADDED, REMOVED, CHANGED with MESH, MATERIALS, SHADOWS, SKIN
+scene.remove(rock);                                        // its renderable goes at once, logged REMOVED
 ```
+
+- **Swapping without allocating:** `withMaterials` and the other `with` methods make a new value; a game switching a
+  node between looks every frame keeps the values and sets them, which allocates nothing.
+- **Morph weights** are a component of their own, `MorphWeights` (`truesim.morph-weights`), written in place every
+  frame and not logged: `MorphWeights.write(scene, node, weights, offset, count)` fits an animator's morph sink.
 
 - **Assets by reference:** meshes, materials and textures are assets (`RenderAssets.MESH`, `MATERIAL`, `TEXTURE`), so
   a renderer loads and uploads each once through the asset cache, however many nodes use it.
-- **Bounds from meshes:** `new RenderableBounds(renderables, assets)` gives every renderable's node its mesh's box once
+- **Bounds from meshes:** `new RenderableBounds(scene, assets)` gives every renderable's node its mesh's box once
   the mesh has loaded (call `bounds.update()` each frame, before `scene.update()`), so spatial queries find renderables
   without anyone setting their bounds. It holds the meshes in the asset cache, so they load on servers too.
 - **Materials as data:** `MaterialData` names its material type and holds its parameters by field name (nested ones
@@ -637,10 +650,10 @@ renderables.changesSince(since, (node, changes) -> ...);    // ADDED, REMOVED, M
       .texture("base.normalTexture", PAINT_NORMALS)
       .feature("clearcoat", coat -> coat.set("roughness", 0.05f))
       .build();
-  renderables.set(car, CAR_MESH, List.of(paint.ref()));
+  renderables.set(car, Renderable.of(CAR_MESH, List.of(paint.ref())));
   ```
 - **Changes, not the whole scene:** renderables log their changes on the scene's clock, as the scene graph does, so a
-  renderer follows both with one cursor and uploads only what changed.
+  renderer follows both with one cursor and uploads only what changed, field by field.
 
 ### Effects
 

@@ -4,7 +4,7 @@ import com.truesim.scene.assets.AssetType;
 import com.truesim.scene.assets.mesh.MeshData;
 
 /**
- * The asset types render data refers to: {@link Renderables} name meshes and materials, materials name textures,
+ * The asset types render data refers to: {@link Renderable}s name meshes and materials, materials name textures,
  * models name meshes and materials. Use these, so references from any loader or tool are equal, and register loaders
  * for them with the asset cache.
  *

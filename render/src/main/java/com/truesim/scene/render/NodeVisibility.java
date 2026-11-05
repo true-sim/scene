@@ -14,11 +14,11 @@ import java.util.Objects;
  * descendants are put on no layer, and given back the layers they had once nothing above them is hidden any more. A
  * node keeps its own visibility apart from its ancestors', so showing a parent again leaves a child hidden that was
  * hidden itself. As a pointer sink it applies animators' visibility tracks; models spawned with it
- * ({@link ModelData#spawn(SceneGraph, Renderables, long, NodeVisibility)}) start with their hidden nodes hidden by it.
+ * ({@link ModelData#spawn(SceneGraph, long, NodeVisibility)}) start with their hidden nodes hidden by it.
  *
  * <pre>{@code
  * NodeVisibility visibility = new NodeVisibility(scene);
- * long[] nodes = model.spawn(scene, renderables, root, visibility);
+ * long[] nodes = model.spawn(scene, root, visibility);
  * animators.pointerSink(visibility.andThen(rendererSink));
  * visibility.setVisible(nodes[3], false);
  * }</pre>

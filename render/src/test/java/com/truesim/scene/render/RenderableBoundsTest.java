@@ -14,6 +14,7 @@ import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.Generator;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.assets.mesh.VertexFormat;
+import com.truesim.scene.core.ComponentStore;
 import com.truesim.scene.core.SceneGraph;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -64,10 +65,10 @@ class RenderableBoundsTest {
 
     @Test
     void nodesTakeTheirMeshesBoundsAndLoseThemWithTheirRenderables() throws InterruptedException {
-        Renderables renderables = new Renderables(scene);
-        RenderableBounds bounds = new RenderableBounds(renderables, assets);
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
+        RenderableBounds bounds = new RenderableBounds(scene, assets);
         long a = scene.create();
-        renderables.set(a, mesh(1), List.of());
+        renderables.set(a, Renderable.of(mesh(1), List.of()));
         bounds.update();
         assertThat(scene.hasBounds(a)).as("loading").isFalse();
         assertThat(bounds.heldCount()).isOne();
@@ -75,13 +76,16 @@ class RenderableBoundsTest {
         assertThat(scene.localBounds(a)).isEqualTo(box(1));
         // A second node with the loaded mesh is bounded at once; the mesh is held once per renderable.
         long b = scene.create();
-        renderables.set(b, mesh(1), List.of());
+        renderables.set(b, Renderable.of(mesh(1), List.of()));
         bounds.update();
         assertThat(scene.localBounds(b)).isEqualTo(box(1));
         assertThat(assets.holders(mesh(1))).isEqualTo(2);
         bounds.update(); // nothing changed
+        renderables.set(b, renderables.get(b).withMaterials(List.of(MaterialData.DEFAULT.ref())).withCastsShadows(false));
+        bounds.update(); // the same mesh: nothing to follow
+        assertThat(assets.holders(mesh(1))).isEqualTo(2);
         // A new mesh: the old box stays until the new one arrives.
-        renderables.setMesh(a, mesh(2));
+        renderables.set(a, renderables.get(a).withMesh(mesh(2)));
         bounds.update();
         assertThat(scene.localBounds(a)).isEqualTo(box(1));
         await(() -> scene.localBounds(a).equals(box(2)));
@@ -95,7 +99,6 @@ class RenderableBoundsTest {
         // A removed node lets go of its mesh.
         scene.remove(a);
         scene.update();
-        renderables.update();
         bounds.update();
         assertThat(bounds.heldCount()).isZero();
         assertThat(assets.holders(mesh(2))).isZero();
@@ -106,20 +109,20 @@ class RenderableBoundsTest {
 
     @Test
     void meshesChangingOrNodesGoingWhileLoadingAreSkipped() throws InterruptedException {
-        Renderables renderables = new Renderables(scene);
-        try (RenderableBounds bounds = new RenderableBounds(renderables, assets)) {
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
+        try (RenderableBounds bounds = new RenderableBounds(scene, assets)) {
             gate = new java.util.concurrent.CountDownLatch(1); // nothing loads until the changes are made
             long c = scene.create();
             long d = scene.create();
             long e = scene.create();
-            renderables.set(c, mesh(3), List.of());
-            renderables.set(d, mesh(3), List.of());
-            renderables.set(e, mesh(4), List.of());
+            renderables.set(c, Renderable.of(mesh(3), List.of()));
+            renderables.set(d, Renderable.of(mesh(3), List.of()));
+            renderables.set(e, Renderable.of(mesh(4), List.of()));
             bounds.update();
             // While they load: d switches to another mesh before its first arrives, e goes with its node.
-            renderables.setMesh(d, mesh(5));
+            renderables.set(d, renderables.get(d).withMesh(mesh(5)));
             bounds.update();
-            renderables.setMesh(e, mesh(6));
+            renderables.set(e, renderables.get(e).withMesh(mesh(6)));
             bounds.update(); // e no longer waits for mesh 4
             scene.remove(e);
             gate.countDown();
@@ -133,7 +136,7 @@ class RenderableBoundsTest {
             // A renderable whose node went before the renderables noticed holds nothing; its node took the slot of e,
             // also gone, whose mesh is let go too.
             long f = scene.create();
-            renderables.set(f, mesh(3), List.of());
+            renderables.set(f, Renderable.of(mesh(3), List.of()));
             scene.remove(f);
             bounds.update();
             assertThat(bounds.heldCount()).isEqualTo(2);
@@ -144,12 +147,12 @@ class RenderableBoundsTest {
 
     @Test
     void fallingBehindTheRenderablesFollowsThemAsTheyAre() throws InterruptedException {
-        Renderables renderables = new Renderables(scene, 2); // keeps two changes
-        RenderableBounds bounds = new RenderableBounds(renderables, assets);
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
+        RenderableBounds bounds = new RenderableBounds(scene, assets);
         long[] nodes = new long[70]; // past the first room for nodes
         for (int i = 0; i < nodes.length; i++) {
             nodes[i] = scene.create();
-            renderables.set(nodes[i], mesh(7), List.of());
+            renderables.set(nodes[i], Renderable.of(mesh(7), List.of()));
         }
         bounds.update();
         await(() -> scene.hasBounds(nodes[69]));
@@ -157,7 +160,11 @@ class RenderableBoundsTest {
         renderables.remove(nodes[0]);
         renderables.remove(nodes[1]);
         long late = scene.create();
-        renderables.set(late, mesh(7), List.of());
+        Renderable lit = Renderable.of(mesh(7), List.of());
+        Renderable unlit = lit.withCastsShadows(false);
+        for (int i = 0; i <= ComponentStore.MAX_LOG; i++) {
+            renderables.set(late, i % 2 == 0 ? lit : unlit);
+        }
         bounds.update();
         assertThat(scene.hasBounds(nodes[0])).isFalse();
         assertThat(scene.localBounds(late)).isEqualTo(box(7));
@@ -167,7 +174,7 @@ class RenderableBoundsTest {
 
     @Test
     void onlyTheScenesOwnerUpdatesTheBounds() {
-        RenderableBounds bounds = new RenderableBounds(new Renderables(scene), assets);
+        RenderableBounds bounds = new RenderableBounds(scene, assets);
         Thread other = new Thread(() -> { });
         scene.clock().ownedBy(other);
         assertThatIllegalStateException().isThrownBy(bounds::update)
