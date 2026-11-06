@@ -169,11 +169,6 @@ final class ChangeLog {
         return first == entrySize ? 0 : (int) (recordTail - starts[(entryHead + first) & (stamps.length - 1)]);
     }
 
-    /** How many entries {@link #since} would report (a batch is one): -1 when entries that old were dropped. */
-    int entriesSince(long since) {
-        return since < incompleteThrough ? -1 : entrySize - firstAfter(since);
-    }
-
     private int firstAfter(long since) {
         int low = 0;
         int high = entrySize;

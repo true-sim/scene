@@ -1258,10 +1258,8 @@ public final class SceneGraph {
             listed[slot] = true;
             pendingSlots[pendingCount++] = slot;
         }
-        if ((change & NodeChange.PREPARED) == 0) {
-            pending[slot] &= ~NodeChange.PREPARED; // changed after applying: its prepared tree is out of date
-        }
-        pending[slot] |= change;
+        // changed after attaching: its prepared tree is out of date (only attaching marks PREPARED)
+        pending[slot] = pending[slot] & ~NodeChange.PREPARED | change;
     }
 
     private void log(long stamp, long node, int changes) {

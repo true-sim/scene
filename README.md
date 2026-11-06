@@ -173,6 +173,48 @@ Nodes from a batch are ordinary nodes: they report `CREATED` through the change 
 its cell's tree as usual. If anything touches them before the index catches up, or an index misses the hand-over, the
 index builds the tree itself.
 
+### Batches: subtrees spawned and removed in one pass
+
+A `SceneBatch` is a detached subtree, components included: a worker builds it (a streamed cell's content, a prefab,
+a model through `ModelData.addTo`) without touching the live scene, and `scene.attach(batch, parent)` puts it in on
+the scene's thread in one pass. `scene.detach(root, batch)` takes a subtree out into a batch again, and
+`scene.remove(root)` removes a whole subtree. On the scene's thread, `scene.create(parent, into, from, count)` makes
+many nodes, `scene.remove(nodes, from, count)` removes many subtrees and `store.setAll(nodes, values, from, count)`
+sets many components.
+
+Each of these is one entry of the scene's change log, and one per component store: a `ChangeBatch` of the nodes and
+their changes. A consumer overrides `NodeChange.Visitor.changed(ChangeBatch)` to take the nodes in one pass (the
+engine's scene sync registers or tears down a batch's instances so, removing them from the GPU scene at once);
+visitors that do not still see each node as if logged alone.
+
+```java
+// On a worker:
+SceneBatch batch = free.poll();                         // reused: clear() keeps its room
+int cell = batch.add();
+for (Prop prop : props) {
+    int node = batch.add(cell);
+    batch.setTranslation(node, prop.x(), prop.y(), prop.z());
+    batch.set(node, Renderable.TYPE, Renderable.of(prop.mesh(), prop.materials()));
+}
+batch.prepare();
+
+// On the scene's thread, once handed over:
+long root = scene.attach(batch, NodeHandle.NONE);      // one entry in the scene's log, one in the renderables'
+batch.clear();
+free.add(batch);
+// ... later
+scene.remove(root);                                    // the subtree and its components, one entry each
+```
+
+A batch belongs to one thread at a time: the worker until it hands it over, the scene's thread while attaching, then
+whoever holds it to clear and fill again. Attaching copies everything out of it. Streaming through reused batches
+allocates nothing once warm (`BatchSpawnTest.streamingByReusedBatchesAllocatesNothing`).
+
+Generated meshes that come and go in equal sizes can reuse their memory: a `MeshPool` set as the cache's recycler for
+meshes (`cache.recycler(RenderAssets.MESH, pool)`) keeps evicted ones, and a generator building with
+`MeshData.Builder.build(pool)` (or `MeshBuilder.pool(pool)`) builds into one of the same sizes instead of allocating,
+so no shared arena is closed (closing one makes every thread reach a safepoint).
+
 ### Fly-through, measured
 
 `FlyThroughBenchmark` (`TRUESIM_BENCHMARK=true`): a camera flies over a 16 km x 16 km world at 300 m/s for 10 s,

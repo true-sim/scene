@@ -208,12 +208,23 @@ public final class ComponentStore<T> {
             growBatch(count);
         }
         int logged = 0;
-        for (int i = 0; i < count; i++) {
-            int d = dense(removed[i]);
-            if (d >= 0) {
-                drop(d);
-                batchNodes[logged] = removed[i];
-                batchChanges[logged++] = REMOVED;
+        if (size < count) { // fewer components than nodes gone (a camera's, a light's): look through the components
+            for (int d = size - 1; d >= 0; d--) {
+                long node = nodes[d];
+                if (!scene.contains(node)) { // the scene took its nodes out before telling the stores
+                    drop(d);
+                    batchNodes[logged] = node;
+                    batchChanges[logged++] = REMOVED;
+                }
+            }
+        } else {
+            for (int i = 0; i < count; i++) {
+                int d = dense(removed[i]);
+                if (d >= 0) {
+                    drop(d);
+                    batchNodes[logged] = removed[i];
+                    batchChanges[logged++] = REMOVED;
+                }
             }
         }
         logAll(logged);
@@ -255,15 +266,6 @@ public final class ComponentStore<T> {
         drop(d);
         log(node, REMOVED);
         return true;
-    }
-
-    /** Called by the scene for each node it removes, before the slot can be reused. */
-    void nodeRemoved(long node) {
-        int d = dense(node);
-        if (d >= 0) {
-            drop(d);
-            log(node, REMOVED);
-        }
     }
 
     private void drop(int d) {

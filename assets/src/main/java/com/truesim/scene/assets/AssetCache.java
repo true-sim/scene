@@ -59,6 +59,21 @@ public final class AssetCache implements AutoCloseable {
         }
     }
 
+    /**
+     * Takes generated data the cache evicts instead of it being freed: e.g. a {@code MeshPool}, whose memory meshes of
+     * the same sizes are built into. Called on the cache's thread.
+     */
+    @FunctionalInterface
+    public interface Recycler<T> {
+
+        /**
+         * Offers {@code data}: returns what the cache frees instead, as usual (on a worker): null when it took
+         * {@code data} and gives nothing back, {@code data} itself when it does not take it, or older data it keeps no
+         * longer to make room.
+         */
+        T offer(T data);
+    }
+
     /** One asset in the cache; unreferenced loaded ones are linked in release order. */
     private static final class Entry {
         final AssetRef<?> ref;
@@ -102,6 +117,7 @@ public final class AssetCache implements AutoCloseable {
     private AssetSource source;
     private final Map<AssetRef<?>, Entry> entries = new HashMap<>();
     private final List<Listener> listeners = new ArrayList<>();
+    private final Map<AssetType<?>, Recycler<?>> recyclers = new IdentityHashMap<>();
     private Entry oldest;
     private Entry newest;
     private long budget = Long.MAX_VALUE;
@@ -358,9 +374,30 @@ public final class AssetCache implements AutoCloseable {
         unload(entry.ref, entry.data);
     }
 
+    /**
+     * Offers generated {@code type} data the cache evicts to {@code recycler} (null: none) instead of freeing it: what
+     * it takes is its own. Data loaded from files is unloaded by its loader as before.
+     */
+    @AllowAllocation("set up once")
+    public <T> void recycler(AssetType<T> type, Recycler<? super T> recycler) {
+        checkOpen();
+        if (recycler == null) {
+            recyclers.remove(type);
+        } else {
+            recyclers.put(type, recycler);
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     @AllowAllocation("an evicted asset freed on a worker, as loads are made on one")
     private void unload(AssetRef<?> ref, Object data) {
+        Recycler recycler = recyclers.isEmpty() || closed ? null : recyclers.get(ref.type());
+        if (ref.isGenerated() && recycler != null) {
+            data = recycler.offer(data); // the recycler's now, or what it lets go of instead
+            if (data == null) {
+                return;
+            }
+        }
         if (ref.isGenerated()) { // made here, so freed here
             if (closed || !(data instanceof AutoCloseable)) {
                 AssetLoader.closeIfCloseable(data);

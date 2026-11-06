@@ -90,13 +90,6 @@ public final class Components {
         return stores[java.util.Objects.checkIndex(i, count)];
     }
 
-    /** Removes the components of a node the scene removes. */
-    void nodeRemoved(long node) {
-        for (int i = 0; i < count; i++) {
-            stores[i].nodeRemoved(node);
-        }
-    }
-
     /** Removes the components of the first {@code removed} nodes the scene removes at once: one entry per store. */
     void nodesRemoved(long[] nodes, int removed) {
         for (int i = 0; i < count; i++) {
