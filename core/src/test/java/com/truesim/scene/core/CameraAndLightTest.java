@@ -49,10 +49,12 @@ class CameraAndLightTest {
         assertThat(bulb.castsShadows()).isFalse();
         assertThat(bulb).hasToString("POINT light 1.0, 0.5, 0.25 x 40.0");
         long v = bulb.version();
-        bulb.range(12).castsShadows(true).intensity(0);
+        bulb.range(12).shadow(ShadowSpec.rayTraced()).intensity(0);
         assertThat(bulb.version()).isEqualTo(v + 3);
         assertThat(bulb.range()).isEqualTo(12);
         assertThat(bulb.castsShadows()).isTrue();
+        assertThat(bulb.shadow().method()).isEqualTo(ShadowMethod.RAY_TRACED);
+        assertThatNullPointerException().isThrownBy(() -> bulb.shadow(null));
         LightSource spot = LightSource.spot(1, 1, 1, 100, 0.1, 0.4);
         assertThat(spot.innerCone()).isEqualTo(0.1);
         assertThat(spot.outerCone()).isEqualTo(0.4);
