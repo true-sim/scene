@@ -96,4 +96,11 @@ public final class Components {
             stores[i].nodeRemoved(node);
         }
     }
+
+    /** Removes the components of the first {@code removed} nodes the scene removes at once: one entry per store. */
+    void nodesRemoved(long[] nodes, int removed) {
+        for (int i = 0; i < count; i++) {
+            stores[i].nodesRemoved(nodes, removed);
+        }
+    }
 }

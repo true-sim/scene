@@ -36,11 +36,25 @@ public final class NodeChange {
         return (changes & mask) != 0;
     }
 
-    /** Receives changed nodes. */
+    /**
+     * Receives changed nodes: one at a time, and nodes that changed together (a {@link SceneBatch} attached, a subtree
+     * removed, nodes made in one call) as a {@link ChangeBatch}, which by default it takes one node at a time too.
+     * Override {@link #changed(ChangeBatch)} to take a batch in one pass.
+     */
     @FunctionalInterface
     public interface Visitor {
 
         /** {@code node} changed in the ways {@code changes} lists ({@link NodeChange} bits). */
         void changed(long node, int changes);
+
+        /**
+         * The nodes of {@code batch} changed together, each as it says. By default each goes to
+         * {@link #changed(long, int)} in turn, in the batch's order. The batch is valid during the call only.
+         */
+        default void changed(ChangeBatch batch) {
+            for (int i = 0; i < batch.size(); i++) {
+                changed(batch.node(i), batch.changes(i));
+            }
+        }
     }
 }

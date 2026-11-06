@@ -51,11 +51,16 @@ public final class ComponentStore<T> {
      */
     public static final int MAX_LOG = SceneGraph.DEFAULT_LOG_CAPACITY;
 
-    /** Receives changes. */
+    /**
+     * Receives changes: one node at a time, and nodes whose components changed together ({@link #setAll}, a
+     * {@link SceneBatch} attached, a subtree removed) as a {@link ChangeBatch} of this store's bits, which by default
+     * it takes one node at a time too.
+     */
     @FunctionalInterface
-    public interface Visitor {
+    public interface Visitor extends NodeChange.Visitor {
 
         /** {@code node}'s component changed in the ways {@code changes} lists. */
+        @Override
         void changed(long node, int changes);
     }
 
@@ -75,13 +80,10 @@ public final class ComponentStore<T> {
     private int size;
     private long version;
 
-    // The change log: a ring of (stamp, node, changes), growing up to MAX_LOG.
-    private long[] logStamps = new long[16];
-    private long[] logNodes = new long[16];
-    private int[] logChanges = new int[16];
-    private int logStart;
-    private int logSize;
-    private long logIncompleteThrough = -1;
+    // The change log, growing up to MAX_LOG; and the nodes and changes of a call changing many, logged as one entry.
+    private final ChangeLog log = new ChangeLog(16, MAX_LOG);
+    private long[] batchNodes = new long[0];
+    private int[] batchChanges = new int[0];
 
     @SuppressWarnings("unchecked")
     @AllowAllocation("a store per type and scene")
@@ -132,6 +134,89 @@ public final class ComponentStore<T> {
         values[size] = value;
         sparse[slot] = ++size;
         log(node, ADDED);
+    }
+
+    /**
+     * Gives nodes {@code from} to {@code from + count - 1} of {@code nodes} the values at the same places of
+     * {@code values}, as {@link #set} does each, logged as one entry ({@link ChangeBatch}): consumers take them in one
+     * pass. Checked first, so nothing changes when one is not a node of the scene or a value is null. Allocates only to
+     * grow.
+     */
+    public void setAll(long[] nodes, T[] values, int from, int count) {
+        checkOwner();
+        Objects.checkFromIndexSize(from, count, nodes.length);
+        Objects.checkFromIndexSize(from, count, values.length);
+        for (int i = from; i < from + count; i++) {
+            type.cast(Objects.requireNonNull(values[i], "value"));
+            if (dense(nodes[i]) < 0 && !scene.contains(nodes[i])) {
+                throw new IllegalArgumentException(notInScene(nodes[i]));
+            }
+        }
+        setChecked(nodes, values, from, count);
+    }
+
+    /** {@link #setAll} without the checks: nodes of the scene, values of the type. */
+    void setChecked(long[] nodes, Object[] values, int from, int count) {
+        if (batchNodes.length < count) {
+            growBatch(count);
+        }
+        int logged = 0;
+        for (int i = from; i < from + count; i++) {
+            long node = nodes[i];
+            @SuppressWarnings("unchecked")
+            T value = (T) values[i];
+            int d = dense(node);
+            int changes;
+            if (d >= 0) {
+                int fields = type.changedFields(this.values[d], value);
+                this.values[d] = value;
+                changes = fields == 0 ? 0 : CHANGED | fields;
+            } else {
+                int slot = NodeHandle.index(node);
+                if (slot >= sparse.length) {
+                    growSparse(slot + 1);
+                }
+                if (size == this.nodes.length) {
+                    growDense();
+                }
+                this.nodes[size] = node;
+                this.values[size] = value;
+                sparse[slot] = ++size;
+                changes = ADDED;
+            }
+            batchNodes[logged] = node;
+            batchChanges[logged++] = changes;
+        }
+        logAll(logged);
+    }
+
+    @AllowAllocation("growing with the most nodes changed at once")
+    private void growBatch(int length) {
+        batchNodes = new long[Math.max(length, 2 * batchNodes.length)];
+        batchChanges = new int[batchNodes.length];
+    }
+
+    /**
+     * Called by the scene for the nodes it removes at once, before their slots can be reused: their components go,
+     * logged {@link #REMOVED} as one entry.
+     */
+    void nodesRemoved(long[] removed, int count) {
+        if (size == 0) {
+            return;
+        }
+        if (batchNodes.length < count) {
+            growBatch(count);
+        }
+        int logged = 0;
+        for (int i = 0; i < count; i++) {
+            int d = dense(removed[i]);
+            if (d >= 0) {
+                drop(d);
+                batchNodes[logged] = removed[i];
+                batchChanges[logged++] = REMOVED;
+            }
+        }
+        logAll(logged);
     }
 
     /**
@@ -278,68 +363,33 @@ public final class ComponentStore<T> {
 
     /**
      * Reports every component that changed after {@code since} (a {@code ChangeCursor} mark on the scene's clock), in
-     * the order of the changes; a node may be reported more than once. Returns false, reporting nothing, when changes
-     * that old are no longer kept: rebuild by iterating then. Allocates nothing.
+     * the order of the changes; a node may be reported more than once. Components changed together come as one
+     * {@link ChangeBatch} ({@link Visitor#changed(ChangeBatch)}). Returns false, reporting nothing, when changes that
+     * old are no longer kept: rebuild by iterating then. Allocates nothing.
      */
-    public boolean changesSince(long since, Visitor visitor) {
-        if (since < logIncompleteThrough) {
-            return false;
-        }
-        for (int i = firstAfter(since); i < logSize; i++) {
-            int entry = (logStart + i) % logStamps.length;
-            visitor.changed(logNodes[entry], logChanges[entry]);
-        }
-        return true;
+    public boolean changesSince(long since, NodeChange.Visitor visitor) {
+        return log.since(since, visitor);
     }
 
-    private int firstAfter(long since) {
-        int low = 0;
-        int high = logSize;
-        while (low < high) {
-            int middle = (low + high) >>> 1;
-            if (logStamps[(logStart + middle) % logStamps.length] > since) {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        return low;
+    /**
+     * How many node changes {@link #changesSince} would report for {@code since} (a batch counts its nodes), or -1 when
+     * changes that old are no longer kept. Allocates nothing.
+     */
+    public int changeCountSince(long since) {
+        return log.countSince(since);
     }
 
     private void log(long node, int changes) {
         version++;
-        if (logSize == logStamps.length) {
-            if (logStamps.length < MAX_LOG) {
-                growLog();
-            } else {
-                logIncompleteThrough = logStamps[logStart];
-                logStart = (logStart + 1) % logStamps.length;
-                logSize--;
-            }
-        }
-        int entry = (logStart + logSize) % logStamps.length;
-        logStamps[entry] = clock.stamp();
-        logNodes[entry] = node;
-        logChanges[entry] = changes;
-        logSize++;
+        log.add(clock.stamp(), Long.MAX_VALUE, node, changes);
     }
 
-    @AllowAllocation("growing the change log, up to MAX_LOG")
-    private void growLog() {
-        int length = logStamps.length * 2;
-        long[] stamps = new long[length];
-        long[] logged = new long[length];
-        int[] changes = new int[length];
-        for (int i = 0; i < logSize; i++) {
-            int entry = (logStart + i) % logStamps.length;
-            stamps[i] = logStamps[entry];
-            logged[i] = logNodes[entry];
-            changes[i] = logChanges[entry];
+    /** Logs the first {@code count} of {@link #batchNodes} as one entry, those with changes. */
+    private void logAll(int count) {
+        if (count > 0) {
+            version++;
+            log.addAll(clock.stamp(), Long.MAX_VALUE, batchNodes, batchChanges, 0, 0, count);
         }
-        logStamps = stamps;
-        logNodes = logged;
-        logChanges = changes;
-        logStart = 0;
     }
 
     private void checkOwner() {

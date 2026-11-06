@@ -40,8 +40,16 @@ import java.util.List;
  * moving, reparenting, removing, updating and reading changes allocate nothing once the arrays have grown to the
  * scene's size. Everything is deterministic: the same calls give the same handles, transforms and change order.
  *
+ * <p><b>Many nodes at once.</b> A subtree built away from the scene, on a worker, is a {@link SceneBatch}:
+ * {@link #attach(SceneBatch, long)} puts it in on the scene's thread in one pass, {@link #detach(long, SceneBatch)}
+ * takes a subtree out into one, and {@link #remove(long)} removes a whole subtree. On the scene's thread,
+ * {@link #create(long, long[], int, int)} makes many nodes and {@link #remove(long[], int, int)} removes many subtrees.
+ * Each of these is logged as one entry ({@link ChangeBatch}), in the scene's log and in each component store's, so
+ * systems following the logs take the nodes in one pass ({@link NodeChange.Visitor#changed(ChangeBatch)}).
+ *
  * <p>A scene graph is used by one thread at a time. Name that thread with {@link ChangeClock#ownedBy} on the scene's
- * clock and every change from another one throws, instead of corrupting the scene unnoticed.
+ * clock and every change from another one throws, instead of corrupting the scene unnoticed. A {@link SceneBatch} is
+ * the way to build nodes on other threads.
  */
 public final class SceneGraph {
 
@@ -104,14 +112,21 @@ public final class SceneGraph {
     private int[] boundsDirtySlots;
     private int boundsDirtyCount;
 
-    // The change log: a ring of (stamp, handle, changes). It grows rather than drop a change made since the last update,
+    // The change log: entries of (stamp, nodes changed). It grows rather than drop a change made since the last update,
     // so a consumer that keeps up with updates never has to rebuild, however many nodes change at once.
-    private long[] logStamps;
-    private long[] logNodes;
-    private int[] logChanges;
-    private int logStart;
-    private int logSize;
-    private long logIncompleteThrough = -1;
+    private final ChangeLog log;
+    // Nodes made together (attach, create many) waiting for the next update's log: their slots, by batch; a batch takes
+    // one place in pendingSlots, as -(batch + 1), so the log keeps the order of the calls.
+    private int[] batchSlots = new int[64];
+    private int batchSlotCount;
+    private int[] batchFrom = new int[8];
+    private int[] batchSize = new int[8];
+    private int batchCount;
+    // Scratch, by slot capacity: nodes logged or removed together, their changes, handles of an attach, batch numbers.
+    private long[] together;
+    private int[] togetherChanges;
+    private long[] attachHandles;
+    private int[] detachIndex;
     private long updatedAt = -1; // the clock's time at the end of the last update
 
     /** An empty scene stamping its changes on {@code clock}. */
@@ -130,9 +145,7 @@ public final class SceneGraph {
         }
         this.clock = clock;
         allocate(capacity);
-        logStamps = new long[logCapacity];
-        logNodes = new long[logCapacity];
-        logChanges = new int[logCapacity];
+        log = new ChangeLog(logCapacity, logCapacity);
     }
 
     @AllowAllocation("growing")
@@ -149,7 +162,8 @@ public final class SceneGraph {
         dirtySlots = Arrays.copyOf(dirtySlots == null ? new int[0] : dirtySlots, capacity);
         pending = Arrays.copyOf(pending == null ? new int[0] : pending, capacity);
         listed = Arrays.copyOf(listed == null ? new boolean[0] : listed, capacity);
-        pendingSlots = Arrays.copyOf(pendingSlots == null ? new int[0] : pendingSlots, capacity);
+        pendingSlots = Arrays.copyOf(pendingSlots == null ? new int[0] : pendingSlots,
+            Math.max(capacity, pendingSlots == null ? 0 : pendingSlots.length));
         stack = Arrays.copyOf(stack == null ? new int[0] : stack, capacity);
         roots = Arrays.copyOf(roots == null ? new int[0] : roots, capacity);
         dynamic = Arrays.copyOf(dynamic == null ? new boolean[0] : dynamic, capacity);
@@ -157,6 +171,10 @@ public final class SceneGraph {
         groups = Arrays.copyOf(groups == null ? new int[0] : groups, capacity);
         boundsDirty = Arrays.copyOf(boundsDirty == null ? new boolean[0] : boundsDirty, capacity);
         boundsDirtySlots = Arrays.copyOf(boundsDirtySlots == null ? new int[0] : boundsDirtySlots, capacity);
+        together = new long[capacity];
+        togetherChanges = new int[capacity];
+        attachHandles = new long[capacity];
+        detachIndex = new int[capacity];
         local = grow(local, capacity);
         world = grow(world, capacity);
         localBounds = grow(localBounds, capacity);
@@ -228,6 +246,13 @@ public final class SceneGraph {
         return NodeHandle.of(slot, generation[slot]);
     }
 
+    /** Grows the storage, if needed, so that {@code nodes} more fit. */
+    private void room(int nodes) {
+        if (nodes > freeCount && slotCount + nodes - freeCount > generation.length) {
+            allocate(Math.max(generation.length * 2, slotCount + nodes - freeCount));
+        }
+    }
+
     /** A free slot, growing the storage when there is none. */
     private int newSlot() {
         if (freeCount > 0) {
@@ -239,65 +264,247 @@ public final class SceneGraph {
         return slotCount++;
     }
 
+    /**
+     * Makes {@code count} nodes under {@code parent} ({@link NodeHandle#NONE} for none), as {@link #create(long)} makes
+     * each, their handles into {@code into} from {@code from}; logged at the next update as one entry
+     * ({@link ChangeBatch}). Allocates nothing once the scene has grown.
+     */
+    public void create(long parent, long[] into, int from, int count) {
+        checkOwner();
+        java.util.Objects.checkFromIndexSize(from, count, into.length);
+        int parentSlot = parent == NodeHandle.NONE ? NONE : slot(parent);
+        if (count == 0) {
+            return;
+        }
+        room(count);
+        int batch = beginBatch(count);
+        for (int i = 0; i < count; i++) {
+            int slot = newSlot();
+            generation[slot]++;
+            alive[slot] = true;
+            this.parent[slot] = NONE;
+            firstChild[slot] = NONE;
+            nextSibling[slot] = NONE;
+            previousSibling[slot] = NONE;
+            identity(local, slot);
+            identity(world, slot);
+            localBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
+            worldBounds.set(slot, EMPTY, EMPTY, EMPTY, -EMPTY, -EMPTY, -EMPTY);
+            dynamic[slot] = true;
+            layers[slot] = SceneLayer.DEFAULT.mask();
+            groups[slot] = 0;
+            if (parentSlot != NONE) {
+                link(slot, parentSlot);
+            }
+            size++;
+            markDirty(slot);
+            markBatched(batch, slot, NodeChange.CREATED);
+            into[from + i] = NodeHandle.of(slot, generation[slot]);
+        }
+    }
+
+    /** Starts a batch of {@code count} nodes made together, logged as one entry at the next update. */
+    private int beginBatch(int count) {
+        if (batchSlotCount + count > batchSlots.length) {
+            growBatchSlots(batchSlotCount + count);
+        }
+        if (batchCount == batchFrom.length) {
+            growBatches();
+        }
+        if (pendingCount == pendingSlots.length) { // only when batches listed nothing new: slots reused, say
+            growPending();
+        }
+        int batch = batchCount++;
+        batchFrom[batch] = batchSlotCount;
+        batchSize[batch] = 0;
+        pendingSlots[pendingCount++] = -(batch + 1);
+        return batch;
+    }
+
+    @AllowAllocation("growing with the most nodes made together between updates")
+    private void growBatchSlots(int length) {
+        batchSlots = Arrays.copyOf(batchSlots, Math.max(length, 2 * batchSlots.length));
+    }
+
+    @AllowAllocation("growing with the most changes between updates")
+    private void growPending() {
+        pendingSlots = Arrays.copyOf(pendingSlots, 2 * pendingSlots.length);
+    }
+
+    @AllowAllocation("growing with the most batches between updates")
+    private void growBatches() {
+        batchFrom = Arrays.copyOf(batchFrom, 2 * batchFrom.length);
+        batchSize = Arrays.copyOf(batchSize, 2 * batchSize.length);
+    }
+
+    /** {@link #markPending} for a node of batch {@code batch}: listed in the batch, not alone. */
+    private void markBatched(int batch, int slot, int change) {
+        if (!listed[slot]) { // a slot listed already (freed and reused since) is logged where it was listed
+            listed[slot] = true;
+            batchSlots[batchSlotCount++] = slot;
+            batchSize[batch]++;
+        }
+        pending[slot] |= change;
+    }
+
     // ---------------------------------------------------------------- batches
 
     /**
-     * Adds a {@link SceneBatch}'s nodes to the scene in {@code group}, writing their handles to {@code handles} in the
-     * batch's numbering. A prepared batch (see {@link SceneBatch#prepare()}) is copied with its world transforms and
-     * bounds as computed, so {@link #update()} has nothing to propagate, and the tree of its static nodes is handed to
-     * the scene's {@link SpatialIndex}, which adopts it instead of building one. The nodes are reported as
-     * {@link NodeChange#CREATED} on the next update, like created ones.
+     * Puts {@code batch}'s nodes into the scene, its roots under {@code parent} ({@link NodeHandle#NONE}: in the world),
+     * with their components, in one pass; returns the handle of the batch's node 0. As
+     * {@link #attach(SceneBatch, long, long[])}, keeping no handles but the first: a subtree under one root is removed
+     * by it.
      */
-    @AllowAllocation("applying a batch: handing its tree over")
-    public void apply(SceneBatch batch, int group, long[] handles) {
+    public long attach(SceneBatch batch, long parent) {
         checkOwner();
-        if (group < 0) {
-            throw new IllegalArgumentException("Groups are 0 or more: " + group);
+        if (batch.size() == 0) {
+            throw new IllegalArgumentException("An empty batch has no node 0");
         }
+        room(batch.size()); // first: growing replaces the scratch
+        attach(batch, parent, attachHandles);
+        return attachHandles[0];
+    }
+
+    /**
+     * Puts {@code batch}'s nodes into the scene, its roots under {@code parent} ({@link NodeHandle#NONE}: in the world),
+     * in the batch's group, writing their handles to {@code handles} by batch number. Their components go into the
+     * stores. One pass: the nodes are logged as one entry at the next update ({@link NodeChange#CREATED}, with
+     * {@link NodeChange#TRANSFORM} and {@link NodeChange#BOUNDS} as they have them), and each component type as one
+     * entry now ({@link ComponentStore#ADDED}).
+     *
+     * <p>A prepared batch ({@link SceneBatch#prepare()}) attached into the world is copied with its world transforms
+     * and bounds, so {@link #update()} has nothing to compute for it, and the tree of its static nodes is handed to the
+     * scene's {@link SpatialIndex}, which adopts it instead of building one (those nodes are logged
+     * {@link NodeChange#PREPARED} too). Under a parent, its roots' world transforms are computed at the next update. The
+     * batch is copied: once this returns it is the caller's again, to clear and reuse. Allocates nothing once the
+     * scene and the stores have grown, but to hand a static tree over.
+     */
+    public void attach(SceneBatch batch, long parent, long[] handles) {
+        checkOwner();
         if (handles.length < batch.size()) {
             throw new IllegalArgumentException("Room for " + handles.length + " handles, the batch has " + batch.size());
         }
-        if (!batch.isPrepared()) {
+        int parentSlot = parent == NodeHandle.NONE ? NONE : slot(parent);
+        if (batch.size() == 0) {
+            return;
+        }
+        room(batch.size());
+        boolean placed = parentSlot == NONE;
+        if (placed && !batch.isPrepared()) {
             batch.prepare();
         }
+        int group = batch.group();
         long transformStride = local.stride();
         long boundsStride = localBounds.stride();
+        int logged = beginBatch(batch.size());
         for (int node = 0; node < batch.size(); node++) {
             int slot = newSlot();
             generation[slot]++;
             alive[slot] = true;
-            parent[slot] = NONE;
+            this.parent[slot] = NONE;
             firstChild[slot] = NONE;
             nextSibling[slot] = NONE;
             previousSibling[slot] = NONE;
-            if (batch.parent(node) >= 0) {
-                link(slot, NodeHandle.index(handles[batch.parent(node)]));
+            int batchParent = batch.parentOf(node);
+            if (batchParent >= 0) {
+                link(slot, NodeHandle.index(handles[batchParent]));
+            } else if (parentSlot != NONE) {
+                link(slot, parentSlot);
+                markDirty(slot); // its world follows the parent's: computed at the update, with its subtree
             }
             MemorySegment.copy(batch.local().segment(), node * transformStride, local.segment(),
                 slot * transformStride, transformStride);
-            MemorySegment.copy(batch.world().segment(), node * transformStride, world.segment(),
-                slot * transformStride, transformStride);
             MemorySegment.copy(batch.localBounds().segment(), node * boundsStride, localBounds.segment(),
                 slot * boundsStride, boundsStride);
-            MemorySegment.copy(batch.worldBounds().segment(), node * boundsStride, worldBounds.segment(),
-                slot * boundsStride, boundsStride);
+            if (placed) {
+                MemorySegment.copy(batch.world().segment(), node * transformStride, world.segment(),
+                    slot * transformStride, transformStride);
+                MemorySegment.copy(batch.worldBounds().segment(), node * boundsStride, worldBounds.segment(),
+                    slot * boundsStride, boundsStride);
+            }
             dynamic[slot] = batch.isDynamic(node);
             layers[slot] = batch.layers(node);
             groups[slot] = group;
             size++;
             boolean bounded = hasBounds(slot, localBounds);
-            markPending(slot, NodeChange.CREATED | NodeChange.TRANSFORM | (bounded ? NodeChange.BOUNDS : 0)
-                | (bounded && !dynamic[slot] ? NodeChange.PREPARED : 0));
+            markBatched(logged, slot, NodeChange.CREATED | NodeChange.TRANSFORM | (bounded ? NodeChange.BOUNDS : 0)
+                | (placed && bounded && !dynamic[slot] ? NodeChange.PREPARED : 0));
             handles[node] = NodeHandle.of(slot, generation[slot]);
         }
-        if (batch.staticTree() != null) {
-            int[] statics = batch.staticNodes();
-            long[] nodes = new long[statics.length];
-            for (int i = 0; i < statics.length; i++) {
-                nodes[i] = handles[statics[i]];
+        for (int t = 0; t < batch.typeCount(); t++) {
+            int count = batch.componentCount(t);
+            if (count == 0) {
+                continue;
             }
-            prepared.add(new Prepared(group, batch.staticTree(), nodes, batch.staticBox().clone(), updates));
+            int[] nodes = batch.componentNodes(t);
+            for (int i = 0; i < count; i++) {
+                together[i] = handles[nodes[i]];
+            }
+            components.store(batch.type(t)).setChecked(together, batch.componentValues(t), 0, count);
         }
+        if (placed && batch.staticTree() != null) {
+            handOver(batch, group, handles);
+        }
+    }
+
+    @AllowAllocation("applying a batch: handing its static tree over")
+    private void handOver(SceneBatch batch, int group, long[] handles) {
+        int[] statics = batch.staticNodes();
+        long[] nodes = new long[statics.length];
+        for (int i = 0; i < statics.length; i++) {
+            nodes[i] = handles[statics[i]];
+        }
+        prepared.add(new Prepared(group, batch.staticTree(), nodes, batch.staticBox().clone(), updates));
+    }
+
+    /**
+     * Adds a {@link SceneBatch}'s nodes to the world in {@code group}, writing their handles to {@code handles} in the
+     * batch's numbering: {@link #attach(SceneBatch, long, long[])} into the world, the batch's group set to
+     * {@code group} first.
+     */
+    public void apply(SceneBatch batch, int group, long[] handles) {
+        checkOwner();
+        batch.setGroup(group);
+        attach(batch, NodeHandle.NONE, handles);
+    }
+
+    /**
+     * Takes {@code root} and its subtree out of the scene into {@code into}: added there as a new root (after what it
+     * holds), with its local transform, and below it its descendants with their transforms, bounds, mobility, layers
+     * and components; then removed, as {@link #remove(long)} removes. Returns the batch number of the root. Attaching
+     * the batch again (here, under another parent, or in another scene) puts the subtree back as it was, in new nodes.
+     */
+    public int detach(long root, SceneBatch into) {
+        int rootSlot = changing(root);
+        int top = 0;
+        stack[top++] = rootSlot;
+        int first = -1;
+        while (top > 0) {
+            int slot = stack[--top];
+            int parentIndex = slot == rootSlot ? -1 : detachIndex[parent[slot]];
+            int node = into.add(parentIndex);
+            if (first < 0) {
+                first = node;
+            }
+            detachIndex[slot] = node;
+            into.copyLocal(node, local, slot);
+            into.copyLocalBounds(node, localBounds, slot);
+            into.setMobility(node, dynamic[slot] ? Mobility.DYNAMIC : Mobility.STATIC);
+            into.setLayers(node, layers[slot]);
+            long handle = NodeHandle.of(slot, generation[slot]);
+            for (int s = 0; s < components.storeCount(); s++) {
+                ComponentStore<?> store = components.storeAt(s);
+                Object value = store.get(handle);
+                if (value != null) {
+                    into.setUnchecked(node, store.type(), value);
+                }
+            }
+            for (int child = firstChild[slot]; child != NONE; child = nextSibling[child]) {
+                stack[top++] = child;
+            }
+        }
+        remove(root);
+        return first;
     }
 
     /** A static tree from an applied batch, waiting for the spatial index to adopt it. */
@@ -335,11 +542,39 @@ public final class SceneGraph {
         }
     }
 
-    /** Removes {@code node} and all its descendants; their handles become stale. */
+    /**
+     * Removes {@code node} and all its descendants, in one pass; their handles become stale, their components go. Logged
+     * as one entry ({@link ChangeBatch}) of {@link NodeChange#REMOVED} for a subtree, and one entry per component
+     * store. Allocates nothing.
+     */
     public void remove(long node) {
         int slot = changing(node);
         unlink(slot);
-        long stamp = clock.stamp();
+        int count = takeOut(slot, 0);
+        logRemoved(count);
+    }
+
+    /**
+     * Removes nodes {@code from} to {@code from + count - 1} of {@code nodes} and their descendants, in one pass, logged
+     * as one entry as {@link #remove(long)}. Nodes removed already by the time they are reached (below another of the
+     * list, say) are skipped. Allocates nothing.
+     */
+    public void remove(long[] nodes, int from, int count) {
+        checkOwner();
+        java.util.Objects.checkFromIndexSize(from, count, nodes.length);
+        int removed = 0;
+        for (int i = from; i < from + count; i++) {
+            if (contains(nodes[i])) {
+                int slot = NodeHandle.index(nodes[i]);
+                unlink(slot);
+                removed = takeOut(slot, removed);
+            }
+        }
+        logRemoved(removed);
+    }
+
+    /** Frees {@code slot} and its subtree, their handles into {@link #together} from {@code at}; returns the end. */
+    private int takeOut(int slot, int at) {
         int top = 0;
         stack[top++] = slot;
         while (top > 0) {
@@ -347,15 +582,26 @@ public final class SceneGraph {
             for (int child = firstChild[current]; child != NONE; child = nextSibling[child]) {
                 stack[top++] = child;
             }
-            long handle = NodeHandle.of(current, generation[current]);
-            log(stamp, handle, NodeChange.REMOVED);
-            components.nodeRemoved(handle);
+            together[at++] = NodeHandle.of(current, generation[current]);
             alive[current] = false;
             pending[current] = 0;
-            version[current] = stamp;
             freeSlots[freeCount++] = current;
             size--;
         }
+        return at;
+    }
+
+    /** Logs the first {@code count} nodes of {@link #together} removed, and removes their components. */
+    private void logRemoved(int count) {
+        if (count == 0) {
+            return;
+        }
+        long stamp = clock.stamp();
+        for (int i = 0; i < count; i++) {
+            version[NodeHandle.index(together[i])] = stamp;
+        }
+        log.addAll(stamp, updatedAt, together, null, NodeChange.REMOVED, 0, count);
+        components.nodesRemoved(together, count);
     }
 
     /** Whether {@code node} names a node of this scene that was not removed. */
@@ -825,6 +1071,10 @@ public final class SceneGraph {
             long stamp = clock.stamp();
             for (int i = 0; i < pendingCount; i++) {
                 int slot = pendingSlots[i];
+                if (slot < 0) {
+                    logBatch(stamp, -slot - 1);
+                    continue;
+                }
                 int changes = pending[slot];
                 if (changes != 0) { // removing clears a node's pending changes
                     log(stamp, NodeHandle.of(slot, generation[slot]), changes);
@@ -834,10 +1084,29 @@ public final class SceneGraph {
                 listed[slot] = false;
             }
             pendingCount = 0;
+            batchCount = 0;
+            batchSlotCount = 0;
         }
         updates++;
         updatedAt = clock.now();
         prunePrepared();
+    }
+
+    /** Logs the nodes of batch {@code batch} with changes as one entry. */
+    private void logBatch(long stamp, int batch) {
+        int count = 0;
+        for (int i = batchFrom[batch]; i < batchFrom[batch] + batchSize[batch]; i++) {
+            int slot = batchSlots[i];
+            int changes = pending[slot];
+            if (changes != 0) {
+                together[count] = NodeHandle.of(slot, generation[slot]);
+                togetherChanges[count++] = changes;
+                version[slot] = stamp;
+            }
+            pending[slot] = 0;
+            listed[slot] = false;
+        }
+        log.addAll(stamp, updatedAt, together, togetherChanges, 0, 0, count);
     }
 
     private boolean hasDirtyAncestor(int slot) {
@@ -955,41 +1224,21 @@ public final class SceneGraph {
 
     /**
      * Reports every node that changed after {@code since} (a {@link com.truesim.common.state.ChangeCursor} mark), in
-     * the order of the changes, one report per node and update. Returns false, reporting nothing, when changes that
+     * the order of the changes, one report per node and update; nodes changed together (attached, made or removed at
+     * once) as one {@link ChangeBatch}. Returns false, reporting nothing, when changes that
      * old are no longer kept: rebuild from {@link #forEach} then.
      */
     public boolean changesSince(long since, NodeChange.Visitor visitor) {
-        if (since < logIncompleteThrough) {
-            return false;
-        }
-        for (int i = firstAfter(since); i < logSize; i++) {
-            int entry = (logStart + i) % logStamps.length;
-            visitor.changed(logNodes[entry], logChanges[entry]);
-        }
-        return true;
+        return log.since(since, visitor);
     }
 
     /**
-     * How many changes {@link #changesSince} would report for {@code since}, or -1 when changes that old are no longer
-     * kept: e.g. to rewrite everything rather than follow the changes when most nodes changed. Allocates nothing.
+     * How many node changes {@link #changesSince} would report for {@code since} (a batch counts its nodes), or -1 when
+     * changes that old are no longer kept: e.g. to rewrite everything rather than follow the changes when most nodes
+     * changed. Allocates nothing.
      */
     public int changeCountSince(long since) {
-        return since < logIncompleteThrough ? -1 : logSize - firstAfter(since);
-    }
-
-    /** The position in the log of the first entry stamped after {@code since}: stamps only grow, so a binary search. */
-    private int firstAfter(long since) {
-        int low = 0;
-        int high = logSize;
-        while (low < high) {
-            int middle = (low + high) >>> 1;
-            if (logStamps[(logStart + middle) % logStamps.length] > since) {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        return low;
+        return log.countSince(since);
     }
 
     /** The stamp of the node's last logged change. */
@@ -1015,39 +1264,8 @@ public final class SceneGraph {
         pending[slot] |= change;
     }
 
-    /** Makes the change log hold {@code length} entries, keeping what it holds. */
-    @AllowAllocation("growing to the most changes between two updates")
-    private void growLog(int length) {
-        long[] stamps = new long[length];
-        long[] nodes = new long[length];
-        int[] changes = new int[length];
-        for (int i = 0; i < logSize; i++) {
-            int entry = (logStart + i) % logStamps.length;
-            stamps[i] = logStamps[entry];
-            nodes[i] = logNodes[entry];
-            changes[i] = logChanges[entry];
-        }
-        logStamps = stamps;
-        logNodes = nodes;
-        logChanges = changes;
-        logStart = 0;
-    }
-
     private void log(long stamp, long node, int changes) {
-        if (logSize == logStamps.length) {
-            if (logStamps[logStart] > updatedAt) {
-                growLog(2 * logStamps.length); // every entry is from since the last update: keep them all
-            } else {
-                logIncompleteThrough = logStamps[logStart];
-                logStart = (logStart + 1) % logStamps.length;
-                logSize--;
-            }
-        }
-        int entry = (logStart + logSize) % logStamps.length;
-        logStamps[entry] = stamp;
-        logNodes[entry] = node;
-        logChanges[entry] = changes;
-        logSize++;
+        log.add(stamp, updatedAt, node, changes);
     }
 
     // ---------------------------------------------------------------- handles
