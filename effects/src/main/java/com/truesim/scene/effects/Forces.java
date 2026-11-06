@@ -55,8 +55,8 @@ public final class Forces {
     /** An orbit: particles turn at {@code speed} radians a second about the emitter's axis, their distance kept. */
     public static final String ORBIT = "force.orbit";
     /**
-     * A vector field: accelerations from a 3D texture ({@code field}, its texels' RGB in m/s² times {@code strength})
-     * over a box of {@code sizeX} by {@code sizeY} by {@code sizeZ} metres centered on the emitter, repeated beyond it
+     * A vector field: accelerations from a vector field asset ({@code field}, {@link EffectAssets#VECTOR_FIELD}: its
+     * cells' vectors in m/s² times {@code strength}) over a box of {@code sizeX} by {@code sizeY} by {@code sizeZ} metres centered on the emitter, repeated beyond it
      * when {@code tile} is 1, else clamped. GPU emitters only: the CPU has no textures.
      */
     public static final String FIELD = "force.field";
@@ -143,7 +143,10 @@ public final class Forces {
         return Module.of(ORBIT).with("speed", speed).with("axisX", x).with("axisY", y).with("axisZ", z);
     }
 
-    /** The vector field {@code field} (a 3D texture) of {@code strength} over a box of {@code size} metres a side. */
+    /**
+     * The vector field {@code field} ({@link EffectAssets#VECTOR_FIELD}) of {@code strength} over a box of
+     * {@code size} metres a side.
+     */
     public static Module field(AssetRef<?> field, float strength, float size) {
         return Module.of(FIELD).with("field", field).with("strength", strength).with("sizeX", size)
             .with("sizeY", size).with("sizeZ", size);
