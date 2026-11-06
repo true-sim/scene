@@ -109,6 +109,11 @@ public final class AssetCache implements AutoCloseable {
     private long cachedBytes;
     private int loading;
     private boolean closed;
+    // Generated assets evicted and waiting to be closed on a worker, and whether a closer is queued or running
+    private final java.util.concurrent.ConcurrentLinkedQueue<AutoCloseable> closing =
+        new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.atomic.AtomicBoolean closerQueued =
+        new java.util.concurrent.atomic.AtomicBoolean();
     private Thread owner; // checked on every change once named
 
     /** A cache loading on {@code tasks}' lanes. */
@@ -361,15 +366,29 @@ public final class AssetCache implements AutoCloseable {
                 AssetLoader.closeIfCloseable(data);
             } else {
                 // Off the frame's thread: closing a mesh's shared arena can take milliseconds (engine pitfalls,
-                // "Freeing a staging buffer on the frame's thread"), and evictions come in the frame's update
-                tasks.lane(ref.type().lane()).task(() -> {
-                    AssetLoader.closeIfCloseable(data);
-                    return null;
-                }).submit();
+                // "Freeing a staging buffer on the frame's thread"), and evictions come in the frame's update. One
+                // task at a time frees whatever is queued: a frame evicting dozens submits one, not one each.
+                closing.add((AutoCloseable) data);
+                if (!closerQueued.getAndSet(true)) {
+                    tasks.lane(ref.type().lane()).task(this::closeQueued).submit();
+                }
             }
             return;
         }
         ((AssetLoader) registered.get(ref.type()).loader()).unload(data);
+    }
+
+    /**
+     * Closes what {@link #unload} queued, on a worker, until the queue is empty. Something queued just as it ends waits
+     * for the next eviction's closer (or the cache's close): freed late, never lost.
+     */
+    private Void closeQueued() {
+        closerQueued.set(false); // from here on, an eviction queues a closer of its own
+        AutoCloseable data;
+        while ((data = closing.poll()) != null) {
+            AssetLoader.closeIfCloseable(data);
+        }
+        return null;
     }
 
     private void link(Entry entry) {
@@ -428,6 +447,7 @@ public final class AssetCache implements AutoCloseable {
         }
         checkOwner();
         closed = true;
+        closeQueued(); // what no closer freed yet: now
         for (Entry entry : List.copyOf(entries.values())) {
             if (entry.state == AssetState.LOADED) {
                 evict(entry);

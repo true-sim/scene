@@ -274,6 +274,19 @@ class AssetCacheTest {
         assertThat(made.get(0).closed.get()).as("by the loader's default unload, at once").isTrue();
         // made here, freed here: on a worker, off the thread that released it (a mesh's arena can take milliseconds)
         await(() -> made.get(1).closed.get());
+        // many evicted at once: one closer frees them all
+        List<AssetRef<Held>> many = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            many.add(AssetRef.generated(held, (params, seed) -> {
+                Held data = new Held();
+                made.add(data);
+                return data;
+            }, "many" + i, 1));
+            cache.acquire(many.get(i));
+        }
+        await(() -> cache.loadingCount() == 0);
+        many.forEach(cache::release);
+        await(() -> made.stream().allMatch(h -> h.closed.get()));
         // a closed cache frees what it made at once
         cache.acquire(generated);
         await(() -> cache.loadingCount() == 0);
