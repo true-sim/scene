@@ -354,9 +354,19 @@ public final class AssetCache implements AutoCloseable {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
+    @AllowAllocation("an evicted asset freed on a worker, as loads are made on one")
     private void unload(AssetRef<?> ref, Object data) {
-        if (ref.isGenerated()) {
-            AssetLoader.closeIfCloseable(data); // made here, so freed here
+        if (ref.isGenerated()) { // made here, so freed here
+            if (closed || !(data instanceof AutoCloseable)) {
+                AssetLoader.closeIfCloseable(data);
+            } else {
+                // Off the frame's thread: closing a mesh's shared arena can take milliseconds (engine pitfalls,
+                // "Freeing a staging buffer on the frame's thread"), and evictions come in the frame's update
+                tasks.lane(ref.type().lane()).task(() -> {
+                    AssetLoader.closeIfCloseable(data);
+                    return null;
+                }).submit();
+            }
             return;
         }
         ((AssetLoader) registered.get(ref.type()).loader()).unload(data);

@@ -19,6 +19,12 @@ public final class RenderAssets {
     public static final AssetType<MaterialData> MATERIAL = AssetType.of("material", MaterialData.class,
         MaterialData::bytes);
     public static final AssetType<TextureData> TEXTURE = AssetType.of("texture", TextureData.class, TextureData::bytes);
+    /**
+     * Textures whose texels change while they are used, written on the CPU (regions uploaded within frames) or by GPU
+     * passes: {@link DynamicTexture}.
+     */
+    public static final AssetType<DynamicTexture> DYNAMIC_TEXTURE = AssetType.of("dynamicTexture", DynamicTexture.class,
+        DynamicTexture::bytes);
     /** Models: node trees naming meshes and materials, as glTF scenes and prefabs are. */
     public static final AssetType<ModelData> MODEL = AssetType.of("model", ModelData.class, ModelData::bytes);
     /** Points and lines: what glTF's point and line primitives hold, beside a node's triangle mesh. */

@@ -271,7 +271,15 @@ class AssetCacheTest {
         cache.setBudget(0);
         cache.release(loaded);
         cache.release(generated);
-        assertThat(made).allMatch(h -> h.closed.get()); // by the loader's default unload, and by the cache
+        assertThat(made.get(0).closed.get()).as("by the loader's default unload, at once").isTrue();
+        // made here, freed here: on a worker, off the thread that released it (a mesh's arena can take milliseconds)
+        await(() -> made.get(1).closed.get());
+        // a closed cache frees what it made at once
+        cache.acquire(generated);
+        await(() -> cache.loadingCount() == 0);
+        Held again = made.get(made.size() - 1);
+        cache.close();
+        assertThat(again.closed.get()).isTrue();
         // Closing that fails: unchecked exceptions as they are, checked ones wrapped.
         AutoCloseable unchecked = () -> {
             throw new IllegalArgumentException("unchecked");

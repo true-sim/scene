@@ -648,7 +648,11 @@ scene.remove(rock);                                        // its renderable goe
   double-sidedness. Scene knows no engine types: the renderer finds the type by name and reads the values by its
   parameters' field names; what the data lacks keeps the type's defaults. glTF's materials are type
   `metallicRoughness`. Material data compares by value, and `data.ref()` makes an inline material asset of it, so
-  equal data on many nodes is one material. `TextureData` is 8-bit RGBA with its color space; the engine makes mips.
+  equal data on many nodes is one material. `TextureData` is 8-bit RGBA (or half floats) with its color space; the
+  engine makes mips. With a `depth` over 1 it is a 3D texture (a noise volume, a density grid). A `DynamicTexture`
+  (`RenderAssets.DYNAMIC_TEXTURE`) is a texture whose texels change while used: the CPU writes them and marks the
+  boxes it changed (`changed(x, y, z, w, h, d)`; readers keep their own place in a ring of the last 256), which the
+  engine uploads within its frames; or GPU passes write it (`DynamicTexture.gpuWritten`), a storage image too.
 
   ```java
   MaterialData paint = MaterialData.builder("carPaint")
