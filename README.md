@@ -709,6 +709,10 @@ effects.changesSince(since, (effect, changes) -> ...); // ADDED, STOPPED, REMOVE
 - **Time** is whole ticks (microseconds); each effect's time is the world's delta times its own and the global time
   scale, carried exactly in fixed point, so the same ticks give the same times however frames split them. `pause`
   stops it, per effect or for all.
+- **Vector fields are assets** (`EffectAssets.VECTOR_FIELD`, `VectorFieldData`: cells of three floats over a box), so
+  `Forces.field` names one as it names any content; `FgaImporter` reads FGA files
+  (`paths.importers().add(EffectAssets.VECTOR_FIELD, "fga", FgaImporter.INSTANCE)`), and the renderer uploads them as
+  it does textures.
 
 `EffectRuntime` is the emitters' logic on the CPU: each frame it advances the effects and turns their timing into
 `SpawnRecords`, which the engine copies to the GPU and the CPU simulation spawns from:
