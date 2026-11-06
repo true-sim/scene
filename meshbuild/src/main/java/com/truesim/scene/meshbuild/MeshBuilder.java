@@ -94,6 +94,7 @@ public final class MeshBuilder {
     private int maxTriangles = 124;
     private float coneWeight = 0.25f;
     private int groupSize = 8;
+    private com.truesim.scene.assets.mesh.MeshPool pool; // or null: memory of its own
 
     /** A builder for a mesh of {@code vertexCount} vertices with the attributes of {@code format}. */
     @AllowAllocation("building meshes, offline")
@@ -103,6 +104,16 @@ public final class MeshBuilder {
             throw new IllegalArgumentException("A mesh needs vertices: " + vertexCount);
         }
         this.vertexCount = vertexCount;
+    }
+
+    /**
+     * Builds into the memory of a mesh {@code pool} keeps with buffers of the same sizes, where it has one (null: none,
+     * the default): streamed meshes of equal sizes reuse the memory of those that left. See
+     * {@link com.truesim.scene.assets.mesh.MeshPool}.
+     */
+    public MeshBuilder pool(com.truesim.scene.assets.mesh.MeshPool pool) {
+        this.pool = pool;
+        return this;
     }
 
     /** Positions: x, y, z per vertex. */
@@ -400,7 +411,7 @@ public final class MeshBuilder {
         if (discrete) {
             builder.discreteLods();
         }
-        return builder.build();
+        return builder.build(pool);
     }
 
     /** The new index of each vertex, in order of first use by the meshlets; unused vertices get -1. */

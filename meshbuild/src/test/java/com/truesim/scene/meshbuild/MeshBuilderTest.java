@@ -151,6 +151,22 @@ class MeshBuilderTest {
     }
 
     @Test
+    void aMeshBuiltWithAPoolTakesTheMemoryOfOneOfTheSameSizes() {
+        com.truesim.scene.assets.mesh.MeshPool pool = new com.truesim.scene.assets.mesh.MeshPool(2);
+        MeshData first = new MeshBuilder(VertexFormat.POSITIONS_ONLY, vertices()).positions(grid())
+            .submesh(triangles(0, N, N)).buildHierarchy();
+        assertThat(pool.offer(first)).isNull();
+        MeshData second = new MeshBuilder(VertexFormat.POSITIONS_ONLY, vertices()).pool(pool).positions(grid())
+            .submesh(triangles(0, N, N)).buildHierarchy();
+        assertThat(pool.reusedCount()).isEqualTo(1);
+        assertThat(second.positions().address()).isEqualTo(first.positions().address());
+        assertThat(first.isClosed()).isTrue();
+        assertThat(second.levels()).hasSize(new MeshBuilder(VertexFormat.POSITIONS_ONLY, vertices())
+            .positions(grid()).submesh(triangles(0, N, N)).buildHierarchy().levels().size());
+        second.close();
+    }
+
+    @Test
     void clusterHierarchiesKeepTheSurfaceWholeAtEveryDetail() {
         MeshData mesh = new MeshBuilder(VertexFormat.POSITIONS_ONLY, vertices())
             .positions(grid())

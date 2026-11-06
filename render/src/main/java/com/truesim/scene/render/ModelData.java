@@ -7,9 +7,9 @@ import com.truesim.scene.assets.AssetRef;
 import com.truesim.scene.assets.mesh.MeshData;
 import com.truesim.scene.core.CameraLens;
 import com.truesim.scene.core.ComponentStore;
-import com.truesim.scene.core.Components;
 import com.truesim.scene.core.LightSource;
 import com.truesim.scene.core.Pickable;
+import com.truesim.scene.core.SceneBatch;
 import com.truesim.scene.core.SceneGraph;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -397,7 +397,8 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
      * Nodes get their components (application-api.md D46): a {@link Renderable} for a mesh (skinned by its skin's
      * joints), {@link MorphWeights} for a mesh's default morph weights, a {@link CameraLens}
      * for a camera, a {@link LightSource} for a light (the engine's syncs place them), a {@link Pickable} where the
-     * model marks them pickable ({@link Node#pick()}). Returns the scene nodes, by the model's node index.
+     * model marks them pickable ({@link Node#pick()}). Returns the scene nodes, by the model's node index. The nodes
+     * go in as one batch ({@link #addTo}, {@link SceneGraph#attach(SceneBatch, long, long[])}): one entry of each log.
      */
     public long[] spawn(SceneGraph scene, long parent) {
         return spawn(scene, parent, null);
@@ -408,58 +409,88 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
      * {@code visibility} (null: by putting them and their children on no layer), so that animating their visibility
      * shows them ({@code KHR_node_visibility}).
      */
+    @AllowAllocation("spawning a model: its batch and handles")
     public long[] spawn(SceneGraph scene, long parent, NodeVisibility visibility) {
-        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
+        SceneBatch batch = new SceneBatch(Math.max(1, nodes.size()));
+        addTo(batch, -1, visibility == null);
         long[] placed = new long[nodes.size()];
-        boolean[] shown = new boolean[nodes.size()];
-        for (int i = 0; i < placed.length; i++) {
-            Node node = nodes.get(i);
-            long created = scene.create(node.parent() < 0 ? parent : placed[node.parent()]);
-            scene.setTranslation(created, node.tx(), node.ty(), node.tz());
-            scene.setRotation(created, node.rx(), node.ry(), node.rz(), node.rw());
-            scene.setScale(created, node.sx(), node.sy(), node.sz());
-            shown[i] = node.visible() && (node.parent() < 0 || shown[node.parent()]);
-            if (!shown[i] && visibility == null) {
-                scene.setLayers(created, 0);
-            }
-            if (node.mesh() != null) {
-                renderables.set(created, Renderable.of(node.mesh(), node.materials()));
-                if (!node.morphWeights().isEmpty()) {
-                    double[] weights = new double[node.morphWeights().size()];
-                    for (int w = 0; w < weights.length; w++) {
-                        weights[w] = node.morphWeights().get(w);
-                    }
-                    MorphWeights.write(scene, created, weights, 0, weights.length);
+        scene.attach(batch, parent, placed);
+        bindSkins(scene, placed, 0);
+        if (visibility != null) { // hidden nodes once their children are placed
+            for (int i = 0; i < placed.length; i++) {
+                if (!nodes.get(i).visible()) {
+                    visibility.setVisible(placed[i], false);
                 }
-            }
-            placed[i] = created;
-            components(scene.components(), node, created);
-        }
-        pickables(scene.components(), placed);
-        // Skins last: their joints may come after the nodes they deform. Hidden nodes once their children are placed.
-        for (int i = 0; i < placed.length; i++) {
-            Node node = nodes.get(i);
-            if (!node.visible() && visibility != null) {
-                visibility.setVisible(placed[i], false);
-            }
-            if (node.mesh() != null && node.skin() >= 0) {
-                Skin skin = skins.get(node.skin());
-                long[] joints = new long[skin.jointCount()];
-                for (int j = 0; j < joints.length; j++) {
-                    joints[j] = placed[skin.joint(j)];
-                }
-                renderables.set(placed[i],
-                    renderables.get(placed[i]).withSkin(new SkinBinding(joints, skin.inverseBindMatrices())));
             }
         }
         return placed;
     }
 
-    /** Gives a spawned node its camera and light components. */
-    private void components(Components components, Node node, long created) {
+    /**
+     * Adds the model's nodes to {@code batch}, its roots under batch node {@code parent} (-1: the batch's roots), with
+     * their transforms and components as {@link #spawn} gives them, but for skins, which name scene nodes: once the
+     * batch is attached, {@link #bindSkins} binds them. With {@code hideByLayers}, hidden nodes and their children go on
+     * no layer. Returns the batch number of the model's node 0; model node {@code i} is that plus {@code i}. For a
+     * worker building a level's or a cell's content, many models into one batch, attached at once.
+     */
+    @AllowAllocation("building a batch, off the scene's thread")
+    public int addTo(SceneBatch batch, int parent, boolean hideByLayers) {
+        int first = batch.size();
+        boolean[] shown = new boolean[nodes.size()];
+        for (int i = 0; i < nodes.size(); i++) {
+            Node node = nodes.get(i);
+            int added = batch.add(node.parent() < 0 ? parent : first + node.parent());
+            batch.setTranslation(added, node.tx(), node.ty(), node.tz());
+            batch.setRotation(added, node.rx(), node.ry(), node.rz(), node.rw());
+            batch.setScale(added, node.sx(), node.sy(), node.sz());
+            shown[i] = node.visible() && (node.parent() < 0 || shown[node.parent()]);
+            if (!shown[i] && hideByLayers) {
+                batch.setLayers(added, 0);
+            }
+            if (node.mesh() != null) {
+                batch.set(added, Renderable.TYPE, Renderable.of(node.mesh(), node.materials()));
+                if (!node.morphWeights().isEmpty()) {
+                    double[] weights = new double[node.morphWeights().size()];
+                    for (int w = 0; w < weights.length; w++) {
+                        weights[w] = node.morphWeights().get(w);
+                    }
+                    batch.set(added, MorphWeights.TYPE, new MorphWeights().set(weights, 0, weights.length));
+                }
+            }
+            components(batch, node, added);
+        }
+        pickables(batch, first);
+        return first;
+    }
+
+    /**
+     * Binds the skins of a model added to a batch at {@code first} ({@link #addTo}) and attached: {@code handles} are the
+     * batch's handles, so model node {@code i} is {@code handles[first + i]}. Skins come last: their joints may come after
+     * the nodes they deform.
+     */
+    @AllowAllocation("binding skins: their joint lists")
+    public void bindSkins(SceneGraph scene, long[] handles, int first) {
+        ComponentStore<Renderable> renderables = scene.components().store(Renderable.TYPE);
+        for (int i = 0; i < nodes.size(); i++) {
+            Node node = nodes.get(i);
+            if (node.mesh() != null && node.skin() >= 0) {
+                Skin skin = skins.get(node.skin());
+                long[] joints = new long[skin.jointCount()];
+                for (int j = 0; j < joints.length; j++) {
+                    joints[j] = handles[first + skin.joint(j)];
+                }
+                long placed = handles[first + i];
+                renderables.set(placed,
+                    renderables.get(placed).withSkin(new SkinBinding(joints, skin.inverseBindMatrices())));
+            }
+        }
+    }
+
+    /** Gives a node of the batch its camera and light components. */
+    private void components(SceneBatch batch, Node node, int added) {
         if (node.camera() >= 0) {
             Camera c = cameras.get(node.camera());
-            components.set(created, CameraLens.TYPE, c.orthographic()
+            batch.set(added, CameraLens.TYPE, c.orthographic()
                 ? CameraLens.orthographic(Math.abs(c.ymag()), c.zfar() - c.znear())
                 : CameraLens.perspective(c.yfov(), c.znear()));
         }
@@ -476,7 +507,7 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
             if (l.range() > 0 && l.kind() != LightKind.DIRECTIONAL) {
                 source.range(l.range());
             }
-            components.set(created, LightSource.TYPE, source);
+            batch.set(added, LightSource.TYPE, source);
         }
     }
 
@@ -484,15 +515,15 @@ public record ModelData(List<Node> nodes, List<Light> lights, List<Skin> skins, 
      * Makes the nodes the model marks pickable so: a node with a mesh by its own mark; a node without one passes its
      * mark down to the nodes with meshes below it that have none of their own.
      */
-    private void pickables(Components components, long[] placed) {
-        Pickable.Shape[] inherited = new Pickable.Shape[placed.length];
-        for (int i = 0; i < placed.length; i++) {
+    private void pickables(SceneBatch batch, int first) {
+        Pickable.Shape[] inherited = new Pickable.Shape[nodes.size()];
+        for (int i = 0; i < nodes.size(); i++) {
             Node node = nodes.get(i);
             Pickable.Shape from = node.parent() < 0 ? null : inherited[node.parent()];
             Pickable.Shape own = node.pick() != null ? node.pick() : from;
             inherited[i] = node.mesh() == null ? own : from;
             if (own != null && (node.mesh() != null || node.pick() != null)) {
-                components.set(placed[i], Pickable.TYPE, Pickable.of(own));
+                batch.set(first + i, Pickable.TYPE, Pickable.of(own));
             }
         }
     }

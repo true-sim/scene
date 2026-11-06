@@ -2,6 +2,7 @@ package com.truesim.scene.assets.mesh;
 
 import com.truesim.annotations.AllowAllocation;
 import java.lang.foreign.Arena;
+import java.lang.foreign.SegmentAllocator;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
@@ -85,11 +86,13 @@ public final class MeshData implements AutoCloseable {
     private final MemorySegment morphOffsets; // per vertex and one more: its first record in morphRecords
     private final MemorySegment morphRecords; // MORPH_RECORD_BYTES each, a vertex's in a run
     private final Arena arena; // owns the buffers
+    private final MemorySegment[] owned; // the buffers, writable: a mesh built into this one's memory takes them
     private final AtomicBoolean closed = new AtomicBoolean();
 
     private MeshData(Builder b, double[] box, Sphere bounds, List<MeshLevel> levels, Arena arena,
         MemorySegment[] segments) {
         this.arena = arena;
+        this.owned = segments.clone();
         this.format = b.format;
         this.vertexCount = b.vertexCount;
         this.meshletCount = b.meshlets.size();
@@ -123,9 +126,14 @@ public final class MeshData implements AutoCloseable {
         }
     }
 
-    /** Whether {@link #close()} freed the buffers. */
+    /** Whether {@link #close()} freed the buffers, or a mesh was built into them ({@link MeshPool}). */
     public boolean isClosed() {
         return closed.get();
+    }
+
+    /** Closes this object without freeing its buffers, which a mesh built into them takes. */
+    void handOver() {
+        closed.set(true);
     }
 
     /** Starts a mesh of {@code vertexCount} vertices with the attributes of {@code format}. */
@@ -652,6 +660,16 @@ public final class MeshData implements AutoCloseable {
 
         @AllowAllocation("building a mesh")
         public MeshData build() {
+            return build(null);
+        }
+
+        /**
+         * Builds the mesh as {@link #build()} does, into the memory of a mesh {@code pool} keeps whose buffers have the
+         * same sizes, if there is one (null: none): no memory allocated, nor freed later by closing it. A mesh with
+         * morph targets is always built anew.
+         */
+        @AllowAllocation("building a mesh")
+        public MeshData build(MeshPool pool) {
             if (positions == null) {
                 throw new IllegalStateException("A mesh needs positions");
             }
@@ -677,18 +695,22 @@ public final class MeshData implements AutoCloseable {
             }
             double[] box = box();
             Sphere bounds = sphere(box);
-            Arena arena = Arena.ofShared(); // read from any thread, freed by close()
+            MeshData spare = pool == null || !morphDeltas.isEmpty() ? null : pool.take(new long[] {
+                (long) POSITION_BYTES * vertexCount, (long) format.stride() * vertexCount, 4L * meshletVertexTotal,
+                3L * triangleTotal, (long) MESHLET_BYTES * meshlets.size(), (long) CLUSTER_LOD_BYTES * meshlets.size()});
+            Arena arena = spare != null ? spare.arena : Arena.ofShared(); // read from any thread, freed by close()
+            SegmentAllocator memory = spare != null ? new Reuse(spare.owned) : arena;
             MemorySegment[] segments = {
-                encodePositions(arena, box),
-                encodeAttributes(arena),
-                arena.allocate(4L * meshletVertexTotal, 4),
-                arena.allocate(3L * triangleTotal, 4),
-                arena.allocate((long) MESHLET_BYTES * meshlets.size(), 16),
-                arena.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 8),
+                encodePositions(memory, box),
+                encodeAttributes(memory),
+                memory.allocate(4L * meshletVertexTotal, 4),
+                memory.allocate(3L * triangleTotal, 4),
+                memory.allocate((long) MESHLET_BYTES * meshlets.size(), 16),
+                memory.allocate((long) CLUSTER_LOD_BYTES * meshlets.size(), 8),
                 null,
                 null
             };
-            encodeMorphs(arena, segments);
+            encodeMorphs(memory, segments);
             encodeMeshlets(segments, bounds);
             return new MeshData(this, box, bounds, List.copyOf(levels), arena, segments);
         }
@@ -759,7 +781,7 @@ public final class MeshData implements AutoCloseable {
             return new Sphere(cx, cy, cz, radius);
         }
 
-        private MemorySegment encodePositions(Arena arena, double[] box) {
+        private MemorySegment encodePositions(SegmentAllocator arena, double[] box) {
             MemorySegment out = arena.allocate((long) POSITION_BYTES * vertexCount, 8);
             for (int v = 0; v < vertexCount; v++) {
                 for (int axis = 0; axis < 3; axis++) {
@@ -771,7 +793,7 @@ public final class MeshData implements AutoCloseable {
             return out;
         }
 
-        private MemorySegment encodeAttributes(Arena arena) {
+        private MemorySegment encodeAttributes(SegmentAllocator arena) {
             int stride = format.stride();
             MemorySegment out = arena.allocate((long) stride * vertexCount, 4);
             double[] oct = new double[2];
@@ -824,7 +846,7 @@ public final class MeshData implements AutoCloseable {
         }
 
         /** The morph targets, sparse by vertex ({@link #morphOffsets()}), and each target's longest move. */
-        private void encodeMorphs(Arena arena, MemorySegment[] segments) {
+        private void encodeMorphs(SegmentAllocator arena, MemorySegment[] segments) {
             morphMaxDisplacement = new float[morphDeltas.size()];
             if (morphDeltas.isEmpty()) {
                 segments[6] = arena.allocate(0, 4);
@@ -971,6 +993,21 @@ public final class MeshData implements AutoCloseable {
             int cutoff = cone.cutoff() >= 1 || length == 0 ? 127
                 : Math.min(127, (int) Math.ceil(cone.cutoff() * 127) + 1);
             out.set(ValueLayout.JAVA_BYTE, o + 3, (byte) cutoff);
+        }
+    }
+
+    /** Hands out a kept mesh's buffers, in the order a build allocates them, zeroed as an arena's would be. */
+    private static final class Reuse implements SegmentAllocator {
+        private final MemorySegment[] buffers;
+        private int next;
+
+        Reuse(MemorySegment[] buffers) {
+            this.buffers = buffers;
+        }
+
+        @Override
+        public MemorySegment allocate(long byteSize, long byteAlignment) {
+            return buffers[next++].fill((byte) 0); // of byteSize: the pool gave a mesh of the same sizes
         }
     }
 }

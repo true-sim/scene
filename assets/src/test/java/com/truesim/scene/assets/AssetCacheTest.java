@@ -268,12 +268,14 @@ class AssetCacheTest {
         cache.acquire(generated);
         await(() -> cache.loadingCount() == 0);
         assertThat(made).hasSize(2).allMatch(h -> !h.closed.get());
+        Held loadedData = cache.get(loaded); // made on workers, in either order
+        Held generatedData = cache.get(generated);
         cache.setBudget(0);
         cache.release(loaded);
         cache.release(generated);
-        assertThat(made.get(0).closed.get()).as("by the loader's default unload, at once").isTrue();
+        assertThat(loadedData.closed.get()).as("by the loader's default unload, at once").isTrue();
         // made here, freed here: on a worker, off the thread that released it (a mesh's arena can take milliseconds)
-        await(() -> made.get(1).closed.get());
+        await(() -> generatedData.closed.get());
         // many evicted at once: one closer frees them all
         List<AssetRef<Held>> many = new java.util.ArrayList<>();
         for (int i = 0; i < 50; i++) {
@@ -304,6 +306,47 @@ class AssetCacheTest {
         assertThatIllegalStateException().isThrownBy(() -> AssetLoader.closeIfCloseable(checked))
             .withCauseInstanceOf(java.io.IOException.class);
         AssetLoader.closeIfCloseable("not closeable"); // nothing
+    }
+
+    @Test
+    void aRecyclerTakesGeneratedDataTheCacheEvicts() throws InterruptedException {
+        AssetCache cache = new AssetCache(tasks);
+        cache.setSource(SOURCE);
+        AssetType<Held> held = AssetType.of("recycled", Held.class, h -> 10);
+        List<Held> made = new CopyOnWriteArrayList<>();
+        List<Held> offered = new CopyOnWriteArrayList<>();
+        boolean[] take = {true};
+        cache.recycler(held, data -> {
+            offered.add(data);
+            return take[0] ? null : data;
+        });
+        List<AssetRef<Held>> refs = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            refs.add(AssetRef.generated(held, (params, seed) -> {
+                Held data = new Held();
+                made.add(data);
+                return data;
+            }, "recycled" + i, 1));
+            cache.acquire(refs.get(i));
+        }
+        await(() -> cache.loadingCount() == 0);
+        List<Held> data = new java.util.ArrayList<>(); // by ref: made in any order, on workers
+        refs.forEach(ref -> data.add(cache.get(ref)));
+        cache.setBudget(0);
+        cache.release(refs.get(0)); // taken: the recycler's, not freed
+        assertThat(offered).containsExactly(data.get(0));
+        take[0] = false;
+        cache.release(refs.get(1)); // given back: freed as usual
+        await(() -> data.get(1).closed.get());
+        cache.recycler(held, null); // none: freed as usual, not offered
+        cache.release(refs.get(2));
+        await(() -> data.get(2).closed.get());
+        assertThat(offered).hasSize(2);
+        assertThat(data.get(0).closed.get()).isFalse();
+        cache.recycler(held, kept -> null);
+        cache.close(); // a closed cache frees at once, offering nothing
+        assertThat(data.get(3).closed.get()).isTrue();
+        assertThat(made).hasSize(4);
     }
 
     @Test
